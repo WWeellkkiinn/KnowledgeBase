@@ -19,10 +19,10 @@ python scripts/search_refs.py "<title>" [--year <year>]
 ## 工作流程
 
 1. **转换**：调用 `pdf2md.py` 将 PDF 转为 MD（若 MD 已存在则跳过）
-2. **定位**：直接读取 MD 文件，找到与关注重点最相关的章节
-3. **总结**：用中文总结该章节核心内容（200 字以内）
-4. **提取引用**：调用 `extract_refs.py --section <id>` 提取该章节引用文献
-5. **搜索元数据**（对每条引用）：调用 `search_refs.py` 补充 DOI、下载链接
+2. **列章节**：调用 `list_sections` 工具获取论文所有章节标题列表
+3. **读章节**：根据关注重点选择最相关的 1-2 个章节，调用 `read_section` 工具读取内容
+4. **查引用**：对章节中出现的重要引用，调用 `search_ref` 工具查询元数据（≤5 次）
+5. **输出结果**：调用 `finish` 工具，输出深度分析（≤500字，覆盖核心论点/方法论决策/局限性）和引用评级 JSON
 6. **写文件**：
 
 ```
@@ -32,16 +32,34 @@ papers/<论文文件名>/
   todo_download.txt    ← 待下载清单（每行：[index] 标题 | DOI | pdf_url）
 ```
 
+## 可用工具（TUI 模式）
+
+```
+[TOOL: list_sections]
+→ 列出论文所有章节（id/level/title/line）
+
+[TOOL: read_section] {"id": <整数>}
+→ 读取指定章节文本（≤2000字符）
+
+[TOOL: search_ref] {"title": "<标题>", "year": "<年份>"}
+→ 查询引用元数据（OpenAlex → SS → arXiv）
+
+[TOOL: finish] {"analysis": "<中文分析>", "refs": [{"index": <整数>, "relevance": "high"|"medium"|"low", "reason": "<≤50字>"}]}
+→ 输出最终结果，结束分析
+```
+
+每次只输出一个工具调用，等待结果后再继续。
+
 ## 输出规范
 
-- **analysis.md**：`# <论文文件名>`，`## 关注重点分析`（200字中文摘要），`## 引用文献概览`（列出所有引用）
-- **refs.json**：JSON 数组，每项含 `index/title/authors/year/doi/pdf_url/relevance`，`relevance` 由 Codex 填写（high/medium/low）
-- **todo_download.txt**：每行 `[index] title | doi | pdf_url`，`pdf_url` 未找到时填 `NOT_FOUND`
-- `relevance` 字段：`high`（与关注重点直接相关）/ `medium` / `low`
+- **analysis.md**：`# <论文文件名>`，`## 深度分析`（≤500字中文，覆盖核心论点/方法论决策/局限性），`## 引用文献概览`
+- **refs.json**：JSON 数组，每项含 `index/title/authors/year/doi/pdf_url/relevance/reason`
+  - `relevance`：`high`/`medium`/`low`（由 LLM 依据关注重点判断）
+  - `reason`：判断依据（中文，≤50字）
+- **todo_download.txt**：每行 `[index] title | doi | pdf_url`，未找到时填 `NOT_FOUND`
 
 ## 约束
 
 - 全程使用中文回复
-- 总结严格控制在 200 字以内
 - 不要自行下载 PDF，只整理清单
 - 若 PDF 转换失败，直接报错说明原因，不要继续

@@ -8,6 +8,19 @@
 | 用户 | `<deploy-user>` |
 | GPU | `4 x RTX 4090` |
 | 显存 | `96GB` |
+
+### SSH 连接
+
+```bash
+# 私钥路径（Claude Code / Git Bash 环境用 /c/ 前缀，不能用 C:/）
+ssh -i <home>/.ssh/<deploy-ssh-key> <deploy-user>@<ollama-host>
+
+# ⚠ Windows 路径 C:/Users/... 在 Git Bash 下会报 exit 255，必须用 /c/Users/...
+```
+
+- 私钥文件：`<home>\.ssh\<deploy-ssh-key>`（ed25519，无密码）
+- Ollama 日志：写 `~/ollama.log` 可能权限不足，改用 `/tmp/ollama.log`
+- `pkill` 返回 1 = 没有找到进程（正常，不是失败）
 | RAM | `1TB` |
 
 ---
@@ -123,9 +136,9 @@ RUN /bin/bash -c "mineru-models-download -s modelscope -m all"
 
 | 卡 | 服务 | 显存 |
 |---|---|---|
-| GPU 2 | Ollama + supergemma4-26b | ~16GB |
+| GPU 1+2 | Ollama（双卡，supergemma4-26b 或 gemma4-31b） | ~16-18GB |
 | GPU 3 | MinerU API（Docker） | ~13GB |
-| GPU 0/1 | 保留 | — |
+| GPU 0 | 保留 | — |
 
 ### 服务器端启动
 
@@ -136,9 +149,17 @@ docker run -d --name mineru-api-kb \
   -e MINERU_MODEL_SOURCE=local --ipc host \
   mineru:latest mineru-api --host 0.0.0.0 --port 8000
 
-# Ollama（GPU2）
-CUDA_VISIBLE_DEVICES=2 ~/start-ollama.sh
+# Ollama（GPU1+2，双卡，必须关闭 Flash Attention）
+OLLAMA_FLASH_ATTENTION=0 CUDA_VISIBLE_DEVICES=1,2 \
+OLLAMA_HOST=0.0.0.0:13811 OLLAMA_MODELS=/data/home/<deploy-user>/ollama \
+nohup /data/home/<deploy-user>/bin/ollama serve > /tmp/ollama.log 2>&1 &
 ```
+
+> ⚠️ **`OLLAMA_FLASH_ATTENTION=0` 必须设置**（影响所有 gemma4 模型）：
+> gemma4 + `think=true` + 任意 prompt 下，Flash Attention 会导致 prefill 卡死（GPU 利用率归零，永不输出），
+> 重现于 GitHub issue [#15350](https://github.com/ollama/ollama/issues/15350)。
+> 不加此参数将导致每次 LLM 调用超时后返回 500，且**不会有任何错误提示**，只是静默卡死。
+> 已在 supergemma4-26b 和 gemma4-31b 上均验证修复。
 
 ### 本地使用
 
@@ -176,3 +197,36 @@ wire_api = "responses"
 ```
 
 普通 `codex` 命令走全局默认（gpt-5.4），两者不冲突。
+
+---
+
+## 优化待办（按优先级）
+
+### P1 — 重新设计 LLM 任务（relevance 判断 + 分析深度）
+
+**状态**：待开始
+
+当前 LLM 只做「定位章节 + 200 字摘要 + 列引用编号」，三件事代码几乎都能做。`refs.json` 的 `relevance` 字段在批处理模式下全部为空，而这是决定「下一步读哪篇」的核心判断。
+
+目标：重新设计 prompt，让 LLM 在分析时同时输出：
+- 每条引用的相关性评级（high/medium/low）及理由
+- 方法论关键决策与潜在局限
+- 每条引用支撑了哪个具体论点
+
+### P2 — 结构化输出验证
+
+**状态**：待开始
+
+LLM 输出为自由文本，靠 `AGENTS.md` 约束格式，无校验机制。LLM 承担更多判断后，输出必须是可解析的结构（JSON），并在写文件前验证，防止静默失败。
+
+### P3 — 全文上下文分段策略
+
+**状态**：待开始
+
+当前全文一次性送入模型（256k context 够用但有噪音）。改为先定位目标章节，再精准送入，减少无关内容干扰，提升分析聚焦度。
+
+### P4 — 元数据命中率追踪
+
+**状态**：暂缓
+
+`search_refs.py` 三个来源（OpenAlex → SS → arXiv）无命中日志，不知道整体覆盖率。暂不处理，等前三项稳定后再评估是否必要。
