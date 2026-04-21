@@ -1,0 +1,5 @@
+papers/
+.claude/
+codex/
+__pycache__/
+*.pyc
