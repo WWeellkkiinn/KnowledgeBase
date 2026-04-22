@@ -18,32 +18,52 @@ from pathlib import Path
 
 import httpx
 
+# 从同目录读取本地 JS 库（避免 CDN 依赖）
+_SCRIPT_DIR = Path(__file__).parent
+try:
+    _MARKED_JS = (_SCRIPT_DIR / "_marked.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
+    _PURIFY_JS  = (_SCRIPT_DIR / "_dompurify.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
+except FileNotFoundError as _e:
+    print(f"ERROR: 缺少 JS 库文件 {_e.filename}，请先运行：\n"
+          f"  python -c \"import urllib.request; "
+          f"[open('scripts/'+n,'wb').write(urllib.request.urlopen(u).read()) "
+          f"for n,u in [('_marked.min.js','https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js'),"
+          f"('_dompurify.min.js','https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js')]]\"")
+    sys.exit(1)
+
 OLLAMA_BASE = "http://<ollama-host>:13811"
 OLLAMA_CHAT = f"{OLLAMA_BASE}/api/chat"
 MODEL = "gemma4-31b"
-ENABLE_THINKING = False
+ENABLE_THINKING = True
 MAX_SECTIONS = 4
 
 # ── Phase prompts (each call fully independent, no shared history) ─────────────
 
 PHASE2_SYSTEM_TPL = (
-    "你正在从学术论文中提取与【关注重点】相关的信息。\n"
+    "你正在精读一篇学术论文的特定章节，目标是为读者提取与关注重点直接相关的具体内容。\n"
     "关注重点：{focus}\n\n"
-    "阅读以下章节内容，完成两件事：\n"
-    "1. 用50字以内概括本章节与该关注重点的关系。若关联不大，直接写\"本章节与关注重点关联较弱\"。\n"
-    "2. 只挑选本章节中**实际支撑或直接涉及该关注重点**的引用标记（如[1][3]或Smith(2020)）；\n"
-    "   与关注重点无关的引用一律不要列出，宁缺毋滥。\n\n"
-    "严格按以下格式输出两行：\n"
-    "摘要：<50字以内>\n"
-    "引用：[1][3] 或 Smith(2020), Jones et al.(2021)\n"
-    "（若本章节没有与关注重点相关的引用，写：引用：无）"
+    "阅读以下章节，完成两件事：\n\n"
+    "1. 【内容提取】\n"
+    "   - 只提取与关注重点**直接相关**的内容，不相关的部分一律跳过\n"
+    "   - 要写具体：方法步骤、数据指标、操作流程、公式定义等，让读者读完能真正理解「如何做」\n"
+    "   - 忠实原文，不添加、不推断、不总结原文没有的内容\n"
+    "   - 若本章节与关注重点无关，直接写：本章节与关注重点无关\n\n"
+    "2. 【引用标记】\n"
+    "   - 只列出本章节中**实际支撑关注重点内容**的引用，宁缺毋滥\n\n"
+    "输出格式（严格两段）：\n"
+    "摘要：<详细提取的内容，无字数上限，重要细节不得省略>\n"
+    "引用：[1][3] 或 Smith(2020), Jones et al.(2021)（若无相关引用写：引用：无）"
 )
 
 PHASE3_SYSTEM_TPL = (
-    "你正在围绕【关注重点】做论文分析。\n"
+    "你正在基于已提取的章节内容，为读者整理关于【关注重点】的完整理解。\n"
     "关注重点：{focus}\n\n"
-    "根据以下各章节摘要，针对该关注重点写出深度分析（300字以内），涵盖：\n"
-    "核心方法论决策、操作化路径、潜在局限性。只输出分析文字。"
+    "要求：\n"
+    "- 只基于下方提供的章节内容进行分析，不得补充任何原文未提及的信息\n"
+    "- 重点写清楚具体的实现方式、步骤、数据、指标等，让读者读完能真正理解\n"
+    "- 如果某方面信息不足，直接跳过，不要推测或编造\n"
+    "- 不需要套固定框架，内容有什么就写什么\n"
+    "- 使用 Markdown 格式，结构自然清晰即可"
 )
 
 # ── SSE broadcast ─────────────────────────────────────────────────────────────
@@ -70,14 +90,8 @@ HTML = """\
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>KnowledgeBase \u5206\u6790</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"
-  integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz"
-  crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"
-  integrity="sha384-3HPB1XT51W3gGRxAmZ+qbZwRpRlFQL632y8x+adAqCr4Wp3TaWwCLSTAJJKbyWEK"
-  crossorigin="anonymous"></script>
+<script>__MARKED_JS__</script>
+<script>__PURIFY_JS__</script>
 <style>
 :root{
   --bg:#F5F1E8;--surface:#FEFCF8;--border:#E2DDD4;
@@ -98,15 +112,13 @@ HTML = """\
 html{scroll-behavior:smooth}
 body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13.5px;line-height:1.6;min-height:100vh}
 /* Header */
-#hdr{position:sticky;top:0;z-index:100;background:var(--surface);border-bottom:1px solid var(--border);padding:0 28px;height:54px;display:flex;align-items:center;gap:14px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+#hdr{position:sticky;top:0;z-index:100;background:var(--surface);border-bottom:1px solid var(--border);padding:0 16px;height:54px;display:flex;align-items:center;gap:14px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
 #logo{font-family:'Lora',serif;font-size:15px;font-weight:600;letter-spacing:-.2px;color:var(--text)}
 #logo em{color:var(--accent);font-style:normal}
 #badge{font-size:11px;font-weight:500;color:var(--muted);background:var(--bg);border:1px solid var(--border);padding:2px 10px;border-radius:20px;white-space:nowrap}
-#prog-wrap{flex:1;max-width:180px;height:3px;background:var(--border);border-radius:3px;overflow:hidden}
-#prog{height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width .5s ease}
 #conn{font-size:11px;color:var(--muted)}
 /* Layout */
-#layout{display:flex;gap:24px;max-width:900px;margin:0 auto;padding:24px 20px;align-items:flex-start}
+#layout{display:flex;gap:24px;max-width:980px;margin:0 auto;padding:24px 10px;align-items:flex-start}
 /* Sidebar */
 #sidebar{width:188px;flex-shrink:0;position:sticky;top:70px}
 .sb-title{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:14px}
@@ -148,14 +160,12 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
 /* 气泡共用：用内部小节 + 分隔线组织 System/User 或 思考/输出 */
 .bubble-section{padding:2px 0}
 .bubble-label{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;opacity:.8}
-.bubble-divider{height:1px;background:var(--border);margin:8px 0;opacity:.6}
-.bubble-text{font-family:'JetBrains Mono',monospace;font-size:12.5px;white-space:pre-wrap;line-height:1.65;color:var(--text);max-height:360px;overflow-y:auto}
-.bubble-text.think{font-size:11.5px;color:var(--think);font-style:italic;max-height:220px}
+.bubble-divider{height:1px;background:var(--border);margin:8px 0;opacity:1}
+.bubble-text{font-family:'JetBrains Mono',monospace;font-size:13px;white-space:pre-wrap;line-height:1.65;color:var(--text);max-height:360px;overflow-y:auto}
+.bubble-text.think{color:var(--think);font-style:italic;max-height:220px}
 /* LLM 气泡（紫，左对齐，宽度固定避免流式时收缩） */
 .llm-card{border-left:3px solid var(--llm);background:var(--llm-bg);align-self:flex-start;width:92%}
 .llm-card .clabel .sec-title{font-family:'Lora',serif;font-size:12px;font-weight:600;color:var(--text);text-transform:none;letter-spacing:0;opacity:.85;margin-left:2px}
-.llm-card .markers{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)}
-.llm-card .markers .mkr{background:#fff;border:1px solid var(--result-border);color:var(--result);font-size:11px;padding:1px 8px;border-radius:10px;font-family:'JetBrains Mono',monospace}
 .rendered-md{font-family:'Lora',serif!important;font-size:14px!important;line-height:1.8!important;color:var(--text)!important;font-style:normal!important}
 .rendered-md p{margin:0 0 8px 0}.rendered-md p:last-child{margin-bottom:0}
 .rendered-md ul,.rendered-md ol{padding-left:22px;margin:4px 0 8px 0}
@@ -184,8 +194,6 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
 .sec-card .clabel{color:var(--result)}
 .sec-title{font-family:'Lora',serif;font-size:13px;font-weight:600;color:var(--text);margin-bottom:5px}
 .sec-summary{font-size:12.5px;color:var(--muted)}
-.markers{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}
-.mkr{background:#fff;border:1px solid var(--result-border);color:var(--result);font-size:11px;padding:1px 8px;border-radius:10px;font-family:'JetBrains Mono',monospace}
 /* Analysis（琥珀——结构化结果） */
 .analysis-card{border-left:3px solid var(--result);background:var(--result-bg)}
 .analysis-card .clabel{color:var(--result)}
@@ -200,7 +208,6 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
 .ref-card.ref-high{border-left-color:var(--green)}
 .ref-idx{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-bottom:3px}
 .ref-ttl{font-size:12.5px;color:var(--text);font-weight:500}
-.ref-yr{font-size:11.5px;color:var(--muted);margin-top:2px}
 .rbadge{display:inline-block;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:10px;letter-spacing:.05em;margin-left:6px;vertical-align:middle}
 .rh{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
 .rl{background:var(--bg);color:var(--muted);border:1px solid var(--border)}
@@ -222,7 +229,6 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
 <div id="hdr">
   <div id="logo">Knowledge<em>Base</em></div>
   <span id="badge">\u7b49\u5f85\u542f\u52a8\u2026</span>
-  <div id="prog-wrap"><div id="prog"></div></div>
   <span id="conn">\u8fde\u63a5\u4e2d</span>
 </div>
 <div id="layout">
@@ -245,7 +251,6 @@ function clearStream(){
   llmEl=null;llmContent=null;llmThinkEl=null;llmThinkSum=null;
   currentBody=null;lastToolCard=null;
   setPhase(1);
-  document.getElementById('prog').style.width='0%';
 }
 // Smart scroll: only auto-scroll when user is near bottom
 let userScrolledUp=false;
@@ -270,7 +275,6 @@ function setPhase(n){
     else{d.className='ph-dot';d.textContent=i;l.className='ph-lbl';}
   }
   // 进入第 n 阶段时，进度 = (n-1)/PHASE_MAX；done 事件才会把进度条填满到 100%
-  document.getElementById('prog').style.width=((n-1)/PHASE_MAX*100)+'%';
 }
 
 function addCard(el){
@@ -338,11 +342,24 @@ function handle(ev){
   else if(ev.type==='llm_done'){
     if(llmEl){
       const c=llmEl.querySelector('.cur');if(c)c.remove();
-      // 若思考段为空（关闭了 thinking 或模型未思考），隐藏思考小节与分隔线
       if(llmThinkEl&&!llmThinkEl.textContent.trim()){
         const ts=llmEl.querySelector('.think-sec');if(ts)ts.style.display='none';
         const td=llmEl.querySelector('.think-div');if(td)td.style.display='none';
       }
+      // 流式结束后：清理空白 → Markdown 渲染 → KaTeX 公式渲染
+      const outBox=llmEl.querySelector('.bubble-section:not(.think-sec) .bubble-text');
+      if(outBox&&llmContent){
+        const raw=(llmContent.textContent||'')
+          .replace(/\\t/g,'  ')
+          .replace(/[ ]{4,}/g,'   ')
+          .replace(/\\n{3,}/g,'\\n\\n')
+          .trim();
+        if(raw){
+          outBox.innerHTML=md(raw);
+          outBox.classList.add('rendered-md');
+        }
+      }
+      llmContent=null;
     }
   }
   else if(ev.type==='llm_input'){
@@ -399,13 +416,6 @@ function handle(ev){
         t.textContent=' \u00b7 '+(ev.title||'');
         cl.appendChild(t);
       }
-      const outBox=last.querySelector('.bubble-section:not(.think-sec) .bubble-text');
-      if(outBox && ev.summary){outBox.innerHTML=md(ev.summary);outBox.classList.add('rendered-md');}
-      if(ev.markers&&ev.markers.length&&!last.querySelector('.markers')){
-        const m=document.createElement('div');m.className='markers';
-        m.innerHTML=ev.markers.map(x=>'<span class="mkr">'+esc(x)+'</span>').join('');
-        last.appendChild(m);
-      }
       scroll();
     }else{
       // Fallback（极端异常路径）
@@ -441,13 +451,12 @@ function handle(ev){
   }
   else if(ev.type==='ref_result'){
     const high=ev.relevance==='high';
-    const badge='<span class="rbadge '+(high?'rh':'rl')+'">'+(high?'HIGH':'LOW')+'</span>';
-    const meta=(ev.doi?'<span style="color:var(--green);font-size:11px"> DOI\u2713</span>':'')+
-               (ev.has_pdf?'<span style="color:var(--green);font-size:11px"> PDF\u2713</span>':'');
+    const yearBadge=ev.year?'<span class="rbadge rh">'+esc(String(ev.year))+'</span>':'';
+    const doiBadge=ev.doi?'<span class="rbadge rh">DOI</span>':'';
+    const pdfBadge=ev.has_pdf?'<span class="rbadge rh">PDF</span>':'';
     const el=document.createElement('div');el.className='card ref-card'+(high?' ref-high':'');
-    el.innerHTML='<div class="ref-idx">['+ev.index+']'+badge+meta+'</div>'+
-      '<div class="ref-ttl">'+esc(ev.title)+'</div>'+
-      '<div class="ref-yr">'+esc(ev.year||'')+'</div>';
+    el.innerHTML='<div class="ref-idx">['+ev.index+']'+yearBadge+doiBadge+pdfBadge+'</div>'+
+      '<div class="ref-ttl">'+esc(ev.title)+'</div>';
     addCard(el);scroll();
   }
   else if(ev.type==='info'){
@@ -467,7 +476,6 @@ function handle(ev){
   }
   else if(ev.type==='done'){
     try{es.close();}catch(_){} // 防止 EventSource 自动重连回放整场
-    document.getElementById('prog').style.width='100%';
     for(let i=1;i<=PHASE_MAX;i++){const d=document.getElementById('d'+i);if(!d)continue;d.className='ph-dot done';d.textContent='\u2713';document.getElementById('l'+i).className='ph-lbl';}
     set('badge','\u5b8c\u6210 \u2713');set('conn','\u5df2\u5b8c\u6210');
     const el=document.createElement('div');el.className='done-card';
@@ -516,7 +524,7 @@ function scroll(){
 }
 </script>
 </body>
-</html>""".encode('utf-8')
+</html>""".replace("__MARKED_JS__", _MARKED_JS).replace("__PURIFY_JS__", _PURIFY_JS).encode('utf-8')
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -531,6 +539,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(HTML)))
+            self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             self.wfile.write(HTML)
 
@@ -546,8 +555,10 @@ class Handler(BaseHTTPRequestHandler):
                 buffered = list(_event_buffer)
                 _clients.append(q)
             try:
-                for data in buffered:
+                for i, data in enumerate(buffered):
                     self.wfile.write(f"data: {data}\n\n".encode())
+                    if (i + 1) % 50 == 0:
+                        self.wfile.flush()
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 with _clients_lock:
@@ -590,7 +601,7 @@ def call_llm_streaming(messages: list[dict]) -> str | None:
         with httpx.stream(
             "POST", OLLAMA_CHAT,
             json={"model": MODEL, "messages": messages, "stream": True,
-                  "think": ENABLE_THINKING, "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 4096}},
+                  "think": ENABLE_THINKING, "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 16384}},
             timeout=timeout,
         ) as resp:
             resp.raise_for_status()
@@ -741,7 +752,7 @@ def parse_phase2_output(text: str) -> tuple[str, list[str]]:
                     year = m.group(2) or m.group(3)
                     markers.append(f'{author} ({year})')
         i += 1
-    return summary[:200], list(dict.fromkeys(markers))
+    return summary, list(dict.fromkeys(markers))
 
 
 def extract_section_markers(section_text: str) -> list[str]:
@@ -830,10 +841,16 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                              "model": MODEL, "focus": focus, "md_path": str(md_path)}]
 
     def log(entry: dict):
+        entry.setdefault("timestamp", datetime.now().isoformat())
         raw_log.append(entry)
 
-    # ── \u9884\u63d0\u53d6\u5f15\u7528 ──────────────────────────────────────────────────────────────
+    def tprint(msg: str):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+    tprint("启动分析流程")
+    # ── 预提取引用 ──────────────────────────────────────────────────────────────
     broadcast({"type": "info", "msg": "\u63d0\u53d6\u5f15\u7528\u6587\u732e..."})
+    tprint("开始 extract_refs")
     r = _run_subprocess([sys.executable, "scripts/extract_refs.py", str(md_path)], "extract_refs")
     all_refs: list[dict] = []
     if r:
@@ -841,51 +858,54 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
             all_refs = json.loads(r.stdout)
         except Exception as e:
             broadcast({"type": "err", "msg": f"extract_refs \u8f93\u51fa\u89e3\u6790\u5931\u8d25: {e}"})
+    tprint(f"extract_refs 完成，{len(all_refs)} 条引用")
     broadcast({"type": "info", "msg": f"\u627e\u5230 {len(all_refs)} \u6761\u5f15\u7528\u6587\u732e"})
     log({"type": "refs_extracted", "count": len(all_refs)})
 
-    # ── \u9636\u6bb51\uff1a\u7ae0\u8282\u9009\u62e9\uff08\u7eaf\u4ee3\u7801\uff0c\u5173\u952e\u8bcd\u5339\u914d\uff09 ─────────────────────────────────────────
-    broadcast({"type": "iter", "n": 1, "max": 4, "label": "\u9636\u6bb51\uff1a\u7ae0\u8282\u9009\u62e9"})
+    # ── 阶段1：章节选择（LLM 根据关注重点选择） ─────────────────────────────────────
+    broadcast({"type": "iter", "n": 1, "max": 4, "label": "阶段1：章节选择"})
     sections_list = tool_list_sections(md_text)
 
-    focus_words = re.findall(r'[\w]+', focus.lower())
-    keyword_map = {
-        "\u7814\u7a76": ["research", "study", "method", "data", "approach"],
-        "\u65b9\u6cd5": ["method", "methodology", "data", "measur", "model", "sample", "construct"],
-        "\u7ed3\u8bba": ["result", "finding", "conclusion", "discussion"],
-        "\u7406\u8bba": ["theory", "theoretical", "background", "literature", "concept"],
-    }
-    expanded = set(focus_words)
-    for zh, en_list in keyword_map.items():
-        if zh in focus:
-            expanded.update(en_list)
+    candidates = [s for s in sections_list if s.get("body_chars", 0) >= 30]
+    section_lines = "\n".join(
+        f"{s['id']}. {s['title']}"
+        for s in candidates
+    )
+    sel_system = (
+        f"你是学术论文阅读助手。根据用户的关注重点，从章节列表中选出最相关的最多 {MAX_SECTIONS} 个章节。\n"
+        f"只输出一行，格式：选中：1, 3\n"
+        f"（用章节编号，逗号分隔，不要输出其他内容）"
+    )
+    sel_user = f"关注重点：{focus}\n\n章节列表：\n{section_lines}\n\n请选出最相关的最多 {MAX_SECTIONS} 个章节编号。"
+    tprint("Phase1 LLM 开始（章节选择）")
+    sel_text = _llm_call(sel_system, sel_user) or ""
+    tprint("Phase1 LLM 完成")
 
-    scored = []
-    for s in sections_list:
-        if s.get("body_chars", 0) < 30:  # skip heading-only sections (no real content)
-            continue
-        title_lower = s["title"].lower()
-        score = sum(1 for w in expanded if w in title_lower)
-        if score > 0:
-            scored.append((score, s["id"]))
-    scored.sort(reverse=True)
-    selected_ids = [sid for _, sid in scored[:MAX_SECTIONS]]
+    valid_ids = {s["id"] for s in candidates}
+    selected_ids: list[int] = []
+    m_sel = re.search(r'^\s*选中[:：]\s*([0-9,，\s]+)\s*$', sel_text, re.M)
+    for n in re.findall(r'\d+', m_sel.group(1) if m_sel else ''):
+        sid = int(n)
+        if sid in valid_ids and sid not in selected_ids:
+            selected_ids.append(sid)
+        if len(selected_ids) >= MAX_SECTIONS:
+            break
 
     if not selected_ids:
+        broadcast({"type": "warn", "msg": "LLM 未按格式输出章节选择，启用关键词 fallback"})
         skip = {"introduction", "abstract", "conclusion", "reference", "bibliograph", "acknowledgement"}
-        candidates = [s["id"] for s in sections_list
-                      if s.get("body_chars", 0) >= 30
-                      and not any(w in s["title"].lower() for w in skip)]
-        selected_ids = candidates[:MAX_SECTIONS] or list(range(min(MAX_SECTIONS, len(sections_list))))
+        selected_ids = [s["id"] for s in candidates
+                        if not any(w in s["title"].lower() for w in skip)][:MAX_SECTIONS]
+        if not selected_ids:
+            selected_ids = [s["id"] for s in candidates][:MAX_SECTIONS]
 
     title_map = {s["id"]: s["title"] for s in sections_list}
     matched_titles = [title_map.get(sid, f"Section {sid}") for sid in selected_ids]
     broadcast({"type": "tool_call", "tool": "select_sections",
                "args": {"total": len(sections_list), "selected": selected_ids, "titles": matched_titles}})
-    # 显示选择结果：用户现在看得到 select_sections 工具的用途和输出
     _sel_lines = "\n".join(f"  [{sid}] {t}" for sid, t in zip(selected_ids, matched_titles))
     broadcast({"type": "tool_result",
-               "content": f"\u4ece {len(sections_list)} \u4e2a\u7ae0\u8282\u4e2d\u9009\u51fa {len(selected_ids)} \u4e2a\u6700\u76f8\u5173\uff1a\n{_sel_lines}"})
+               "content": f"从 {len(sections_list)} 个章节中选出 {len(selected_ids)} 个最相关：\n{_sel_lines}"})
     log({"type": "phase1_selected", "ids": selected_ids, "titles": matched_titles})
 
     # ── \u9636\u6bb52\uff1a\u9010\u6bb5\u9605\u8bfb ──────────────────────────────────────────────────────────
@@ -897,6 +917,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     _headings_raw = [i for i, l in enumerate(_lines_raw) if re.match(r'^#{1,3}\s+', l)]
 
     for i, sid in enumerate(selected_ids):
+        tprint(f"Phase2 章节 {i+1}/{len(selected_ids)} 开始 (sid={sid})")
         broadcast({"type": "iter", "n": 2, "max": 4,
                    "label": f"\u9636\u6bb52\uff1a\u9605\u8bfb\u7ae0\u8282 {i+1}/{len(selected_ids)}"})
         title = title_map.get(sid, f"Section {sid}")
@@ -914,7 +935,9 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                    "content": f"读取章节 [{sid}] {title}（{full_len} 字符）"})
 
         user2 = f"关注重点：{focus}\n\n章节内容：\n{section_text}"
+        tprint(f"Phase2 LLM 开始 (sid={sid})")
         text2 = _llm_call(PHASE2_SYSTEM_TPL.format(focus=focus), user2)
+        tprint(f"Phase2 LLM 完成 (sid={sid})")
         log({"type": "phase2_response", "section_id": sid, "content": text2})
 
         summary, markers = parse_phase2_output(text2) if text2 else ("", [])
@@ -924,12 +947,22 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                    "summary": summary, "markers": markers})
 
     # ── \u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790 ──────────────────────────────────────────────────────────
+    tprint("Phase3 开始")
     broadcast({"type": "iter", "n": 3, "max": 4, "label": "\u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790"})
-    summaries = "\n".join(
-        f"- Section {s['id']}\uff08{s['title']}\uff09\uff1a{s['summary']}" for s in section_results
-    )
+    MAX_SUMMARY_CHARS = 6000
+    trimmed_sums, used = [], 0
+    for s in section_results:
+        remain = MAX_SUMMARY_CHARS - used
+        if remain <= 0:
+            break
+        part = s["summary"][:remain]
+        trimmed_sums.append(f"- Section {s['id']}（{s['title']}）：{part}")
+        used += len(part)
+    summaries = "\n".join(trimmed_sums)
     user3 = f"\u5173\u6ce8\u91cd\u70b9\uff1a{focus}\n\n\u5404\u7ae0\u8282\u6458\u8981\uff1a\n{summaries}"
+    tprint("Phase3 LLM 开始")
     analysis = _llm_call(PHASE3_SYSTEM_TPL.format(focus=focus), user3) or ""
+    tprint("Phase3 LLM 完成")
     if not analysis:
         broadcast({"type": "warn", "msg": "\u9636\u6bb53\uff1aLLM \u4e24\u6b21\u5747\u672a\u8fd4\u56de\uff0c\u5206\u6790\u4e3a\u7a7a"})
     else:
@@ -944,32 +977,38 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     broadcast({"type": "info",
                "msg": f"\u4ece\u5206\u6790\u4e2d\u5339\u914d\u5230 {len(matched_refs)} \u6761\u76f8\u5173\u5f15\u7528\uff08\u6807\u8bb0\uff1a{all_markers}\uff09\uff0c\u7eed\u5145\u5143\u6570\u636e\u2026"})
     log({"type": "phase4_matched", "markers": all_markers, "count": len(matched_refs)})
-    search_cache: dict = {}
     enriched: list[dict] = []
 
     for ref in all_refs:
-        idx = ref.get("index")
-        ref["relevance"] = "high" if idx in matched_indices else "low"
+        ref["relevance"] = "high" if ref.get("index") in matched_indices else "low"
         ref["reason"] = ""
-        ref_title = ref.get("title", "")
-        year = str(ref.get("year", ""))
+        enriched.append(ref)
 
-        if idx in matched_indices and ref_title:
-            r2 = _run_subprocess(
-                [sys.executable, "scripts/search_refs.py", ref_title, "--year", year],
-                f"search_refs[{idx}]"
-            )
-            if r2:
-                try:
-                    meta = json.loads(r2.stdout)
-                    search_cache[f"{ref_title[:50].lower()}|{year}"] = meta
-                    for k in ("doi", "pdf_url", "authors", "year"):
-                        if meta.get(k) and not ref.get(k):
-                            ref[k] = meta[k]
-                except Exception:
-                    pass
+    # 并行补全元数据（只处理 high refs），最多 4 个并发
+    high_to_enrich = [r for r in enriched if r.get("relevance") == "high" and r.get("title")]
 
-        # 只推送 high 引用到前端（low 已写入 refs.json，不在 UI 中渲染）
+    def _enrich_ref(ref: dict) -> None:
+        r2 = _run_subprocess(
+            [sys.executable, "scripts/search_refs.py", ref["title"], "--year", str(ref.get("year", ""))],
+            f"search_refs[{ref.get('index')}]"
+        )
+        if r2:
+            try:
+                meta = json.loads(r2.stdout)
+                for k in ("doi", "pdf_url", "authors", "year"):
+                    if meta.get(k) and not ref.get(k):
+                        ref[k] = meta[k]
+            except Exception:
+                pass
+
+    import concurrent.futures
+    tprint(f"Phase4 并行元数据补全开始，{len(high_to_enrich)} 条")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as exc:
+        list(exc.map(_enrich_ref, high_to_enrich))
+    tprint("Phase4 元数据补全完成")
+
+    # 元数据全部就绪后统一推送，所有卡片同时出现
+    for ref in enriched:
         if ref.get("relevance") == "high":
             broadcast({"type": "ref_result",
                        "index": ref.get("index"),
@@ -978,7 +1017,6 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                        "relevance": "high",
                        "doi": ref.get("doi", ""),
                        "has_pdf": bool(ref.get("pdf_url"))})
-        enriched.append(ref)
 
     # 若无匹配结果，给用户一个提示
     if not matched_indices:
@@ -1045,11 +1083,10 @@ def main():
 
     url = f"http://localhost:{args.port}"
     print(f"UI: {url}")
-    print(f"\u8bba\u6587: {md_path.name}")
-    print(f"\u5173\u6ce8\u91cd\u70b9: {args.focus}")
-    print("Ctrl+C \u9000\u51fa")
+    print(f"论文: {md_path.name}")
+    print(f"关注重点: {args.focus}")
+    print("Ctrl+C 退出")
 
-    time.sleep(0.3)
     webbrowser.open(url)
 
     loop_thread = threading.Thread(
