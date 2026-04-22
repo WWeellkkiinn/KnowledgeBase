@@ -710,20 +710,25 @@ def parse_phase2_output(text: str) -> tuple[str, list[str]]:
                 any_bracketed = False
                 for bm in re.finditer(r'\[([0-9,，\s\-\u2013]+)\]', raw):
                     any_bracketed = True
-                    block = bm.group(1)
-                    # 先尝试 range: "1-3" 或 "1–3"
+                    block = bm.group(1).strip()
+                    # 以负号开头的异常块（如 [-1-3]）直接跳过，避免被拆出 [1][3]
+                    if block.startswith(('-', '\u2013')):
+                        continue
+                    # range: "1-3" 或 "1–3"（lo ≥ 1、hi ≤ 500、跨度 ≤ 20）
                     rm = re.match(r'^\s*(\d+)\s*[\-\u2013]\s*(\d+)\s*$', block)
                     if rm:
                         lo, hi = int(rm.group(1)), int(rm.group(2))
-                        if 0 < hi - lo <= 20:
+                        if 1 <= lo <= hi <= 500 and hi - lo <= 20:
                             markers.extend(f'[{n}]' for n in range(lo, hi + 1))
-                            continue
+                        # 无论是否通过校验，整块 range 处理完都不再落入逗号分支，防止半截命中
+                        continue
                     # 逗号/空格分隔的数字列表
                     nums = re.findall(r'\d+', block)
                     markers.extend(f'[{n}]' for n in nums if 1 <= int(n) <= 500)
                 if not any_bracketed:
+                    # 裸数字兜底上限与 bracketed 分支统一为 500
                     bare = re.findall(r'(?<!\d)(\d{1,3})(?!\d)', raw)
-                    markers.extend(f'[{n}]' for n in bare if 1 <= int(n) <= 200)
+                    markers.extend(f'[{n}]' for n in bare if 1 <= int(n) <= 500)
                 # APA with accented chars: "García (2020)", "Smith et al., 2020", "Smith & Jones (2020)"
                 _author = (r'[A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+'
                            r'(?:\s+et\s+al\.|\s+&\s+[A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+'
