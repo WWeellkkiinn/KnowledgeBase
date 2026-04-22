@@ -20,14 +20,13 @@ import httpx
 
 OLLAMA_BASE = "http://<ollama-host>:13811"
 OLLAMA_CHAT = f"{OLLAMA_BASE}/api/chat"
-MODEL = "supergemma4-26b"
-SECTION_CHAR_LIMIT = 200
+MODEL = "gemma4-31b"
+ENABLE_THINKING = True
 MAX_SECTIONS = 4
 
 # ── Phase prompts (each call fully independent, no shared history) ─────────────
 
-# Phase 2: LLM only writes summary; citations are extracted by Python from full section
-PHASE2_SYSTEM = "\u9605\u8bfb\u4ee5\u4e0b\u7ae0\u8282\u5185\u5bb9\uff0c\u752850\u5b57\u4ee5\u5185\u6982\u62ec\u672c\u7ae0\u8282\u4e0e\u5173\u6ce8\u91cd\u70b9\u7684\u5173\u7cfb\u3002\u53ea\u8f93\u51fa\u6982\u62ec\u6587\u5b57\uff0c\u4e0d\u8981\u5176\u4ed6\u5185\u5bb9\u3002"
+PHASE2_SYSTEM = "阅读以下章节内容，完成两件事：\n1. 用50字以内概括本章节与关注重点的关系\n2. 只列出本章节中与关注重点直接相关的引用标记（如[1][3]或Smith(2020)），不相关的不要列出\n\n严格按以下格式输出两行：\n摘要：<50字以内>\n引用：[1][3] 或 Smith(2020), Jones et al.(2021)\n（若无相关引用则写：引用：无）"
 
 PHASE3_SYSTEM = "\u6839\u636e\u4ee5\u4e0b\u5404\u7ae0\u8282\u6458\u8981\uff0c\u9488\u5bf9\u5173\u6ce8\u91cd\u70b9\u5199\u51fa\u6df1\u5ea6\u5206\u6790\uff08300\u5b57\u4ee5\u5185\uff09\uff0c\u6db5\u76d6\uff1a\u6838\u5fc3\u65b9\u6cd5\u8bba\u51b3\u7b56\u3001\u64cd\u4f5c\u5316\u8def\u5f84\u3001\u6f5c\u5728\u5c40\u9650\u6027\u3002\u53ea\u8f93\u51fa\u5206\u6790\u6587\u5b57\u3002"
 
@@ -423,7 +422,7 @@ def call_llm_streaming(messages: list[dict]) -> str | None:
         with httpx.stream(
             "POST", OLLAMA_CHAT,
             json={"model": MODEL, "messages": messages, "stream": True,
-                  "think": True, "options": {"temperature": 0.1, "num_ctx": 8192}},
+                  "think": ENABLE_THINKING, "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 4096}},
             timeout=timeout,
         ) as resp:
             resp.raise_for_status()
@@ -472,12 +471,19 @@ def call_llm_streaming(messages: list[dict]) -> str | None:
 # ── Tool implementations ──────────────────────────────────────────────────────
 
 def tool_list_sections(md_text: str) -> list[dict]:
+    lines = md_text.splitlines()
+    heading_indices = [i for i, l in enumerate(lines) if re.match(r'^#{1,3}\s+', l)]
     sections = []
-    for i, line in enumerate(md_text.splitlines()):
-        m = re.match(r'^(#{1,3})\s+(.+)', line)
-        if m:
-            sections.append({"id": len(sections), "level": len(m.group(1)),
-                              "title": m.group(2).strip(), "line": i + 1})
+    for idx, line_i in enumerate(heading_indices):
+        m = re.match(r'^(#{1,3})\s+(.+)', lines[line_i])
+        if not m:
+            continue
+        end = heading_indices[idx + 1] if idx + 1 < len(heading_indices) else len(lines)
+        body = "\n".join(l for l in lines[line_i + 1:end] if l.strip())
+        sections.append({"id": idx, "level": len(m.group(1)),
+                          "title": m.group(2).strip(), "line": line_i + 1,
+                          "chars": len("\n".join(lines[line_i:end])),
+                          "body_chars": len(body)})
     return sections
 
 
@@ -488,11 +494,7 @@ def tool_read_section(md_text: str, section_id: int) -> str:
         return f"[ERROR] section_id {section_id} out of range ({len(headings)} sections)"
     start = headings[section_id]
     end = headings[section_id + 1] if section_id + 1 < len(headings) else len(lines)
-    content = "\n".join(lines[start:end])
-    truncated = content[:SECTION_CHAR_LIMIT]
-    if len(content) > SECTION_CHAR_LIMIT:
-        truncated += f"\n[\u622a\u65ad\uff0c\u539f\u957f {len(content)} \u5b57\u7b26]"
-    return truncated
+    return "\n".join(lines[start:end])
 
 
 def match_markers_to_refs(markers: list[str], all_refs: list[dict]) -> list[dict]:
@@ -515,9 +517,46 @@ def match_markers_to_refs(markers: list[str], all_refs: list[dict]) -> list[dict
     return [r for r in all_refs if r.get('index') in matched_indices]
 
 
-def parse_phase2_output(text: str) -> str:
-    """LLM now only outputs summary text (no citations)."""
-    return text.strip()[:200]  # guard against runaway output
+def parse_phase2_output(text: str) -> tuple[str, list[str]]:
+    """Parse LLM output into (summary, relevant_markers)."""
+    summary = ""
+    markers: list[str] = []
+    lines = text.strip().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("摘要：") or line.startswith("摘要:"):
+            parts = [line.split("：", 1)[-1].split(":", 1)[-1].strip()]
+            # collect continuation lines until next label or end
+            j = i + 1
+            while j < len(lines) and not re.match(r'^(摘要|引用)[：:]', lines[j].strip()):
+                parts.append(lines[j].strip())
+                j += 1
+            summary = " ".join(p for p in parts if p)
+            i = j
+            continue
+        if line.startswith("引用：") or line.startswith("引用:"):
+            raw = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            if raw and raw != "无":
+                # numeric: [1][3] or bare "17"
+                bracketed = re.findall(r'\[(\d+)\]', raw)
+                markers.extend(f'[{n}]' for n in bracketed)
+                if not bracketed:
+                    bare = re.findall(r'(?<!\d)(\d{1,3})(?!\d)', raw)
+                    markers.extend(f'[{n}]' for n in bare if 1 <= int(n) <= 200)
+                # APA with accented chars: "García (2020)", "Smith et al., 2020", "Smith & Jones (2020)"
+                _author = (r'[A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+'
+                           r'(?:\s+et\s+al\.|\s+&\s+[A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+'
+                           r'(?:\s+et\s+al\.)?)?')
+                for m in re.finditer(
+                    rf'({_author})(?:\s*[\(\（](\d{{4}})[\)\）]|,\s*(\d{{4}}))',
+                    raw
+                ):
+                    author = m.group(1).strip()
+                    year = m.group(2) or m.group(3)
+                    markers.append(f'{author} ({year})')
+        i += 1
+    return summary[:200], list(dict.fromkeys(markers))
 
 
 def extract_section_markers(section_text: str) -> list[str]:
@@ -630,6 +669,8 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
 
     scored = []
     for s in sections_list:
+        if s.get("body_chars", 0) < 30:  # skip heading-only sections (no real content)
+            continue
         title_lower = s["title"].lower()
         score = sum(1 for w in expanded if w in title_lower)
         if score > 0:
@@ -640,7 +681,8 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     if not selected_ids:
         skip = {"introduction", "abstract", "conclusion", "reference", "bibliograph", "acknowledgement"}
         candidates = [s["id"] for s in sections_list
-                      if not any(w in s["title"].lower() for w in skip)]
+                      if s.get("body_chars", 0) >= 30
+                      and not any(w in s["title"].lower() for w in skip)]
         selected_ids = candidates[:MAX_SECTIONS] or list(range(min(MAX_SECTIONS, len(sections_list))))
 
     title_map = {s["id"]: s["title"] for s in sections_list}
@@ -670,18 +712,15 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
             full_len = 0
         # Extract citation markers from FULL section (before truncation)
         full_text_raw = "\n".join(_lines_raw[st:en]) if sid < len(_headings_raw) else ""
-        markers = extract_section_markers(full_text_raw)
-
         section_text = tool_read_section(md_text, sid)
-        sent_len = min(full_len, SECTION_CHAR_LIMIT)
         broadcast({"type": "tool_result",
-                   "content": f"\u5168\u6587 {full_len} \u5b57\u7b26\uff0c\u622a\u53d6\u524d {sent_len} \u5b57\u7b26\u9001\u7ed9 LLM\uff0c\u63d0\u53d6\u5f15\u7528\u6807\u8bb0 {len(markers)} \u4e2a"})
+                   "content": f"读取章节 [{sid}] {title}（{full_len} 字符）"})
 
-        user2 = f"\u5173\u6ce8\u91cd\u70b9\uff1a{focus}\n\n\u7ae0\u8282\u5185\u5bb9\uff1a\n{section_text}"
+        user2 = f"关注重点：{focus}\n\n章节内容：\n{section_text}"
         text2 = _llm_call(PHASE2_SYSTEM, user2)
         log({"type": "phase2_response", "section_id": sid, "content": text2})
 
-        summary = parse_phase2_output(text2) if text2 else ""
+        summary, markers = parse_phase2_output(text2) if text2 else ("", [])
         all_markers.extend(markers)
         section_results.append({"id": sid, "title": title, "summary": summary, "markers": markers})
         broadcast({"type": "section_done", "id": sid, "title": title,
@@ -762,7 +801,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     (output_dir / "refs.json").write_text(
         json.dumps(enriched, ensure_ascii=False, indent=2), encoding="utf-8")
     todo_lines = [
-        f"[{r['index']}] {r['title']} | {r.get('doi') or '\u2014'} | {r.get('pdf_url') or 'NOT_FOUND'}"
+        f"[{r['index']}] {r['title']} | {r.get('doi') or '—'} | {r.get('pdf_url') or 'NOT_FOUND'}"
         for r in high_refs
     ]
     (output_dir / "todo_download.txt").write_text("\n".join(todo_lines), encoding="utf-8")
