@@ -21,14 +21,30 @@ import httpx
 OLLAMA_BASE = "http://<ollama-host>:13811"
 OLLAMA_CHAT = f"{OLLAMA_BASE}/api/chat"
 MODEL = "gemma4-31b"
-ENABLE_THINKING = True
+ENABLE_THINKING = False
 MAX_SECTIONS = 4
 
 # ── Phase prompts (each call fully independent, no shared history) ─────────────
 
-PHASE2_SYSTEM = "阅读以下章节内容，完成两件事：\n1. 用50字以内概括本章节与关注重点的关系\n2. 只列出本章节中与关注重点直接相关的引用标记（如[1][3]或Smith(2020)），不相关的不要列出\n\n严格按以下格式输出两行：\n摘要：<50字以内>\n引用：[1][3] 或 Smith(2020), Jones et al.(2021)\n（若无相关引用则写：引用：无）"
+PHASE2_SYSTEM_TPL = (
+    "你正在从学术论文中提取与【关注重点】相关的信息。\n"
+    "关注重点：{focus}\n\n"
+    "阅读以下章节内容，完成两件事：\n"
+    "1. 用50字以内概括本章节与该关注重点的关系。若关联不大，直接写\"本章节与关注重点关联较弱\"。\n"
+    "2. 只挑选本章节中**实际支撑或直接涉及该关注重点**的引用标记（如[1][3]或Smith(2020)）；\n"
+    "   与关注重点无关的引用一律不要列出，宁缺毋滥。\n\n"
+    "严格按以下格式输出两行：\n"
+    "摘要：<50字以内>\n"
+    "引用：[1][3] 或 Smith(2020), Jones et al.(2021)\n"
+    "（若本章节没有与关注重点相关的引用，写：引用：无）"
+)
 
-PHASE3_SYSTEM = "\u6839\u636e\u4ee5\u4e0b\u5404\u7ae0\u8282\u6458\u8981\uff0c\u9488\u5bf9\u5173\u6ce8\u91cd\u70b9\u5199\u51fa\u6df1\u5ea6\u5206\u6790\uff08300\u5b57\u4ee5\u5185\uff09\uff0c\u6db5\u76d6\uff1a\u6838\u5fc3\u65b9\u6cd5\u8bba\u51b3\u7b56\u3001\u64cd\u4f5c\u5316\u8def\u5f84\u3001\u6f5c\u5728\u5c40\u9650\u6027\u3002\u53ea\u8f93\u51fa\u5206\u6790\u6587\u5b57\u3002"
+PHASE3_SYSTEM_TPL = (
+    "你正在围绕【关注重点】做论文分析。\n"
+    "关注重点：{focus}\n\n"
+    "根据以下各章节摘要，针对该关注重点写出深度分析（300字以内），涵盖：\n"
+    "核心方法论决策、操作化路径、潜在局限性。只输出分析文字。"
+)
 
 # ── SSE broadcast ─────────────────────────────────────────────────────────────
 
@@ -56,15 +72,27 @@ HTML = """\
 <title>KnowledgeBase \u5206\u6790</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"
+  integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz"
+  crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"
+  integrity="sha384-3HPB1XT51W3gGRxAmZ+qbZwRpRlFQL632y8x+adAqCr4Wp3TaWwCLSTAJJKbyWEK"
+  crossorigin="anonymous"></script>
 <style>
 :root{
   --bg:#F5F1E8;--surface:#FEFCF8;--border:#E2DDD4;
   --text:#2A2620;--muted:#8C867C;--faint:#C4BFB8;
-  --accent:#4338CA;--accent-bg:#EEF2FF;--accent-border:#C7D2FE;
-  --green:#166534;--green-bg:#F0FDF4;--green-border:#86EFAC;
+  /* 语义色：每种角色一种颜色，全局统一 */
+  --llm:#4338CA;--llm-bg:#EEF2FF;--llm-border:#C7D2FE;          /* LLM 输出（紫） */
+  --prompt:#64748B;--prompt-bg:#F1F5F9;--prompt-border:#CBD5E1; /* Prompt（蓝灰） */
+  --tool:#166534;--tool-bg:#F0FDF4;--tool-border:#86EFAC;       /* 工具调用（绿） */
+  --result:#92400E;--result-bg:#FFFBEB;--result-border:#FCD34D; /* 结构化结果/章节/分析（琥珀） */
   --amber:#92400E;--amber-bg:#FFFBEB;--amber-border:#FCD34D;
   --red:#991B1B;--red-bg:#FEF2F2;--red-border:#FECACA;
   --think:#6B7280;--think-bg:#F9FAFB;
+  /* 兼容旧别名（过渡期，避免大面积替换） */
+  --accent:var(--llm);--accent-bg:var(--llm-bg);--accent-border:var(--llm-border);
+  --green:var(--tool);--green-bg:var(--tool-bg);--green-border:var(--tool-border);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
@@ -94,54 +122,79 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
 .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 15px;animation:fadeUp .2s ease;word-break:break-word}
 @keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .clabel{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;margin-bottom:7px}
-/* Phase collapsible group */
-.phase-group{display:flex;flex-direction:column;gap:8px}
-.ph-hdr{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 12px;font-size:11.5px;font-weight:600;color:var(--accent);margin-top:4px;animation:fadeUp .2s ease;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px}
+/* Phase collapsible group — 一级：阶段头（柔和） */
+.phase-group{display:flex;flex-direction:column;gap:0;margin-top:16px}
+.phase-group:first-child{margin-top:0}
+.ph-hdr{background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-left:3px solid var(--accent);
+  border-radius:6px;padding:9px 14px;
+  font-family:'Lora',serif;font-size:14px;font-weight:600;
+  margin:0;animation:fadeUp .2s ease;cursor:pointer;user-select:none;
+  display:flex;align-items:center;gap:10px}
 .ph-hdr:hover{background:var(--accent-bg)}
-.ph-toggle{font-size:9px;transition:transform .2s;display:inline-block}
-.phase-body{display:flex;flex-direction:column;gap:8px}
-/* Info card (neutral, not warning) */
-.info-card{border-left:2px solid var(--accent-border);background:var(--accent-bg)}
-.info-card .clabel{color:#818CF8}
-.info-txt{font-size:12px;color:var(--muted)}
-/* LLM */
-.llm-card{border-left:3px solid var(--accent);background:#FAFBFF}
-.llm-card .clabel{color:var(--accent)}
-.think-wrap{border:1px solid #E5E7EB;border-radius:5px;margin-bottom:8px;background:var(--think-bg)}
-.think-wrap summary{cursor:pointer;font-size:11px;color:var(--think);padding:5px 10px;list-style:none;user-select:none;display:flex;align-items:center;gap:5px}
-.think-wrap summary::-webkit-details-marker{display:none}
-.think-wrap summary::before{content:'\25B6';font-size:7px;transition:transform .2s}
-details[open].think-wrap summary::before{transform:rotate(90deg)}
-.think-cnt{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--think);font-style:italic;max-height:200px;overflow-y:auto;padding:8px 10px;border-top:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.55}
-.llm-out{font-family:'JetBrains Mono',monospace;font-size:12.5px;white-space:pre-wrap;line-height:1.65;color:var(--text)}
-.cur{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:text-bottom;animation:blink 1s step-end infinite;border-radius:1px}
+.ph-toggle{font-size:9px;transition:transform .2s;display:inline-block;opacity:.55;color:var(--accent)}
+/* 二级：阶段内容缩进 + 虚线左边框体现从属 */
+.phase-body{display:flex;flex-direction:column;gap:8px;margin-left:18px;
+  padding:10px 0 6px 14px;border-left:2px dashed var(--border)}
+/* 二级头：子阶段（如"阅读章节 2/4"） */
+.subphase-hdr{font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;
+  color:var(--muted);letter-spacing:.04em;text-transform:uppercase;
+  margin:6px 0 2px 0;padding-left:4px;border-left:3px solid var(--faint);
+  padding-top:2px;padding-bottom:2px}
+/* Info card (neutral 蓝灰) */
+.info-card{border-left:2px solid var(--prompt-border);background:var(--prompt-bg)}
+.info-card .clabel{color:var(--prompt)}
+.info-txt{font-size:12px;color:var(--prompt)}
+/* 气泡共用：用内部小节 + 分隔线组织 System/User 或 思考/输出 */
+.bubble-section{padding:2px 0}
+.bubble-label{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;opacity:.8}
+.bubble-divider{height:1px;background:var(--border);margin:8px 0;opacity:.6}
+.bubble-text{font-family:'JetBrains Mono',monospace;font-size:12.5px;white-space:pre-wrap;line-height:1.65;color:var(--text);max-height:360px;overflow-y:auto}
+.bubble-text.think{font-size:11.5px;color:var(--think);font-style:italic;max-height:220px}
+/* LLM 气泡（紫，左对齐，宽度固定避免流式时收缩） */
+.llm-card{border-left:3px solid var(--llm);background:var(--llm-bg);align-self:flex-start;width:92%}
+.llm-card .clabel .sec-title{font-family:'Lora',serif;font-size:12px;font-weight:600;color:var(--text);text-transform:none;letter-spacing:0;opacity:.85;margin-left:2px}
+.llm-card .markers{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)}
+.llm-card .markers .mkr{background:#fff;border:1px solid var(--result-border);color:var(--result);font-size:11px;padding:1px 8px;border-radius:10px;font-family:'JetBrains Mono',monospace}
+.rendered-md{font-family:'Lora',serif!important;font-size:14px!important;line-height:1.8!important;color:var(--text)!important;font-style:normal!important}
+.rendered-md p{margin:0 0 8px 0}.rendered-md p:last-child{margin-bottom:0}
+.rendered-md ul,.rendered-md ol{padding-left:22px;margin:4px 0 8px 0}
+.rendered-md strong{font-weight:600}
+.rendered-md code{font-family:'JetBrains Mono',monospace!important;font-size:12.5px!important;background:#fff;padding:1px 4px;border-radius:3px;font-style:normal!important}
+.rendered-md pre{font-family:'JetBrains Mono',monospace!important;font-size:12px!important;background:#fff;padding:8px 10px;border-radius:4px;overflow-x:auto;font-style:normal!important}
+.llm-card .clabel{color:var(--llm);display:flex;align-items:center;gap:6px}
+.cur{display:inline-block;width:7px;height:14px;background:var(--llm);vertical-align:text-bottom;animation:blink 1s step-end infinite;border-radius:1px;margin-left:2px}
 @keyframes blink{50%{opacity:0}}
-/* Prompt */
-.prompt-card{background:#F8F9FF;border-left:2px solid var(--accent-border)}
-.prompt-card .clabel{color:#818CF8}
-.prompt-card details summary{cursor:pointer;font-size:12px;color:#818CF8;padding:1px 0}
-.prompt-card details summary::-webkit-details-marker{display:none}
-.prompt-card pre{font-family:'JetBrains Mono',monospace;font-size:11px;white-space:pre-wrap;color:var(--muted);margin-top:5px;max-height:110px;overflow-y:auto}
-/* Tool */
-.tool-card{border-left:3px solid var(--green);background:var(--green-bg)}
-.tool-card .clabel{color:var(--green)}
-.tool-name{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:var(--green)}
-.tool-args{font-size:12px;color:var(--muted);margin-top:3px}
-/* Result */
+/* Prompt 气泡（蓝灰，右对齐——"用户"一侧） */
+.prompt-card{background:var(--prompt-bg);border:1px solid var(--prompt-border);border-right:3px solid var(--prompt);align-self:flex-end;width:92%}
+.prompt-card .clabel{color:var(--prompt);text-align:right}
+/* Tool（绿）—— 调用与结果合并在同一张卡，见 Block 4 */
+.tool-card{border-left:3px solid var(--tool);background:var(--tool-bg)}
+.tool-card .clabel{color:var(--tool)}
+.tool-name{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:var(--tool)}
+.tool-args{font-size:12px;color:#374151;margin-top:3px}
+.tool-result{margin-top:8px;padding-top:6px;border-top:1px dashed var(--tool-border);font-size:12px;color:#374151;max-height:120px;overflow-y:auto;white-space:pre-wrap}
+.tool-result-label{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--tool);margin-bottom:3px;opacity:.75}
+/* Result card（fallback：没有匹配上的 tool_result） */
 .result-card{border-left:2px solid var(--border);background:var(--bg)}
 .result-card .clabel{color:var(--muted)}
 .result-text{font-size:12px;color:var(--muted);max-height:90px;overflow-y:auto;white-space:pre-wrap}
-/* Section */
-.sec-card{border-left:3px solid var(--green);background:var(--green-bg)}
-.sec-card .clabel{color:var(--green)}
+/* Section（琥珀——结构化结果） */
+.sec-card{border-left:3px solid var(--result);background:var(--result-bg)}
+.sec-card .clabel{color:var(--result)}
 .sec-title{font-family:'Lora',serif;font-size:13px;font-weight:600;color:var(--text);margin-bottom:5px}
 .sec-summary{font-size:12.5px;color:var(--muted)}
 .markers{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}
-.mkr{background:#fff;border:1px solid var(--green-border);color:var(--green);font-size:11px;padding:1px 8px;border-radius:10px;font-family:'JetBrains Mono',monospace}
-/* Analysis */
-.analysis-card{border-left:3px solid var(--accent);background:var(--accent-bg)}
-.analysis-card .clabel{color:var(--accent)}
-.analysis-text{font-family:'Lora',serif;font-size:14px;line-height:1.8;color:var(--text);white-space:pre-wrap}
+.mkr{background:#fff;border:1px solid var(--result-border);color:var(--result);font-size:11px;padding:1px 8px;border-radius:10px;font-family:'JetBrains Mono',monospace}
+/* Analysis（琥珀——结构化结果） */
+.analysis-card{border-left:3px solid var(--result);background:var(--result-bg)}
+.analysis-card .clabel{color:var(--result)}
+.analysis-text{font-family:'Lora',serif;font-size:14px;line-height:1.8;color:var(--text)}
+.analysis-text p{margin:0 0 10px 0}
+.analysis-text p:last-child{margin-bottom:0}
+.analysis-text ul,.analysis-text ol{padding-left:22px;margin:4px 0 10px 0}
+.analysis-text code{font-family:'JetBrains Mono',monospace;font-size:12.5px;background:#fff;padding:1px 4px;border-radius:3px}
+.analysis-text strong{color:var(--text);font-weight:600}
 /* Ref */
 .ref-card{border-left:2px solid var(--border);padding:8px 13px;background:var(--surface)}
 .ref-card.ref-high{border-left-color:var(--green)}
@@ -178,14 +231,22 @@ details[open].think-wrap summary::before{transform:rotate(90deg)}
     <div class="ph"><div class="ph-dot" id="d1">1</div><div class="ph-lbl" id="l1">\u7ae0\u8282\u9009\u62e9</div></div>
     <div class="ph"><div class="ph-dot" id="d2">2</div><div class="ph-lbl" id="l2">\u9010\u6bb5\u9605\u8bfb</div></div>
     <div class="ph"><div class="ph-dot" id="d3">3</div><div class="ph-lbl" id="l3">\u7efc\u5408\u5206\u6790</div></div>
-    <div class="ph"><div class="ph-dot" id="d4">4</div><div class="ph-lbl" id="l4">\u5f15\u7528\u5339\u914d</div></div>
-    <div class="ph"><div class="ph-dot" id="d5">5</div><div class="ph-lbl" id="l5">\u5143\u6570\u636e\u8865\u5168</div></div>
+    <div class="ph"><div class="ph-dot" id="d4">4</div><div class="ph-lbl" id="l4">\u5f15\u7528\u4e0e\u5143\u6570\u636e</div></div>
   </div>
   <div id="stream"></div>
 </div>
 <script>
 let llmEl=null,llmContent=null,llmThinkEl=null,llmThinkSum=null;
 let currentBody=null; // current phase body container
+let lastToolCard=null; // 最近一次 tool_call 的卡，用于把 tool_result 追加到同卡
+let currentSessionId=null; // 跨会话切换时用它检测新会话
+function clearStream(){
+  document.getElementById('stream').innerHTML='';
+  llmEl=null;llmContent=null;llmThinkEl=null;llmThinkSum=null;
+  currentBody=null;lastToolCard=null;
+  setPhase(1);
+  document.getElementById('prog').style.width='0%';
+}
 // Smart scroll: only auto-scroll when user is near bottom
 let userScrolledUp=false;
 window.addEventListener('scroll',()=>{
@@ -197,14 +258,19 @@ es.onopen=()=>set('conn','\u5df2\u8fde\u63a5');
 es.onerror=()=>set('conn','\u8fde\u63a5\u65ad\u5f00');
 es.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(x){console.error(x,e.data);}};
 
+const PHASE_MAX=4;
 function setPhase(n){
-  for(let i=1;i<=5;i++){
+  // 夹紧到 [1, PHASE_MAX]，防御异常输入导致负宽/越界
+  n=Math.max(1,Math.min(PHASE_MAX,n|0));
+  for(let i=1;i<=PHASE_MAX;i++){
     const d=document.getElementById('d'+i),l=document.getElementById('l'+i);
+    if(!d||!l)continue;
     if(i<n){d.className='ph-dot done';d.textContent='\u2713';l.className='ph-lbl';}
     else if(i===n){d.className='ph-dot active';d.textContent=i;l.className='ph-lbl active';}
     else{d.className='ph-dot';d.textContent=i;l.className='ph-lbl';}
   }
-  document.getElementById('prog').style.width=(Math.min(n-1,4)/4*100)+'%';
+  // 进入第 n 阶段时，进度 = (n-1)/PHASE_MAX；done 事件才会把进度条填满到 100%
+  document.getElementById('prog').style.width=((n-1)/PHASE_MAX*100)+'%';
 }
 
 function addCard(el){
@@ -213,10 +279,19 @@ function addCard(el){
 
 function handle(ev){
   const s=document.getElementById('stream');
+  if(ev.type==='session_start'){
+    // 新会话：若前端曾显示过上一次会话的内容，清屏后重新接收
+    if(currentSessionId&&currentSessionId!==ev.session_id){clearStream();}
+    currentSessionId=ev.session_id;
+    set('badge',ev.md_name||'\u4f1a\u8bdd\u5f00\u59cb');
+    return;
+  }
   if(ev.type==='iter'){
-    set('badge',ev.label||(ev.n+'/5'));
+    set('badge',ev.label||(ev.n+'/'+PHASE_MAX));
     setPhase(ev.n||1);
+    // 不再强制折叠旧阶段，尊重用户正在阅读的上下文；只在用户主动点阶段头时折叠
     llmEl=null;llmContent=null;llmThinkEl=null;llmThinkSum=null;
+    lastToolCard=null;
     // Create collapsible phase group
     const group=document.createElement('div');group.className='phase-group';
     const hdr=document.createElement('div');hdr.className='ph-hdr';
@@ -235,24 +310,27 @@ function handle(ev){
     scroll();
   }
   else if(ev.type==='llm_start'){
+    lastToolCard=null; // LLM 启动后不再向之前的 tool-card 追加结果
     llmEl=document.createElement('div');llmEl.className='card llm-card';
     llmEl.innerHTML=
-      '<div class="clabel">&#129302; LLM \u8f93\u51fa</div>'+
-      '<details class="think-wrap" open><summary class="think-sum">\u601d\u8003\u4e2d\u2026</summary>'+
-      '<div class="think-cnt"></div></details>'+
-      '<div class="llm-out"><span class="cnt"></span><span class="cur"></span></div>';
+      '<div class="clabel">&#129302; LLM</div>'+
+      '<div class="bubble-section think-sec">'+
+        '<div class="bubble-label">\u601d\u8003</div>'+
+        '<div class="bubble-text think cnt-think"></div>'+
+      '</div>'+
+      '<div class="bubble-divider think-div"></div>'+
+      '<div class="bubble-section">'+
+        '<div class="bubble-label">\u8f93\u51fa</div>'+
+        '<div class="bubble-text"><span class="cnt"></span><span class="cur"></span></div>'+
+      '</div>';
     addCard(llmEl);
     llmContent=llmEl.querySelector('.cnt');
-    llmThinkEl=llmEl.querySelector('.think-cnt');
-    llmThinkSum=llmEl.querySelector('.think-sum');
+    llmThinkEl=llmEl.querySelector('.cnt-think');
+    llmThinkSum=null;
     scroll();
   }
   else if(ev.type==='llm_thinking'){
-    if(llmThinkEl){
-      llmThinkEl.textContent+=ev.text;
-      if(llmThinkSum)llmThinkSum.textContent='\u601d\u8003\u94fe \u00b7 '+llmThinkEl.textContent.length+'\u5b57';
-      scroll();
-    }
+    if(llmThinkEl){llmThinkEl.textContent+=ev.text;scroll();}
   }
   else if(ev.type==='llm_token'){
     if(llmContent){llmContent.textContent+=ev.text;scroll();}
@@ -260,15 +338,26 @@ function handle(ev){
   else if(ev.type==='llm_done'){
     if(llmEl){
       const c=llmEl.querySelector('.cur');if(c)c.remove();
-      const tw=llmEl.querySelector('.think-wrap');
-      if(tw){if(llmThinkEl&&!llmThinkEl.textContent)tw.style.display='none';else tw.removeAttribute('open');}
+      // 若思考段为空（关闭了 thinking 或模型未思考），隐藏思考小节与分隔线
+      if(llmThinkEl&&!llmThinkEl.textContent.trim()){
+        const ts=llmEl.querySelector('.think-sec');if(ts)ts.style.display='none';
+        const td=llmEl.querySelector('.think-div');if(td)td.style.display='none';
+      }
     }
   }
   else if(ev.type==='llm_input'){
+    lastToolCard=null;
     const el=document.createElement('div');el.className='card prompt-card';
     el.innerHTML='<div class="clabel">\u2192 Prompt</div>'+
-      '<details><summary>\u2630 System</summary><pre>'+esc(ev.system)+'</pre></details>'+
-      '<details><summary>\u2630 User</summary><pre>'+esc(ev.user)+'</pre></details>';
+      '<div class="bubble-section">'+
+        '<div class="bubble-label">System</div>'+
+        '<div class="bubble-text">'+esc(ev.system)+'</div>'+
+      '</div>'+
+      '<div class="bubble-divider"></div>'+
+      '<div class="bubble-section">'+
+        '<div class="bubble-label">User</div>'+
+        '<div class="bubble-text">'+esc(ev.user)+'</div>'+
+      '</div>';
     addCard(el);scroll();
   }
   else if(ev.type==='tool_call'){
@@ -282,29 +371,73 @@ function handle(ev){
     el.innerHTML='<div class="clabel">&#9881; \u5de5\u5177\u8c03\u7528</div>'+
       '<div class="tool-name">'+esc(ev.tool)+'</div>'+
       '<div class="tool-args">'+esc(JSON.stringify(displayArgs))+'</div>';
-    addCard(el);scroll();
+    addCard(el);
+    lastToolCard=el;
+    scroll();
   }
   else if(ev.type==='tool_result'){
-    const el=document.createElement('div');el.className='card result-card';
-    el.innerHTML='<div class="clabel">\u2190 \u7ed3\u679c</div><div class="result-text">'+esc(ev.content)+'</div>';
-    addCard(el);scroll();
+    // 优先把结果追加到最近一张未收到结果的 tool-card；否则兜底创建独立 result-card
+    if(lastToolCard&&!lastToolCard.querySelector('.tool-result')){
+      const r=document.createElement('div');r.className='tool-result';
+      r.innerHTML='<div class="tool-result-label">\u2190 \u7ed3\u679c</div>'+esc(ev.content);
+      lastToolCard.appendChild(r);
+      scroll();
+    }else{
+      const el=document.createElement('div');el.className='card result-card';
+      el.innerHTML='<div class="clabel">\u2190 \u7ed3\u679c</div><div class="result-text">'+esc(ev.content)+'</div>';
+      addCard(el);scroll();
+    }
+    lastToolCard=null; // 已消费：防止再追加
   }
   else if(ev.type==='section_done'){
-    const mkrs=ev.markers&&ev.markers.length
-      ?ev.markers.map(m=>'<span class="mkr">'+esc(m)+'</span>').join('')
-      :'<span style="color:var(--faint)">\u65e0</span>';
-    const el=document.createElement('div');el.className='card sec-card';
-    el.innerHTML='<div class="clabel">&#128212; \u7ae0\u8282\u5206\u6790</div>'+
-      '<div class="sec-title">'+esc(ev.title)+'</div>'+
-      '<div class="sec-summary">'+esc(ev.summary||'\u65e0\u6458\u8981')+'</div>'+
-      '<div class="markers">'+mkrs+'</div>';
-    addCard(el);scroll();
+    // 不再新开独立卡；将章节标题+解析后的 summary/markers 融合到最近一张 LLM 卡
+    const last=Array.from(document.querySelectorAll('#stream .llm-card')).pop();
+    if(last){
+      const cl=last.querySelector('.clabel');
+      if(cl && !cl.querySelector('.sec-title')){
+        const t=document.createElement('span');t.className='sec-title';
+        t.textContent=' \u00b7 '+(ev.title||'');
+        cl.appendChild(t);
+      }
+      const outBox=last.querySelector('.bubble-section:not(.think-sec) .bubble-text');
+      if(outBox && ev.summary){outBox.innerHTML=md(ev.summary);outBox.classList.add('rendered-md');}
+      if(ev.markers&&ev.markers.length&&!last.querySelector('.markers')){
+        const m=document.createElement('div');m.className='markers';
+        m.innerHTML=ev.markers.map(x=>'<span class="mkr">'+esc(x)+'</span>').join('');
+        last.appendChild(m);
+      }
+      scroll();
+    }else{
+      // Fallback（极端异常路径）
+      const el=document.createElement('div');el.className='card sec-card';
+      el.innerHTML='<div class="clabel">&#128212; \u7ae0\u8282\u5206\u6790</div>'+
+        '<div class="sec-title">'+esc(ev.title)+'</div>'+
+        '<div class="sec-summary">'+md(ev.summary||'')+'</div>';
+      addCard(el);scroll();
+    }
   }
   else if(ev.type==='analysis'){
-    const el=document.createElement('div');el.className='card analysis-card';
-    el.innerHTML='<div class="clabel">&#128203; \u7efc\u5408\u5206\u6790</div>'+
-      '<div class="analysis-text">'+esc(ev.text)+'</div>';
-    addCard(el);scroll();
+    // 融合到最近一张 LLM 卡（Phase 3 的 LLM 输出）
+    const last=Array.from(document.querySelectorAll('#stream .llm-card')).pop();
+    if(last){
+      const cl=last.querySelector('.clabel');
+      if(cl && !cl.querySelector('.sec-title')){
+        const t=document.createElement('span');t.className='sec-title';
+        t.textContent=' \u00b7 \u7efc\u5408\u5206\u6790';
+        cl.appendChild(t);
+      }
+      const outBox=last.querySelector('.bubble-section:not(.think-sec) .bubble-text');
+      if(outBox && ev.text){
+        outBox.innerHTML=md(ev.text);
+        outBox.classList.add('rendered-md');
+      }
+      scroll();
+    }else{
+      const el=document.createElement('div');el.className='card analysis-card';
+      el.innerHTML='<div class="clabel">&#128203; \u7efc\u5408\u5206\u6790</div>'+
+        '<div class="analysis-text">'+md(ev.text)+'</div>';
+      addCard(el);scroll();
+    }
   }
   else if(ev.type==='ref_result'){
     const high=ev.relevance==='high';
@@ -333,8 +466,9 @@ function handle(ev){
     addCard(el);scroll();
   }
   else if(ev.type==='done'){
+    try{es.close();}catch(_){} // 防止 EventSource 自动重连回放整场
     document.getElementById('prog').style.width='100%';
-    for(let i=1;i<=5;i++){const d=document.getElementById('d'+i);d.className='ph-dot done';d.textContent='\u2713';document.getElementById('l'+i).className='ph-lbl';}
+    for(let i=1;i<=PHASE_MAX;i++){const d=document.getElementById('d'+i);if(!d)continue;d.className='ph-dot done';d.textContent='\u2713';document.getElementById('l'+i).className='ph-lbl';}
     set('badge','\u5b8c\u6210 \u2713');set('conn','\u5df2\u5b8c\u6210');
     const el=document.createElement('div');el.className='done-card';
     el.innerHTML='<div class="done-h">&#9989; \u5206\u6790\u5b8c\u6210</div>'+
@@ -344,8 +478,42 @@ function handle(ev){
   }
 }
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+// 安装一次性 DOMPurify 钩子：给所有 <a> 强制加 target=_blank + rel，防反向 tabnabbing
+if(window.DOMPurify){
+  DOMPurify.addHook('afterSanitizeAttributes',function(node){
+    if(node.tagName==='A'){
+      node.setAttribute('target','_blank');
+      node.setAttribute('rel','noopener noreferrer');
+    }
+  });
+}
+function md(s){
+  if(!s)return'';
+  try{
+    if(window.marked&&window.DOMPurify){
+      // 局部传参，不污染全局 marked options
+      const html=marked.parse(String(s),{breaks:false,gfm:true});
+      // 白名单：只放 Markdown 渲染实际需要的标签/属性
+      return DOMPurify.sanitize(html,{
+        ALLOWED_TAGS:['p','br','strong','em','code','pre','ul','ol','li',
+                      'h1','h2','h3','h4','h5','h6','a','blockquote','hr'],
+        ALLOWED_ATTR:['href','target','rel']
+      });
+    }
+  }catch(e){console.error('md render failed',e);}
+  return esc(s);
+}
 function set(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
-function scroll(){if(!userScrolledUp)window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});}
+let _scrollRaf=0;
+function scroll(){
+  if(userScrolledUp)return;
+  if(_scrollRaf)return;
+  _scrollRaf=requestAnimationFrame(()=>{
+    _scrollRaf=0;
+    // 流式高频调用下用 auto（非平滑）滚动，避免与 token 追加形成抖动竞态
+    window.scrollTo({top:document.body.scrollHeight,behavior:'auto'});
+  });
+}
 </script>
 </body>
 </html>""".encode('utf-8')
@@ -441,9 +609,9 @@ def call_llm_streaming(messages: list[dict]) -> str | None:
                 if content:
                     content = re.sub(r'(<channel\|>|<\|[^>]*\|?>)', '', content)
                     full_text += content
+                    broadcast({"type": "llm_token", "text": content})
                 if obj.get("done"):
                     break
-                    broadcast({"type": "llm_token", "text": content})
     except httpx.ReadTimeout:
         broadcast({"type": "warn", "msg": f"LLM 读取超过 {TOKEN_TIMEOUT}s，已中断"})
         broadcast({"type": "llm_done"})
@@ -538,10 +706,22 @@ def parse_phase2_output(text: str) -> tuple[str, list[str]]:
         if line.startswith("引用：") or line.startswith("引用:"):
             raw = line.split("：", 1)[-1].split(":", 1)[-1].strip()
             if raw and raw != "无":
-                # numeric: [1][3] or bare "17"
-                bracketed = re.findall(r'\[(\d+)\]', raw)
-                markers.extend(f'[{n}]' for n in bracketed)
-                if not bracketed:
+                # 提取所有 [...] 块，支持 [1] / [1,3] / [1, 3, 5] / [1-3] / 中文逗号
+                any_bracketed = False
+                for bm in re.finditer(r'\[([0-9,，\s\-\u2013]+)\]', raw):
+                    any_bracketed = True
+                    block = bm.group(1)
+                    # 先尝试 range: "1-3" 或 "1–3"
+                    rm = re.match(r'^\s*(\d+)\s*[\-\u2013]\s*(\d+)\s*$', block)
+                    if rm:
+                        lo, hi = int(rm.group(1)), int(rm.group(2))
+                        if 0 < hi - lo <= 20:
+                            markers.extend(f'[{n}]' for n in range(lo, hi + 1))
+                            continue
+                    # 逗号/空格分隔的数字列表
+                    nums = re.findall(r'\d+', block)
+                    markers.extend(f'[{n}]' for n in nums if 1 <= int(n) <= 500)
+                if not any_bracketed:
                     bare = re.findall(r'(?<!\d)(\d{1,3})(?!\d)', raw)
                     markers.extend(f'[{n}]' for n in bare if 1 <= int(n) <= 200)
                 # APA with accented chars: "García (2020)", "Smith et al., 2020", "Smith & Jones (2020)"
@@ -609,6 +789,8 @@ def run_loop(md_path: Path, focus: str, output_dir: Path):
         _run_loop_inner(md_path, focus, output_dir)
     except Exception as e:
         broadcast({"type": "err", "msg": f"loop \u5f02\u5e38\u9000\u51fa: {type(e).__name__}: {e}"})
+        # 补一个带 error 的终态事件，防止 UI 卡在 active 无终态
+        broadcast({"type": "done", "error": True, "log_path": ""})
     finally:
         # 确保任何退出路径都关闭 SSE 客户端
         time.sleep(1)
@@ -631,6 +813,12 @@ def _llm_call(system: str, user: str) -> str | None:
 
 
 def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
+    # 清空上一次会话的事件缓冲，防止刷新页面回放旧记录；并广播 session_start 让已连接的客户端清屏
+    session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    with _clients_lock:
+        _event_buffer.clear()
+    broadcast({"type": "session_start", "session_id": session_id,
+               "md_name": md_path.name, "focus": focus})
     md_text = md_path.read_text(encoding="utf-8")
     raw_log: list[dict] = [{"type": "session_start",
                              "timestamp": datetime.now().isoformat(),
@@ -652,7 +840,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     log({"type": "refs_extracted", "count": len(all_refs)})
 
     # ── \u9636\u6bb51\uff1a\u7ae0\u8282\u9009\u62e9\uff08\u7eaf\u4ee3\u7801\uff0c\u5173\u952e\u8bcd\u5339\u914d\uff09 ─────────────────────────────────────────
-    broadcast({"type": "iter", "n": 1, "max": 5, "label": "\u9636\u6bb51\uff1a\u7ae0\u8282\u9009\u62e9"})
+    broadcast({"type": "iter", "n": 1, "max": 4, "label": "\u9636\u6bb51\uff1a\u7ae0\u8282\u9009\u62e9"})
     sections_list = tool_list_sections(md_text)
 
     focus_words = re.findall(r'[\w]+', focus.lower())
@@ -689,6 +877,10 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     matched_titles = [title_map.get(sid, f"Section {sid}") for sid in selected_ids]
     broadcast({"type": "tool_call", "tool": "select_sections",
                "args": {"total": len(sections_list), "selected": selected_ids, "titles": matched_titles}})
+    # 显示选择结果：用户现在看得到 select_sections 工具的用途和输出
+    _sel_lines = "\n".join(f"  [{sid}] {t}" for sid, t in zip(selected_ids, matched_titles))
+    broadcast({"type": "tool_result",
+               "content": f"\u4ece {len(sections_list)} \u4e2a\u7ae0\u8282\u4e2d\u9009\u51fa {len(selected_ids)} \u4e2a\u6700\u76f8\u5173\uff1a\n{_sel_lines}"})
     log({"type": "phase1_selected", "ids": selected_ids, "titles": matched_titles})
 
     # ── \u9636\u6bb52\uff1a\u9010\u6bb5\u9605\u8bfb ──────────────────────────────────────────────────────────
@@ -700,7 +892,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     _headings_raw = [i for i, l in enumerate(_lines_raw) if re.match(r'^#{1,3}\s+', l)]
 
     for i, sid in enumerate(selected_ids):
-        broadcast({"type": "iter", "n": 2, "max": 5,
+        broadcast({"type": "iter", "n": 2, "max": 4,
                    "label": f"\u9636\u6bb52\uff1a\u9605\u8bfb\u7ae0\u8282 {i+1}/{len(selected_ids)}"})
         title = title_map.get(sid, f"Section {sid}")
         broadcast({"type": "tool_call", "tool": "read_section", "args": {"id": sid, "title": title}})
@@ -717,7 +909,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                    "content": f"读取章节 [{sid}] {title}（{full_len} 字符）"})
 
         user2 = f"关注重点：{focus}\n\n章节内容：\n{section_text}"
-        text2 = _llm_call(PHASE2_SYSTEM, user2)
+        text2 = _llm_call(PHASE2_SYSTEM_TPL.format(focus=focus), user2)
         log({"type": "phase2_response", "section_id": sid, "content": text2})
 
         summary, markers = parse_phase2_output(text2) if text2 else ("", [])
@@ -727,29 +919,26 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                    "summary": summary, "markers": markers})
 
     # ── \u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790 ──────────────────────────────────────────────────────────
-    broadcast({"type": "iter", "n": 3, "max": 5, "label": "\u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790"})
+    broadcast({"type": "iter", "n": 3, "max": 4, "label": "\u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790"})
     summaries = "\n".join(
         f"- Section {s['id']}\uff08{s['title']}\uff09\uff1a{s['summary']}" for s in section_results
     )
     user3 = f"\u5173\u6ce8\u91cd\u70b9\uff1a{focus}\n\n\u5404\u7ae0\u8282\u6458\u8981\uff1a\n{summaries}"
-    analysis = _llm_call(PHASE3_SYSTEM, user3) or ""
+    analysis = _llm_call(PHASE3_SYSTEM_TPL.format(focus=focus), user3) or ""
     if not analysis:
         broadcast({"type": "warn", "msg": "\u9636\u6bb53\uff1aLLM \u4e24\u6b21\u5747\u672a\u8fd4\u56de\uff0c\u5206\u6790\u4e3a\u7a7a"})
     else:
         broadcast({"type": "analysis", "text": analysis})
     log({"type": "phase3_analysis", "content": analysis})
 
-    # ── \u9636\u6bb54\uff1a\u5f15\u7528\u5339\u914d\uff08\u7eaf\u4ee3\u7801\uff09 ──────────────────────────────────────────────────
-    broadcast({"type": "iter", "n": 4, "max": 5, "label": "\u9636\u6bb54\uff1a\u5f15\u7528\u5339\u914d"})
+    # ── \u9636\u6bb54\uff1a\u5f15\u7528\u5339\u914d + \u5143\u6570\u636e\u8865\u5168\uff08\u5408\u5e76\uff09 ───────────────────────────
+    broadcast({"type": "iter", "n": 4, "max": 4, "label": "\u9636\u6bb54\uff1a\u5f15\u7528\u5339\u914d\u4e0e\u5143\u6570\u636e"})
     all_markers = list(dict.fromkeys(all_markers))
     matched_refs = match_markers_to_refs(all_markers, all_refs)
     matched_indices = {r["index"] for r in matched_refs}
-    broadcast({"type": "tool_result",
-               "content": f"\u5339\u914d\u5230 {len(matched_refs)} \u6761\u76f8\u5173\u5f15\u7528\uff1a{all_markers}"})
+    broadcast({"type": "info",
+               "msg": f"\u4ece\u5206\u6790\u4e2d\u5339\u914d\u5230 {len(matched_refs)} \u6761\u76f8\u5173\u5f15\u7528\uff08\u6807\u8bb0\uff1a{all_markers}\uff09\uff0c\u7eed\u5145\u5143\u6570\u636e\u2026"})
     log({"type": "phase4_matched", "markers": all_markers, "count": len(matched_refs)})
-
-    # ── \u9636\u6bb55\uff1a\u5143\u6570\u636e\u8865\u5168 ──────────────────────────────────────────────────────────
-    broadcast({"type": "iter", "n": 5, "max": 5, "label": "\u9636\u6bb55\uff1a\u8865\u5145\u5143\u6570\u636e"})
     search_cache: dict = {}
     enriched: list[dict] = []
 
@@ -775,14 +964,20 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                 except Exception:
                     pass
 
-        broadcast({"type": "ref_result",
-                   "index": ref.get("index"),
-                   "title": ref.get("title", "")[:60],
-                   "year": ref.get("year", ""),
-                   "relevance": ref.get("relevance", ""),
-                   "doi": ref.get("doi", ""),
-                   "has_pdf": bool(ref.get("pdf_url"))})
+        # 只推送 high 引用到前端（low 已写入 refs.json，不在 UI 中渲染）
+        if ref.get("relevance") == "high":
+            broadcast({"type": "ref_result",
+                       "index": ref.get("index"),
+                       "title": ref.get("title", "")[:80],
+                       "year": ref.get("year", ""),
+                       "relevance": "high",
+                       "doi": ref.get("doi", ""),
+                       "has_pdf": bool(ref.get("pdf_url"))})
         enriched.append(ref)
+
+    # 若无匹配结果，给用户一个提示
+    if not matched_indices:
+        broadcast({"type": "warn", "msg": "\u672c\u6b21\u672a\u5339\u914d\u5230\u4efb\u4f55\u76f8\u5173\u5f15\u7528"})
 
     # ── \u5199\u8f93\u51fa ────────────────────────────────────────────────────────────────
     output_dir.mkdir(parents=True, exist_ok=True)

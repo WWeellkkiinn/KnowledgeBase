@@ -158,15 +158,14 @@ MAX_SECTIONS = 4            # 每次最多分析章节数
 "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 4096}
 ```
 
-### 5 阶段流程
+### 4 阶段流程（已合并原 Phase 4/5）
 
 | 阶段 | 说明 |
 |------|------|
-| Phase 1 | 关键词匹配选出最相关的 ≤4 个章节（自动跳过无实质内容的标题节） |
-| Phase 2 | 逐章节：LLM 写 50 字摘要 + **判断与关注点相关的引用**（模型筛选，非全文正则） |
-| Phase 3 | 综合各章节摘要，输出 300 字深度分析 |
-| Phase 4 | 将模型选出的引用标记与 refs.json 匹配（支持 APA / 数字两种格式） |
-| Phase 5 | 补充引用元数据（OpenAlex → Semantic Scholar → arXiv） |
+| Phase 1 | 关键词匹配选出最相关的 ≤4 个章节（自动跳过无实质内容的标题节），并在 UI 显示被选中的章节标题 |
+| Phase 2 | 逐章节：LLM 写 50 字摘要 + **挑选与关注重点直接相关的引用**（关注重点注入 system prompt） |
+| Phase 3 | 综合各章节摘要，输出 300 字深度分析（关注重点注入 system prompt） |
+| Phase 4 | 引用匹配与元数据补充：标记匹配 refs.json → OpenAlex → Semantic Scholar → arXiv；UI 只展示 high 相关条目 |
 
 ### 输出结构
 
@@ -193,25 +192,39 @@ wire_api = "responses"
 
 ---
 
-## 已知问题 / 优化待办
+## Web UI 版本历史
 
-### P1 — refs.json relevance 字段仍为空
+### 2026-04-22 — UI 重构 + 多项 bug 修复
 
-**状态**：待开始
+**交互与样式**
+- 卡片配色语义化：`--llm` 紫 / `--prompt` 蓝灰 / `--tool` 绿 / `--result` 琥珀
+- 阶段头柔和样式（白底 + 紫色左边框），不再是黑色背景条
+- LLM 与 Prompt 统一为**聊天气泡风格**（左右对齐、宽度固定 92%）
+- 每个气泡内两小节 + 分隔线：Prompt = System/User，LLM = 思考/输出；默认展开、不可单独收起
+- 阶段级折叠仍保留，但不再在新阶段开始时自动折叠旧阶段（尊重阅读上下文）
+- Phase 2 `section_done` / Phase 3 `analysis` 融合到对应 LLM 气泡（章节标题挂顶、summary 覆盖输出区、markers chips 挂底），不再重复展示
+- Markdown 渲染：`marked@12` + `DOMPurify@3`（CDN + SRI integrity）；白名单收紧、`<a>` 强制 `target=_blank rel=noopener noreferrer`
+- Phase 1 `select_sections` 展示被选章节标题（此前只有 tool_call 无结果）
+- 跨会话清屏：`session_start` 事件 + 前端 `clearStream()`
 
-Phase 4 匹配到引用后，`relevance` 字段（high/medium/low）在 Web UI 模式下未填写。
-需要在 Phase 2 或 Phase 5 中让模型对每条引用输出相关性评级。
+**真 bug 修复**
+- `llm_token` 广播在 `break` 之后不可达，导致 LLM 正文流式**一直空白** → 修正
+- `done` 后 EventSource 自动重连回放整场 → 前端 `es.close()`
+- 异常路径只发 `err` 无终态 → `except` 补 `done(error:true)`
+- `lastToolCard` 状态泄漏（tool_call 后跨非 result 事件错挂）→ `tool_result` 消费后 + `llm_input` 重置
+- 进度宽度 `(n-1)/(PHASE_MAX-1)` 在 4 阶段下一进入阶段 4 就 100% → 改 `(n-1)/PHASE_MAX`，`done` 才填满
+- `iter` 事件 `max=5` 与 `PHASE_MAX=4` 不一致 → 统一 max=4
+- `tool-args/result` 在绿底对比度 3.4:1 不达 WCAG AA → 改 `#374151`
+- 事件缓冲跨会话未清理 → `_run_loop_inner` 开头 `_event_buffer.clear()`
 
-### P2 — 结构化输出验证
+**Prompt 与解析**
+- Phase 2/3 system prompt 改用 `PHASE2/3_SYSTEM_TPL.format(focus=focus)`，将关注重点嵌入 system 开头，让模型只挑选相关引用
+- `parse_phase2_output` 扩展支持 `[1,3]` / `[1-3]` / `[1, 3, 5]` / 中文逗号等引用格式
 
-**状态**：待开始
+### 优化待办
 
-Phase 2 输出为自由文本（`摘要：xxx\n引用：xxx`），依赖 `parse_phase2_output` 正则解析。
-改为 JSON 结构化输出并加验证，防止格式漂移导致静默失败。
-
-### P3 — 元数据命中率追踪
-
-**状态**：暂缓
-
-`search_refs.py` 三个来源（OpenAlex → SS → arXiv）无命中日志，不知道整体覆盖率。
-暂不处理，等前两项稳定后再评估。
+- P1（暂缓）：`refs.json` 的 `relevance` 字段目前靠 Phase 2 匹配得来，尚未让模型对每条引用输出 high/medium/low 分级
+- P2（暂缓）：Phase 2 输出仍是自由文本，依赖正则解析；可改为 JSON 结构化输出提高鲁棒性
+- P3（暂缓）：`search_refs.py` 三个来源命中率无日志追踪
+- P4（低优先）：窄屏 `<600px` 无响应式覆盖
+- P5（低优先）：SSE 同会话瞬断重连会回放缓冲（`done` 路径已闭合，其他异常路径极少见）
