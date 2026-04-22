@@ -4,3 +4,4 @@ codex/
 __pycache__/
 *.pyc
 *.log
+scripts/config.py

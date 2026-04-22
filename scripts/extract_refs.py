@@ -85,7 +85,7 @@ def _read_section(md_path: Path, section_id: int) -> str:
         return ""
     start = sections[section_id]
     end = sections[section_id + 1] if section_id + 1 < len(sections) else len(lines)
-    return "\n".join(lines[start:min(start + 300, end)])
+    return "\n".join(lines[start:end])
 
 
 def _get_ref_section_lines(lines: list[str]) -> list[str]:

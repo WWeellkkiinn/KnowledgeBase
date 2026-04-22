@@ -547,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', 'http://localhost:8765')
             self.end_headers()
 
             q: queue.Queue = queue.Queue()
@@ -684,7 +684,7 @@ def match_markers_to_refs(markers: list[str], all_refs: list[dict]) -> list[dict
         if m:
             matched_indices.add(int(m.group(1)))
             continue
-        m = re.match(r'([A-Z][a-zA-Z\-]+).*?(\d{4})', marker)
+        m = re.match(r'([A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+).*?(\d{4})', marker)
         if m:
             lastname = m.group(1).lower()
             year = m.group(2)
@@ -941,6 +941,10 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
         log({"type": "phase2_response", "section_id": sid, "content": text2})
 
         summary, markers = parse_phase2_output(text2) if text2 else ("", [])
+        if not markers and full_text_raw:
+            # LLM gave no markers — fall back to raw bracket citations in section text
+            fallback = [f"[{m.group(1)}]" for m in re.finditer(r'\[(\d+)\]', full_text_raw)]
+            markers = list(dict.fromkeys(fallback))
         all_markers.extend(markers)
         section_results.append({"id": sid, "title": title, "summary": summary, "markers": markers})
         broadcast({"type": "section_done", "id": sid, "title": title,
@@ -988,10 +992,9 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     high_to_enrich = [r for r in enriched if r.get("relevance") == "high" and r.get("title")]
 
     def _enrich_ref(ref: dict) -> None:
-        r2 = _run_subprocess(
-            [sys.executable, "scripts/search_refs.py", ref["title"], "--year", str(ref.get("year", ""))],
-            f"search_refs[{ref.get('index')}]"
-        )
+        cmd = [sys.executable, "scripts/search_refs.py", ref["title"],
+               "--year", str(ref.get("year", "")), "--doi", ref.get("doi", "")]
+        r2 = _run_subprocess(cmd, f"search_refs[{ref.get('index')}]")
         if r2:
             try:
                 meta = json.loads(r2.stdout)

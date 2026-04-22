@@ -1,153 +1,144 @@
-# 推理服务器部署文档
+# KnowledgeBase — 学术文献网络分析系统
 
-## 服务器
+## 项目愿景
 
-| 项目 | 值 |
-|------|-----|
-| IP | `<ollama-host>` |
-| 用户 | `<deploy-user>` |
-| GPU | `4 x RTX 4090` |
-| 显存 | `96GB` |
-| RAM | `1TB` |
+**目标**：以一篇论文 + 一个关注点为起点，通过 LLM 迭代展开，自动构建覆盖某研究领域的文献知识网络。
 
-### SSH 连接
+**核心流程**：
+1. 输入一篇论文 + 关注点（方法、话题、研究问题、政策等）
+2. LLM 分析论文，提取与关注点相关的引用文献及关键信息
+3. 对提取到的引用文献递归重复上述过程（迭代扩展）
+4. 所有论文与引用关系积累为结构化的**知识网络**
 
-```bash
-# 私钥路径（Claude Code / Git Bash 环境用 /c/ 前缀，不能用 C:/）
-ssh -i <home>/.ssh/<deploy-ssh-key> <deploy-user>@<ollama-host>
+**知识网络的价值**：
+- 引用关系可视化（论文为节点，引用/方法共用为边）
+- 方法溯源：追踪某方法最早出自哪篇论文
+- 方法/话题聚类：找到使用相同方法的论文群
+- 影响力识别：快速定位被引最多的论文或方法
 
-# ⚠ Windows 路径 C:/Users/... 在 Git Bash 下会报 exit 255，必须用 /c/Users/...
-```
-
-- 私钥文件：`<home>\.ssh\<deploy-ssh-key>`（ed25519，无密码）
-- Ollama 日志：写 `~/ollama.log` 可能权限不足，改用 `/tmp/ollama.log`
-- `pkill` 返回 1 = 没有找到进程（正常，不是失败）
+**可视化方向**（待定）：Obsidian 风格图谱，或 Neo4j + 前端渲染。
 
 ---
 
-## Ollama
+## 当前实现状态
 
-### 基本信息
-
-| 项目 | 值 |
-|------|-----|
-| 二进制 | `/data/home/<deploy-user>/bin/ollama` |
-| 版本 | `0.21.0` |
-| 端口 | `13811` |
-| 模型目录 | `/data/home/<deploy-user>/ollama` |
-
-### 已部署模型
-
-| 模型 | 文件 | 大小 | Ollama 名称 | num_ctx |
-|------|------|------|-------------|---------|
-| Gemma 4 31B | `gemma-4-31B-it-Q4_K_M.gguf` | `18GB` | `gemma4-31b` | 默认 |
-| SuperGemma 4 26B | `supergemma4-26b-uncensored-fast-v2-Q4_K_M.gguf` | `16GB` | `supergemma4-26b` | **262144** |
-
-### 启动命令（标准）
-
-```bash
-# Ollama（GPU1+2，双卡，必须关闭 Flash Attention）
-OLLAMA_FLASH_ATTENTION=0 CUDA_VISIBLE_DEVICES=1,2 \
-OLLAMA_HOST=0.0.0.0:13811 OLLAMA_MODELS=/data/home/<deploy-user>/ollama \
-nohup /data/home/<deploy-user>/bin/ollama serve > /tmp/ollama.log 2>&1 &
-
-# 验证
-ss -tlnp | grep 13811
-```
-
-> ⚠️ **`OLLAMA_FLASH_ATTENTION=0` 必须设置**（影响所有 gemma4 模型）：
-> gemma4 + `think=true` + 任意 prompt 下，Flash Attention 会导致 prefill 卡死（GPU 利用率归零，永不输出），
-> 重现于 GitHub issue [#15350](https://github.com/ollama/ollama/issues/15350)。
-> 不加此参数将导致每次 LLM 调用超时后返回 500，且**不会有任何错误提示**，只是静默卡死。
-> 已在 supergemma4-26b 和 gemma4-31b 上均验证修复。
-
-### 性能参考
-
-| 模型 | 配置 | tok/s | thinking 可用 | 结论 |
-|------|------|-------|--------------|------|
-| supergemma4-26b | 单卡 | `~143` | ❌ 大输入下 thinking 失控 | 不推荐用 thinking |
-| supergemma4-26b | 双卡 | `~148` | ❌ 同上 | — |
-| gemma4-31b | 单卡 | `~24.5` | ✅ | 可用 |
-| gemma4-31b | 双卡 | `~40.7` | ✅ | **推荐，当前默认** |
-
-> supergemma4-26b 在 `think=true` + 大段落输入（~8000字符）下，thinking token 无上限发散，
-> 建议设 `num_predict: 4096` 或直接关闭 thinking。
-
----
-
-## MinerU
-
-### 部署信息
-
-| 项目 | 值 |
-|------|-----|
-| 目录 | `/data/home/<deploy-user>/project/MinerU` |
-| 基础镜像 | `vllm/vllm-openai:v0.11.2-x86_64` |
-| 业务镜像 | `mineru:latest` |
-| 镜像大小 | `~53.2GB` |
-
-### 启动命令
-
-```bash
-# MinerU（GPU3，端口 8000）
-docker run -d --name mineru-api-kb \
-  --gpus '"device=3"' -p 8000:8000 \
-  -e MINERU_MODEL_SOURCE=local --ipc host \
-  mineru:latest mineru-api --host 0.0.0.0 --port 8000
-```
-
-### 常驻空闲占用
-
-| 资源 | 占用 |
+| 层次 | 状态 |
 |------|------|
-| CPU | `~0.73%` |
-| 内存 | `~2.76GiB` |
-| 显存（单卡） | `~13GB` |
+| 单篇分析（PDF → 分析 → 引用提取） | ✅ 完成 |
+| 引用文献元数据补充与 PDF 下载 | ✅ 完成（下载成功率受 OA 覆盖率限制） |
+| 迭代扩展（自动下载并分析引用论文） | 🔲 待实现 |
+| 知识网络构建与可视化 | 🔲 待实现 |
 
 ---
 
-## 文献调研 Agent
-
-### 架构
+## 脚本说明
 
 ```
-本地
-  ├── AGENTS.md              ← 定义调研行为，Codex 启动自动读取
-  ├── kb.bat                 ← 启动入口（Codex + Ollama）
-  └── scripts/
-        ├── pdf2md.py        ← PDF → Markdown（调 MinerU API）
-        ├── extract_refs.py  ← 解析引用文献（数字 / APA 两种格式，支持多作者 &）
-        ├── search_refs.py   ← 搜索元数据（OpenAlex → SS → arXiv）
-        ├── run_analysis.py  ← 单篇分析（CLI，无 UI）
-        └── run_analysis_ui.py ← 5阶段分析 + 实时浏览器 UI（SSE 流式）
-
-服务器（仅提供计算）
-  ├── MinerU API  :8000      ← PDF 转换
-  └── Ollama      :13811     ← LLM 推理（gemma4-31b，双卡）
+scripts/
+  config.py          ← API Keys（已加入 .gitignore，不提交）
+  pdf2md.py          ← PDF → Markdown（调 MinerU API）
+  extract_refs.py    ← 解析论文引用（数字格式 [1] 和 APA 格式）
+  search_refs.py     ← 搜索引用文献元数据 + PDF URL
+  download_pdf.py    ← 下载 PDF（支持落地页解析）
+  run_analysis.py    ← 单篇分析 CLI（无 UI）
+  run_analysis_ui.py ← 单篇分析 Web UI（SSE 流式，推荐）
+  _marked.min.js     ← Web UI 依赖（Markdown 渲染）
+  _dompurify.min.js  ← Web UI 依赖（XSS 防护）
 ```
 
-### GPU 分配
+### search_refs.py 查询链
 
-| 卡 | 服务 | 显存 |
-|---|---|---|
-| GPU 1+2 | Ollama（双卡，gemma4-31b） | ~18GB |
-| GPU 3 | MinerU API（Docker） | ~13GB |
-| GPU 0 | 保留 | — |
+给定论文标题 + DOI，按优先级依次查询：
 
-### 本地使用
+```
+DOI 完整 → Unpaywall → OpenAlex DOI直查 → Semantic Scholar DOI直查
+             ↓（均无结果或 title 不符）
+标题搜索 → OpenAlex → Semantic Scholar → arXiv → CORE
+```
+
+- 所有路径均进行**标题相似度验证**（阈值 0.80），防止错误 DOI 或误匹配
+- Unpaywall `best_oa_location` 字段同时返回直链（`url_for_pdf`）和落地页（`url`），两者均可被 `download_pdf.py` 处理
+
+### download_pdf.py 下载逻辑
+
+1. 直接 GET 目标 URL（浏览器 UA，跟随重定向）
+2. 校验响应是否为 PDF（Content-Type 或 `%PDF` 文件头）
+3. 若响应是 HTML 落地页，自动解析其中的 PDF 直链（当前支持 Harvard DASH）
+4. 成功写文件，失败 exit 1 并打印原因到 stderr
+
+---
+
+## 目录结构
+
+```
+papers/                         ← 所有论文数据（已加入 .gitignore）
+  <论文标题>/
+    <论文标题>.pdf               ← 原始 PDF（手动放置或自动下载）
+    <论文标题>.md                ← MinerU 转换的 Markdown
+    analysis.md                 ← LLM 分析结果
+    refs.json                   ← 全部引用（含 DOI/pdf_url/relevance）
+    todo_download.txt           ← 高相关性引用的下载清单
+    session_*.jsonl             ← LLM 会话记录（仅保留最新）
+
+scripts/                        ← 所有脚本
+  config.py                     ← API Keys（不提交）
+
+network.json                    ← 知识网络数据（待实现）
+```
+
+**关于 papers/ 目录**：完全被 `.gitignore` 忽略，不进入版本控制。论文 PDF 和 Markdown 文件体积较大，应放在 `papers/<论文标题>/` 下后直接运行分析脚本。
+
+---
+
+## 使用方法
+
+### 前置条件
 
 ```bash
-# Web UI 分析（推荐）
 conda activate kb
-python scripts/run_analysis_ui.py <paper.md> --focus "研究方法"
+# 确认服务器上 Ollama（:13811）和 MinerU（:8000）已启动
+```
+
+### 1. PDF 转 Markdown
+
+```bash
+python scripts/pdf2md.py path/to/paper.pdf
+# 输出：papers/<论文标题>/<论文标题>.md
+```
+
+### 2. 单篇分析
+
+```bash
+# Web UI（推荐，实时流式输出）
+python scripts/run_analysis_ui.py papers/<论文标题>/<论文标题>.md --focus "研究方法"
 # 自动打开 http://localhost:8765
 
-# CLI 单篇分析
-conda activate kb
-python scripts/run_analysis.py <paper.md> --focus "研究方法"
+# CLI（无 UI，适合批量或脚本调用）
+python scripts/run_analysis.py papers/<论文标题>/<论文标题>.md --focus "研究方法"
 ```
 
-### run_analysis_ui.py 关键配置
+分析完成后，`papers/<论文标题>/` 下会生成 `analysis.md`、`refs.json`、`todo_download.txt`。
+
+### 3. 下载引用文献 PDF
+
+```bash
+# 单条下载（测试用）
+python scripts/download_pdf.py <url> papers/<新论文标题>/<新论文标题>.pdf
+
+# 批量下载引用文献（todo_download.txt 中所有条目）
+# ← expand.py 待实现，当前需手动逐条下载
+```
+
+### 4. 查询论文元数据
+
+```bash
+python scripts/search_refs.py "论文标题" --doi "10.xxxx/xxxxx"
+# 输出 JSON：{ title, authors, year, doi, pdf_url, source }
+```
+
+---
+
+## run_analysis_ui.py 关键配置
 
 ```python
 MODEL = "gemma4-31b"        # 当前默认模型
@@ -158,25 +149,76 @@ MAX_SECTIONS = 4            # 每次最多分析章节数
 "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 4096}
 ```
 
-### 4 阶段流程（已合并原 Phase 4/5）
+### 分析阶段
 
 | 阶段 | 说明 |
 |------|------|
-| Phase 1 | 关键词匹配选出最相关的 ≤4 个章节（自动跳过无实质内容的标题节），并在 UI 显示被选中的章节标题 |
-| Phase 2 | 逐章节：LLM 写 50 字摘要 + **挑选与关注重点直接相关的引用**（关注重点注入 system prompt） |
-| Phase 3 | 综合各章节摘要，输出 300 字深度分析（关注重点注入 system prompt） |
-| Phase 4 | 引用匹配与元数据补充：标记匹配 refs.json → OpenAlex → Semantic Scholar → arXiv；UI 只展示 high 相关条目 |
+| Phase 1 | 关键词匹配，选出最相关的 ≤4 个章节 |
+| Phase 2 | 逐章节：50 字摘要 + 提取与关注重点相关的引用标记 |
+| Phase 3 | 综合各章节摘要，输出 300 字深度分析 |
+| Phase 4 | 引用匹配与元数据补充，标记 high/low 相关性 |
 
-### 输出结构
+---
 
+## 已知限制与待办
+
+| 项目 | 说明 |
+|------|------|
+| PDF 下载成功率 | 管理学/经济学期刊约 10-20%，受 OA 覆盖率限制，非代码问题 |
+| 迭代扩展 | `expand.py` 待实现：自动读 todo_download.txt → 下载 → 分析 → 积累网络 |
+| 知识网络 | `network.json` 数据结构已设计，可视化层待实现 |
+| Phase 2 引用解析 | 依赖正则，可改为 JSON 结构化输出提高鲁棒性 |
+
+---
+
+## 推理服务器
+
+### 服务器信息
+
+| 项目 | 值 |
+|------|-----|
+| IP | `<ollama-host>` |
+| 用户 | `<deploy-user>` |
+| GPU | `4 × RTX 4090`，显存 96GB |
+| RAM | 1TB |
+
+```bash
+# SSH 连接（Git Bash / Claude Code 环境用 /c/ 前缀）
+ssh -i <home>/.ssh/<deploy-ssh-key> <deploy-user>@<ollama-host>
 ```
-papers/
-  <论文文件名>/
-    <论文文件名>.md      ← 原文 Markdown（MinerU 转换）
-    analysis.md          ← 中文分析 + 引用文献概览
-    refs.json            ← 引用文献列表（含 DOI/pdf_url/relevance）
-    todo_download.txt    ← 待下载清单（[index] 标题 | DOI | pdf_url 或 NOT_FOUND）
-    session_*.jsonl      ← 完整对话记录（仅保留最新）
+
+### GPU 分配
+
+| 卡 | 服务 | 显存 |
+|----|------|------|
+| GPU 1+2 | Ollama（gemma4-31b，双卡） | ~18GB |
+| GPU 3 | MinerU API（Docker） | ~13GB |
+| GPU 0 | 保留 | — |
+
+### Ollama 启动
+
+```bash
+OLLAMA_FLASH_ATTENTION=0 CUDA_VISIBLE_DEVICES=1,2 \
+OLLAMA_HOST=0.0.0.0:13811 OLLAMA_MODELS=/data/home/<deploy-user>/ollama \
+nohup /data/home/<deploy-user>/bin/ollama serve > /tmp/ollama.log 2>&1 &
+```
+
+> ⚠️ `OLLAMA_FLASH_ATTENTION=0` 必须设置：gemma4 + `think=true` 下 Flash Attention 会导致 prefill 永久卡死（GPU 利用率归零，无任何报错）。见 [#15350](https://github.com/ollama/ollama/issues/15350)。
+
+### 已部署模型
+
+| 模型 | Ollama 名称 | tok/s（双卡） | thinking |
+|------|------------|-------------|---------|
+| Gemma 4 31B | `gemma4-31b` | ~40.7 | ✅ 推荐 |
+| SuperGemma 4 26B | `supergemma4-26b` | ~148 | ❌ 大输入下发散 |
+
+### MinerU 启动
+
+```bash
+docker run -d --name mineru-api-kb \
+  --gpus '"device=3"' -p 8000:8000 \
+  -e MINERU_MODEL_SOURCE=local --ipc host \
+  mineru:latest mineru-api --host 0.0.0.0 --port 8000
 ```
 
 ### Codex 配置
@@ -189,42 +231,3 @@ name = "Ollama (local server)"
 base_url = "http://<ollama-host>:13811/v1"
 wire_api = "responses"
 ```
-
----
-
-## Web UI 版本历史
-
-### 2026-04-22 — UI 重构 + 多项 bug 修复
-
-**交互与样式**
-- 卡片配色语义化：`--llm` 紫 / `--prompt` 蓝灰 / `--tool` 绿 / `--result` 琥珀
-- 阶段头柔和样式（白底 + 紫色左边框），不再是黑色背景条
-- LLM 与 Prompt 统一为**聊天气泡风格**（左右对齐、宽度固定 92%）
-- 每个气泡内两小节 + 分隔线：Prompt = System/User，LLM = 思考/输出；默认展开、不可单独收起
-- 阶段级折叠仍保留，但不再在新阶段开始时自动折叠旧阶段（尊重阅读上下文）
-- Phase 2 `section_done` / Phase 3 `analysis` 融合到对应 LLM 气泡（章节标题挂顶、summary 覆盖输出区、markers chips 挂底），不再重复展示
-- Markdown 渲染：`marked@12` + `DOMPurify@3`（CDN + SRI integrity）；白名单收紧、`<a>` 强制 `target=_blank rel=noopener noreferrer`
-- Phase 1 `select_sections` 展示被选章节标题（此前只有 tool_call 无结果）
-- 跨会话清屏：`session_start` 事件 + 前端 `clearStream()`
-
-**真 bug 修复**
-- `llm_token` 广播在 `break` 之后不可达，导致 LLM 正文流式**一直空白** → 修正
-- `done` 后 EventSource 自动重连回放整场 → 前端 `es.close()`
-- 异常路径只发 `err` 无终态 → `except` 补 `done(error:true)`
-- `lastToolCard` 状态泄漏（tool_call 后跨非 result 事件错挂）→ `tool_result` 消费后 + `llm_input` 重置
-- 进度宽度 `(n-1)/(PHASE_MAX-1)` 在 4 阶段下一进入阶段 4 就 100% → 改 `(n-1)/PHASE_MAX`，`done` 才填满
-- `iter` 事件 `max=5` 与 `PHASE_MAX=4` 不一致 → 统一 max=4
-- `tool-args/result` 在绿底对比度 3.4:1 不达 WCAG AA → 改 `#374151`
-- 事件缓冲跨会话未清理 → `_run_loop_inner` 开头 `_event_buffer.clear()`
-
-**Prompt 与解析**
-- Phase 2/3 system prompt 改用 `PHASE2/3_SYSTEM_TPL.format(focus=focus)`，将关注重点嵌入 system 开头，让模型只挑选相关引用
-- `parse_phase2_output` 扩展支持 `[1,3]` / `[1-3]` / `[1, 3, 5]` / 中文逗号等引用格式
-
-### 优化待办
-
-- P1（暂缓）：`refs.json` 的 `relevance` 字段目前靠 Phase 2 匹配得来，尚未让模型对每条引用输出 high/medium/low 分级
-- P2（暂缓）：Phase 2 输出仍是自由文本，依赖正则解析；可改为 JSON 结构化输出提高鲁棒性
-- P3（暂缓）：`search_refs.py` 三个来源命中率无日志追踪
-- P4（低优先）：窄屏 `<600px` 无响应式覆盖
-- P5（低优先）：SSE 同会话瞬断重连会回放缓冲（`done` 路径已闭合，其他异常路径极少见）

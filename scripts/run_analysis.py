@@ -186,10 +186,11 @@ def write_outputs(output_dir: Path, md_stem: str, focus: str,
         json.dumps(enriched_refs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # todo_download.txt
+    # todo_download.txt — 只包含 high 相关引用（与 run_analysis_ui.py 保持一致）
+    high_refs = [r for r in enriched_refs if r.get("relevance") == "high"]
     lines = [
         f"[{r['index']}] {r['title']} | {r.get('doi') or '—'} | {r.get('pdf_url') or 'NOT_FOUND'}"
-        for r in enriched_refs
+        for r in high_refs
     ]
     (output_dir / "todo_download.txt").write_text("\n".join(lines), encoding="utf-8")
 
