@@ -7,7 +7,6 @@ import argparse
 import json
 import queue
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -33,37 +32,37 @@ except FileNotFoundError as _e:
 
 OLLAMA_BASE = "http://<ollama-host>:13811"
 OLLAMA_CHAT = f"{OLLAMA_BASE}/api/chat"
-MODEL = "gemma4-31b"
-ENABLE_THINKING = True
-MAX_SECTIONS = 4
+MODEL = "qwen3.6-27b"
 
-# ── Phase prompts (each call fully independent, no shared history) ─────────────
-
-PHASE2_SYSTEM_TPL = (
-    "你正在精读一篇学术论文的特定章节，目标是为读者提取与关注重点直接相关的具体内容。\n"
-    "关注重点：{focus}\n\n"
-    "阅读以下章节，完成两件事：\n\n"
-    "1. 【内容提取】\n"
-    "   - 只提取与关注重点**直接相关**的内容，不相关的部分一律跳过\n"
-    "   - 要写具体：方法步骤、数据指标、操作流程、公式定义等，让读者读完能真正理解「如何做」\n"
-    "   - 忠实原文，不添加、不推断、不总结原文没有的内容\n"
-    "   - 若本章节与关注重点无关，直接写：本章节与关注重点无关\n\n"
-    "2. 【引用标记】\n"
-    "   - 只列出本章节中**实际支撑关注重点内容**的引用，宁缺毋滥\n\n"
-    "输出格式（严格两段）：\n"
-    "摘要：<详细提取的内容，无字数上限，重要细节不得省略>\n"
-    "引用：[1][3] 或 Smith(2020), Jones et al.(2021)（若无相关引用写：引用：无）"
+SYSTEM_TPL = (
+    "/no_think\n"
+    "你是学术文献分析助手。用户会提供一篇完整论文（Markdown 格式），你将分两轮完成分析任务，每轮均严格遵守指定格式。"
 )
 
-PHASE3_SYSTEM_TPL = (
-    "你正在基于已提取的章节内容，为读者整理关于【关注重点】的完整理解。\n"
-    "关注重点：{focus}\n\n"
-    "要求：\n"
-    "- 只基于下方提供的章节内容进行分析，不得补充任何原文未提及的信息\n"
-    "- 重点写清楚具体的实现方式、步骤、数据、指标等，让读者读完能真正理解\n"
-    "- 如果某方面信息不足，直接跳过，不要推测或编造\n"
-    "- 不需要套固定框架，内容有什么就写什么\n"
-    "- 使用 Markdown 格式，结构自然清晰即可"
+INSIGHT_USER_TPL = (
+    "{md_text}\n\n"
+    "---\n\n"
+    "针对关注重点「{focus}」，提取并说明该论文的相关内容，使读者无需阅读原文即可了解论文在此方面的完整做法与发现。\n\n"
+    "输出格式（严格遵守，使用自然段落，不要分点列表）：\n\n"
+    "## 总览\n"
+    "（2-3句话，说明论文在「{focus}」方面做了什么、得出了什么结论）\n\n"
+    "## 详细内容\n"
+    "（自然段落展开：使用了哪些方法/数据/框架，如何操作，发现了什么）\n\n"
+    "## 小结\n"
+    "（1句话，核心贡献或主要局限性）"
+)
+
+REFS_USER_TPL = (
+    "现在列出上述论文中与关注重点「{focus}」高度相关的引用文献，逐条说明：\n"
+    "1. 该文献在论文中的具体作用\n"
+    "2. 与「{focus}」的直接联系\n\n"
+    "只输出高相关引用，不相关的直接忽略。\n\n"
+    "输出格式（严格遵守）：\n\n"
+    "### [编号] 第一作者 et al. (年份) — 完整标题\n"
+    "**在论文中的作用**：xxx\n"
+    "**与「{focus}」的联系**：xxx\n\n"
+    "---\n\n"
+    "（每条引用之间用 --- 分隔，若只有一位作者则不加 et al.）"
 )
 
 # ── SSE broadcast ─────────────────────────────────────────────────────────────
@@ -234,21 +233,19 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
 <div id="layout">
   <div id="sidebar">
     <div class="sb-title">\u5206\u6790\u9636\u6bb5</div>
-    <div class="ph"><div class="ph-dot" id="d1">1</div><div class="ph-lbl" id="l1">\u7ae0\u8282\u9009\u62e9</div></div>
-    <div class="ph"><div class="ph-dot" id="d2">2</div><div class="ph-lbl" id="l2">\u9010\u6bb5\u9605\u8bfb</div></div>
-    <div class="ph"><div class="ph-dot" id="d3">3</div><div class="ph-lbl" id="l3">\u7efc\u5408\u5206\u6790</div></div>
-    <div class="ph"><div class="ph-dot" id="d4">4</div><div class="ph-lbl" id="l4">\u5f15\u7528\u4e0e\u5143\u6570\u636e</div></div>
+    <div class="ph"><div class="ph-dot" id="d1">1</div><div class="ph-lbl" id="l1">\u8bba\u6587\u5185\u5bb9\u5206\u6790</div></div>
+    <div class="ph"><div class="ph-dot" id="d2">2</div><div class="ph-lbl" id="l2">\u9ad8\u76f8\u5173\u5f15\u7528\u5206\u6790</div></div>
   </div>
   <div id="stream"></div>
 </div>
 <script>
-let llmEl=null,llmContent=null,llmThinkEl=null,llmThinkSum=null;
+let llmEl=null,llmContent=null,llmThinkEl=null;
 let currentBody=null; // current phase body container
 let lastToolCard=null; // 最近一次 tool_call 的卡，用于把 tool_result 追加到同卡
 let currentSessionId=null; // 跨会话切换时用它检测新会话
 function clearStream(){
   document.getElementById('stream').innerHTML='';
-  llmEl=null;llmContent=null;llmThinkEl=null;llmThinkSum=null;
+  llmEl=null;llmContent=null;llmThinkEl=null;
   currentBody=null;lastToolCard=null;
   setPhase(1);
 }
@@ -263,7 +260,7 @@ es.onopen=()=>set('conn','\u5df2\u8fde\u63a5');
 es.onerror=()=>set('conn','\u8fde\u63a5\u65ad\u5f00');
 es.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(x){console.error(x,e.data);}};
 
-const PHASE_MAX=4;
+const PHASE_MAX=2;
 function setPhase(n){
   // 夹紧到 [1, PHASE_MAX]，防御异常输入导致负宽/越界
   n=Math.max(1,Math.min(PHASE_MAX,n|0));
@@ -294,7 +291,7 @@ function handle(ev){
     set('badge',ev.label||(ev.n+'/'+PHASE_MAX));
     setPhase(ev.n||1);
     // 不再强制折叠旧阶段，尊重用户正在阅读的上下文；只在用户主动点阶段头时折叠
-    llmEl=null;llmContent=null;llmThinkEl=null;llmThinkSum=null;
+    llmEl=null;llmContent=null;llmThinkEl=null;
     lastToolCard=null;
     // Create collapsible phase group
     const group=document.createElement('div');group.className='phase-group';
@@ -330,7 +327,6 @@ function handle(ev){
     addCard(llmEl);
     llmContent=llmEl.querySelector('.cnt');
     llmThinkEl=llmEl.querySelector('.cnt-think');
-    llmThinkSum=null;
     scroll();
   }
   else if(ev.type==='llm_thinking'){
@@ -478,10 +474,16 @@ function handle(ev){
     try{es.close();}catch(_){} // 防止 EventSource 自动重连回放整场
     for(let i=1;i<=PHASE_MAX;i++){const d=document.getElementById('d'+i);if(!d)continue;d.className='ph-dot done';d.textContent='\u2713';document.getElementById('l'+i).className='ph-lbl';}
     set('badge','\u5b8c\u6210 \u2713');set('conn','\u5df2\u5b8c\u6210');
-    const el=document.createElement('div');el.className='done-card';
-    el.innerHTML='<div class="done-h">&#9989; \u5206\u6790\u5b8c\u6210</div>'+
-      '<div class="done-sub">analysis.md \u00b7 refs.json \u00b7 todo_download.txt \u5df2\u5199\u5165</div>'+
-      '<div class="done-log">'+esc(ev.log_path)+'</div>';
+    const el=document.createElement('div');
+    if(ev.error){
+      el.className='card err-card';
+      el.innerHTML='<div class="clabel">&#10007; \u9519\u8bef</div><div class="err-txt">\u5206\u6790\u5f02\u5e38\u9000\u51fa</div>';
+    }else{
+      el.className='done-card';
+      el.innerHTML='<div class="done-h">&#9989; \u5206\u6790\u5b8c\u6210</div>'+
+        '<div class="done-sub">analysis_insight.md \u00b7 analysis_refs.md \u5df2\u5199\u5165</div>'+
+        '<div class="done-log">'+esc(ev.log_path)+'</div>';
+    }
     s.appendChild(el);scroll();
   }
 }
@@ -592,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
 TOKEN_TIMEOUT = 300  # seconds; 31B thinking can be slow
 
 
-def call_llm_streaming(messages: list[dict]) -> str | None:
+def call_llm_streaming(messages: list[dict], num_ctx: int = 32768, num_predict: int = 16384) -> str | None:
     """Stream via native Ollama /api/chat (supports thinking tokens)."""
     full_text = ""
     broadcast({"type": "llm_start"})
@@ -601,7 +603,7 @@ def call_llm_streaming(messages: list[dict]) -> str | None:
         with httpx.stream(
             "POST", OLLAMA_CHAT,
             json={"model": MODEL, "messages": messages, "stream": True,
-                  "think": ENABLE_THINKING, "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 16384}},
+                  "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": num_predict}},
             timeout=timeout,
         ) as resp:
             resp.raise_for_status()
@@ -647,157 +649,6 @@ def call_llm_streaming(messages: list[dict]) -> str | None:
     return full_text.strip()
 
 
-# ── Tool implementations ──────────────────────────────────────────────────────
-
-def tool_list_sections(md_text: str) -> list[dict]:
-    lines = md_text.splitlines()
-    heading_indices = [i for i, l in enumerate(lines) if re.match(r'^#{1,3}\s+', l)]
-    sections = []
-    for idx, line_i in enumerate(heading_indices):
-        m = re.match(r'^(#{1,3})\s+(.+)', lines[line_i])
-        if not m:
-            continue
-        end = heading_indices[idx + 1] if idx + 1 < len(heading_indices) else len(lines)
-        body = "\n".join(l for l in lines[line_i + 1:end] if l.strip())
-        sections.append({"id": idx, "level": len(m.group(1)),
-                          "title": m.group(2).strip(), "line": line_i + 1,
-                          "chars": len("\n".join(lines[line_i:end])),
-                          "body_chars": len(body)})
-    return sections
-
-
-def tool_read_section(md_text: str, section_id: int) -> str:
-    lines = md_text.splitlines()
-    headings = [i for i, l in enumerate(lines) if re.match(r'^#{1,3}\s+', l)]
-    if section_id < 0 or section_id >= len(headings):
-        return f"[ERROR] section_id {section_id} out of range ({len(headings)} sections)"
-    start = headings[section_id]
-    end = headings[section_id + 1] if section_id + 1 < len(headings) else len(lines)
-    return "\n".join(lines[start:end])
-
-
-def match_markers_to_refs(markers: list[str], all_refs: list[dict]) -> list[dict]:
-    matched_indices: set[int] = set()
-    for marker in markers:
-        marker = marker.strip()
-        m = re.match(r'\[(\d+)\]', marker)
-        if m:
-            matched_indices.add(int(m.group(1)))
-            continue
-        m = re.match(r'([A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+).*?(\d{4})', marker)
-        if m:
-            lastname = m.group(1).lower()
-            year = m.group(2)
-            for ref in all_refs:
-                if (lastname in ref.get('authors', '').lower() and
-                        year in str(ref.get('year', ''))):
-                    matched_indices.add(ref['index'])
-                    break
-    return [r for r in all_refs if r.get('index') in matched_indices]
-
-
-def parse_phase2_output(text: str) -> tuple[str, list[str]]:
-    """Parse LLM output into (summary, relevant_markers)."""
-    summary = ""
-    markers: list[str] = []
-    lines = text.strip().splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith("摘要：") or line.startswith("摘要:"):
-            parts = [line.split("：", 1)[-1].split(":", 1)[-1].strip()]
-            # collect continuation lines until next label or end
-            j = i + 1
-            while j < len(lines) and not re.match(r'^(摘要|引用)[：:]', lines[j].strip()):
-                parts.append(lines[j].strip())
-                j += 1
-            summary = " ".join(p for p in parts if p)
-            i = j
-            continue
-        if line.startswith("引用：") or line.startswith("引用:"):
-            raw = line.split("：", 1)[-1].split(":", 1)[-1].strip()
-            if raw and raw != "无":
-                # 提取所有 [...] 块，支持 [1] / [1,3] / [1, 3, 5] / [1-3] / 中文逗号
-                any_bracketed = False
-                for bm in re.finditer(r'\[([0-9,，\s\-\u2013]+)\]', raw):
-                    any_bracketed = True
-                    block = bm.group(1).strip()
-                    # 以负号开头的异常块（如 [-1-3]）直接跳过，避免被拆出 [1][3]
-                    if block.startswith(('-', '\u2013')):
-                        continue
-                    # range: "1-3" 或 "1–3"（lo ≥ 1、hi ≤ 500、跨度 ≤ 20）
-                    rm = re.match(r'^\s*(\d+)\s*[\-\u2013]\s*(\d+)\s*$', block)
-                    if rm:
-                        lo, hi = int(rm.group(1)), int(rm.group(2))
-                        if 1 <= lo <= hi <= 500 and hi - lo <= 20:
-                            markers.extend(f'[{n}]' for n in range(lo, hi + 1))
-                        # 无论是否通过校验，整块 range 处理完都不再落入逗号分支，防止半截命中
-                        continue
-                    # 逗号/空格分隔的数字列表
-                    nums = re.findall(r'\d+', block)
-                    markers.extend(f'[{n}]' for n in nums if 1 <= int(n) <= 500)
-                if not any_bracketed:
-                    # 裸数字兜底上限与 bracketed 分支统一为 500
-                    bare = re.findall(r'(?<!\d)(\d{1,3})(?!\d)', raw)
-                    markers.extend(f'[{n}]' for n in bare if 1 <= int(n) <= 500)
-                # APA with accented chars: "García (2020)", "Smith et al., 2020", "Smith & Jones (2020)"
-                _author = (r'[A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+'
-                           r'(?:\s+et\s+al\.|\s+&\s+[A-Z\u00C0-\u024F][A-Za-z\u00C0-\u024F\-]+'
-                           r'(?:\s+et\s+al\.)?)?')
-                for m in re.finditer(
-                    rf'({_author})(?:\s*[\(\（](\d{{4}})[\)\）]|,\s*(\d{{4}}))',
-                    raw
-                ):
-                    author = m.group(1).strip()
-                    year = m.group(2) or m.group(3)
-                    markers.append(f'{author} ({year})')
-        i += 1
-    return summary, list(dict.fromkeys(markers))
-
-
-def extract_section_markers(section_text: str) -> list[str]:
-    """Extract citation markers from full section text using Python regex."""
-    markers: list[str] = []
-    # Numeric: [1], [1,3], [1-3], [1, 3]
-    for m in re.finditer(r'\[(\d[\d,\s\-]*\d|\d)\]', section_text):
-        raw = m.group(1)
-        if '-' in raw:
-            try:
-                lo, hi = int(raw.split('-', 1)[0].strip()), int(raw.split('-', 1)[1].strip())
-                if 0 < hi - lo <= 20:  # guard against [1-999] explosion
-                    markers.extend(f'[{n}]' for n in range(lo, hi + 1))
-                else:
-                    markers.append(f'[{lo}]')
-            except ValueError:
-                markers.append(f'[{raw}]')
-        elif ',' in raw:
-            markers.extend(f'[{n.strip()}]' for n in raw.split(','))
-        else:
-            markers.append(f'[{raw}]')
-    # APA: Smith (2020), Smith & Jones (2020), Smith et al. (2020)
-    apa = re.findall(
-        r'[A-Z][a-zA-Z\-]+(?:\s+et\s+al\.|\s+&\s+[A-Z][a-zA-Z\-]+(?:\s+et\s+al\.)?)?\s*\(\d{4}\)',
-        section_text
-    )
-    markers.extend(apa)
-    return list(dict.fromkeys(markers))[:20]  # dedup, cap at 20
-
-
-def _run_subprocess(cmd: list[str], label: str) -> subprocess.CompletedProcess | None:
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=30)
-        if r.returncode != 0:
-            broadcast({"type": "err", "msg": f"{label} \u5931\u8d25 (code {r.returncode}): {r.stderr[:100]}"})
-            return None
-        return r
-    except subprocess.TimeoutExpired:
-        broadcast({"type": "err", "msg": f"{label} \u8d85\u65f6"})
-        return None
-    except Exception as e:
-        broadcast({"type": "err", "msg": f"{label} \u5f02\u5e38: {e}"})
-        return None
-
-
 # ── Agentic loop ──────────────────────────────────────────────────────────────
 
 def run_loop(md_path: Path, focus: str, output_dir: Path):
@@ -815,21 +666,7 @@ def run_loop(md_path: Path, focus: str, output_dir: Path):
                 q.put(None)
 
 
-def _llm_call(system: str, user: str) -> str | None:
-    broadcast({"type": "llm_input", "system": system, "user": user})
-    messages = [{"role": "system", "content": system},
-                {"role": "user",   "content": user}]
-    text = call_llm_streaming(messages)
-    if text is None:
-        broadcast({"type": "warn", "msg": "\u7b2c1\u6b21\u8c03\u7528\u5931\u8d25\uff0c\u91cd\u8bd5..."})
-        text = call_llm_streaming(messages)
-    if text is None:
-        broadcast({"type": "warn", "msg": "\u7b2c2\u6b21\u4ecd\u5931\u8d25\uff0c\u8df3\u8fc7\u672c\u6b21\u8c03\u7528"})
-    return text
-
-
 def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
-    # 清空上一次会话的事件缓冲，防止刷新页面回放旧记录；并广播 session_start 让已连接的客户端清屏
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     with _clients_lock:
         _event_buffer.clear()
@@ -848,204 +685,48 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
     tprint("启动分析流程")
-    # ── 预提取引用 ──────────────────────────────────────────────────────────────
-    broadcast({"type": "info", "msg": "\u63d0\u53d6\u5f15\u7528\u6587\u732e..."})
-    tprint("开始 extract_refs")
-    r = _run_subprocess([sys.executable, "scripts/extract_refs.py", str(md_path)], "extract_refs")
-    all_refs: list[dict] = []
-    if r:
-        try:
-            all_refs = json.loads(r.stdout)
-        except Exception as e:
-            broadcast({"type": "err", "msg": f"extract_refs \u8f93\u51fa\u89e3\u6790\u5931\u8d25: {e}"})
-    tprint(f"extract_refs 完成，{len(all_refs)} 条引用")
-    broadcast({"type": "info", "msg": f"\u627e\u5230 {len(all_refs)} \u6761\u5f15\u7528\u6587\u732e"})
-    log({"type": "refs_extracted", "count": len(all_refs)})
 
-    # ── 阶段1：章节选择（LLM 根据关注重点选择） ─────────────────────────────────────
-    broadcast({"type": "iter", "n": 1, "max": 4, "label": "阶段1：章节选择"})
-    sections_list = tool_list_sections(md_text)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header = f"# {md_path.stem}\n\n**关注重点**：{focus}  \n**模型**：{MODEL}  \n**时间**：{ts_str}\n\n---\n\n"
 
-    candidates = [s for s in sections_list if s.get("body_chars", 0) >= 30]
-    section_lines = "\n".join(
-        f"{s['id']}. {s['title']}"
-        for s in candidates
-    )
-    sel_system = (
-        f"你是学术论文阅读助手。根据用户的关注重点，从章节列表中选出最相关的最多 {MAX_SECTIONS} 个章节。\n"
-        f"只输出一行，格式：选中：1, 3\n"
-        f"（用章节编号，逗号分隔，不要输出其他内容）"
-    )
-    sel_user = f"关注重点：{focus}\n\n章节列表：\n{section_lines}\n\n请选出最相关的最多 {MAX_SECTIONS} 个章节编号。"
-    tprint("Phase1 LLM 开始（章节选择）")
-    sel_text = _llm_call(sel_system, sel_user) or ""
+    sys_content = SYSTEM_TPL
+
+    # ── Phase 1：论文内容分析（总分总） ────────────────────────────────────────
+    broadcast({"type": "iter", "n": 1, "max": 2, "label": "论文内容分析"})
+    tprint("Phase1 LLM 开始（内容分析）")
+
+    user1 = INSIGHT_USER_TPL.format(md_text=md_text, focus=focus)
+    messages = [{"role": "system", "content": sys_content},
+                {"role": "user",   "content": user1}]
+    insight = call_llm_streaming(messages, num_ctx=65536, num_predict=8192) or ""
     tprint("Phase1 LLM 完成")
 
-    valid_ids = {s["id"] for s in candidates}
-    selected_ids: list[int] = []
-    m_sel = re.search(r'^\s*选中[:：]\s*([0-9,，\s]+)\s*$', sel_text, re.M)
-    for n in re.findall(r'\d+', m_sel.group(1) if m_sel else ''):
-        sid = int(n)
-        if sid in valid_ids and sid not in selected_ids:
-            selected_ids.append(sid)
-        if len(selected_ids) >= MAX_SECTIONS:
-            break
+    if not insight:
+        broadcast({"type": "err", "msg": "Phase1 返回空内容，分析中止"})
+        return
 
-    if not selected_ids:
-        broadcast({"type": "warn", "msg": "LLM 未按格式输出章节选择，启用关键词 fallback"})
-        skip = {"introduction", "abstract", "conclusion", "reference", "bibliograph", "acknowledgement"}
-        selected_ids = [s["id"] for s in candidates
-                        if not any(w in s["title"].lower() for w in skip)][:MAX_SECTIONS]
-        if not selected_ids:
-            selected_ids = [s["id"] for s in candidates][:MAX_SECTIONS]
+    log({"type": "phase1_insight", "content": insight})
 
-    title_map = {s["id"]: s["title"] for s in sections_list}
-    matched_titles = [title_map.get(sid, f"Section {sid}") for sid in selected_ids]
-    broadcast({"type": "tool_call", "tool": "select_sections",
-               "args": {"total": len(sections_list), "selected": selected_ids, "titles": matched_titles}})
-    _sel_lines = "\n".join(f"  [{sid}] {t}" for sid, t in zip(selected_ids, matched_titles))
-    broadcast({"type": "tool_result",
-               "content": f"从 {len(sections_list)} 个章节中选出 {len(selected_ids)} 个最相关：\n{_sel_lines}"})
-    log({"type": "phase1_selected", "ids": selected_ids, "titles": matched_titles})
+    (output_dir / "analysis_insight.md").write_text(header + insight + "\n", encoding="utf-8")
 
-    # ── \u9636\u6bb52\uff1a\u9010\u6bb5\u9605\u8bfb ──────────────────────────────────────────────────────────
-    section_results: list[dict] = []
-    all_markers: list[str] = []
+    # ── Phase 2：高相关引用分析（multi-turn，复用 KV cache） ──────────────────
+    broadcast({"type": "iter", "n": 2, "max": 2, "label": "高相关引用分析"})
+    tprint("Phase2 LLM 开始（引用分析）")
 
-    # Pre-compute headings once for section length lookup
-    _lines_raw = md_text.splitlines()
-    _headings_raw = [i for i, l in enumerate(_lines_raw) if re.match(r'^#{1,3}\s+', l)]
+    user2 = REFS_USER_TPL.format(focus=focus)
+    messages.append({"role": "assistant", "content": insight})
+    messages.append({"role": "user",      "content": user2})
+    turn2_tokens = (len(md_text) + len(insight)) // 3 + 1000
+    num_ctx2 = min(131072, ((turn2_tokens + 8192) // 2048 + 1) * 2048)
+    refs = call_llm_streaming(messages, num_ctx=num_ctx2, num_predict=8192) or ""
+    tprint("Phase2 LLM 完成")
+    log({"type": "phase2_refs", "content": refs})
 
-    for i, sid in enumerate(selected_ids):
-        tprint(f"Phase2 章节 {i+1}/{len(selected_ids)} 开始 (sid={sid})")
-        broadcast({"type": "iter", "n": 2, "max": 4,
-                   "label": f"\u9636\u6bb52\uff1a\u9605\u8bfb\u7ae0\u8282 {i+1}/{len(selected_ids)}"})
-        title = title_map.get(sid, f"Section {sid}")
-        broadcast({"type": "tool_call", "tool": "read_section", "args": {"id": sid, "title": title}})
-        if sid < len(_headings_raw):
-            st = _headings_raw[sid]
-            en = _headings_raw[sid+1] if sid+1 < len(_headings_raw) else len(_lines_raw)
-            full_len = len("\n".join(_lines_raw[st:en]))
-        else:
-            full_len = 0
-        # Extract citation markers from FULL section (before truncation)
-        full_text_raw = "\n".join(_lines_raw[st:en]) if sid < len(_headings_raw) else ""
-        section_text = tool_read_section(md_text, sid)
-        broadcast({"type": "tool_result",
-                   "content": f"读取章节 [{sid}] {title}（{full_len} 字符）"})
+    if not refs:
+        broadcast({"type": "warn", "msg": "Phase2 LLM 未返回内容"})
 
-        user2 = f"关注重点：{focus}\n\n章节内容：\n{section_text}"
-        tprint(f"Phase2 LLM 开始 (sid={sid})")
-        text2 = _llm_call(PHASE2_SYSTEM_TPL.format(focus=focus), user2)
-        tprint(f"Phase2 LLM 完成 (sid={sid})")
-        log({"type": "phase2_response", "section_id": sid, "content": text2})
-
-        summary, markers = parse_phase2_output(text2) if text2 else ("", [])
-        if not markers and full_text_raw:
-            # LLM gave no markers — fall back to raw bracket citations in section text
-            fallback = [f"[{m.group(1)}]" for m in re.finditer(r'\[(\d+)\]', full_text_raw)]
-            markers = list(dict.fromkeys(fallback))
-        all_markers.extend(markers)
-        section_results.append({"id": sid, "title": title, "summary": summary, "markers": markers})
-        broadcast({"type": "section_done", "id": sid, "title": title,
-                   "summary": summary, "markers": markers})
-
-    # ── \u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790 ──────────────────────────────────────────────────────────
-    tprint("Phase3 开始")
-    broadcast({"type": "iter", "n": 3, "max": 4, "label": "\u9636\u6bb53\uff1a\u7efc\u5408\u5206\u6790"})
-    MAX_SUMMARY_CHARS = 6000
-    trimmed_sums, used = [], 0
-    for s in section_results:
-        remain = MAX_SUMMARY_CHARS - used
-        if remain <= 0:
-            break
-        part = s["summary"][:remain]
-        trimmed_sums.append(f"- Section {s['id']}（{s['title']}）：{part}")
-        used += len(part)
-    summaries = "\n".join(trimmed_sums)
-    user3 = f"\u5173\u6ce8\u91cd\u70b9\uff1a{focus}\n\n\u5404\u7ae0\u8282\u6458\u8981\uff1a\n{summaries}"
-    tprint("Phase3 LLM 开始")
-    analysis = _llm_call(PHASE3_SYSTEM_TPL.format(focus=focus), user3) or ""
-    tprint("Phase3 LLM 完成")
-    if not analysis:
-        broadcast({"type": "warn", "msg": "\u9636\u6bb53\uff1aLLM \u4e24\u6b21\u5747\u672a\u8fd4\u56de\uff0c\u5206\u6790\u4e3a\u7a7a"})
-    else:
-        broadcast({"type": "analysis", "text": analysis})
-    log({"type": "phase3_analysis", "content": analysis})
-
-    # ── \u9636\u6bb54\uff1a\u5f15\u7528\u5339\u914d + \u5143\u6570\u636e\u8865\u5168\uff08\u5408\u5e76\uff09 ───────────────────────────
-    broadcast({"type": "iter", "n": 4, "max": 4, "label": "\u9636\u6bb54\uff1a\u5f15\u7528\u5339\u914d\u4e0e\u5143\u6570\u636e"})
-    all_markers = list(dict.fromkeys(all_markers))
-    matched_refs = match_markers_to_refs(all_markers, all_refs)
-    matched_indices = {r["index"] for r in matched_refs}
-    broadcast({"type": "info",
-               "msg": f"\u4ece\u5206\u6790\u4e2d\u5339\u914d\u5230 {len(matched_refs)} \u6761\u76f8\u5173\u5f15\u7528\uff08\u6807\u8bb0\uff1a{all_markers}\uff09\uff0c\u7eed\u5145\u5143\u6570\u636e\u2026"})
-    log({"type": "phase4_matched", "markers": all_markers, "count": len(matched_refs)})
-    enriched: list[dict] = []
-
-    for ref in all_refs:
-        ref["relevance"] = "high" if ref.get("index") in matched_indices else "low"
-        ref["reason"] = ""
-        enriched.append(ref)
-
-    # 并行补全元数据（只处理 high refs），最多 4 个并发
-    high_to_enrich = [r for r in enriched if r.get("relevance") == "high" and r.get("title")]
-
-    def _enrich_ref(ref: dict) -> None:
-        cmd = [sys.executable, "scripts/search_refs.py", ref["title"],
-               "--year", str(ref.get("year", "")), "--doi", ref.get("doi", "")]
-        r2 = _run_subprocess(cmd, f"search_refs[{ref.get('index')}]")
-        if r2:
-            try:
-                meta = json.loads(r2.stdout)
-                for k in ("doi", "pdf_url", "authors", "year"):
-                    if meta.get(k) and not ref.get(k):
-                        ref[k] = meta[k]
-            except Exception:
-                pass
-
-    import concurrent.futures
-    tprint(f"Phase4 并行元数据补全开始，{len(high_to_enrich)} 条")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as exc:
-        list(exc.map(_enrich_ref, high_to_enrich))
-    tprint("Phase4 元数据补全完成")
-
-    # 元数据全部就绪后统一推送，所有卡片同时出现
-    for ref in enriched:
-        if ref.get("relevance") == "high":
-            broadcast({"type": "ref_result",
-                       "index": ref.get("index"),
-                       "title": ref.get("title", "")[:80],
-                       "year": ref.get("year", ""),
-                       "relevance": "high",
-                       "doi": ref.get("doi", ""),
-                       "has_pdf": bool(ref.get("pdf_url"))})
-
-    # 若无匹配结果，给用户一个提示
-    if not matched_indices:
-        broadcast({"type": "warn", "msg": "\u672c\u6b21\u672a\u5339\u914d\u5230\u4efb\u4f55\u76f8\u5173\u5f15\u7528"})
-
-    # ── \u5199\u8f93\u51fa ────────────────────────────────────────────────────────────────
-    output_dir.mkdir(parents=True, exist_ok=True)
-    high_refs = [r for r in enriched if r.get("relevance") == "high"]
-    overview = "\n".join(
-        f"- [{r['index']}] {r.get('authors','')[:30]} ({r.get('year','')}) \u2014 "
-        f"{r.get('title','')[:60]} [{r.get('relevance','')}]"
-        for r in enriched
-    )
-    (output_dir / "analysis.md").write_text(
-        f"# {md_path.stem}\n\n**\u5173\u6ce8\u91cd\u70b9**\uff1a{focus}\n\n"
-        f"## \u6df1\u5ea6\u5206\u6790\n\n{analysis}\n\n"
-        f"## \u5f15\u7528\u6587\u732e\u6982\u89c8\n\n{overview}\n",
-        encoding="utf-8",
-    )
-    (output_dir / "refs.json").write_text(
-        json.dumps(enriched, ensure_ascii=False, indent=2), encoding="utf-8")
-    todo_lines = [
-        f"[{r['index']}] {r['title']} | {r.get('doi') or '—'} | {r.get('pdf_url') or 'NOT_FOUND'}"
-        for r in high_refs
-    ]
-    (output_dir / "todo_download.txt").write_text("\n".join(todo_lines), encoding="utf-8")
+    (output_dir / "analysis_refs.md").write_text(header + refs + "\n", encoding="utf-8")
 
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_path = output_dir / f"session_{ts}.jsonl"

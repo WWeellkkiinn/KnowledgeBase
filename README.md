@@ -40,8 +40,7 @@ scripts/
   extract_refs.py    ← 解析论文引用（数字格式 [1] 和 APA 格式）
   search_refs.py     ← 搜索引用文献元数据 + PDF URL
   download_pdf.py    ← 下载 PDF（支持落地页解析）
-  run_analysis.py    ← 单篇分析 CLI（无 UI）
-  run_analysis_ui.py ← 单篇分析 Web UI（SSE 流式，推荐）
+  run_analysis_ui.py ← 单篇分析 Web UI（SSE 流式，两轮 multi-turn）
   _marked.min.js     ← Web UI 依赖（Markdown 渲染）
   _dompurify.min.js  ← Web UI 依赖（XSS 防护）
 ```
@@ -75,7 +74,8 @@ papers/                         ← 所有论文数据（已加入 .gitignore）
   <论文标题>/
     <论文标题>.pdf               ← 原始 PDF（手动放置或自动下载）
     <论文标题>.md                ← MinerU 转换的 Markdown
-    analysis.md                 ← LLM 分析结果
+    analysis_insight.md         ← LLM 内容分析（总分总结构）
+    analysis_refs.md            ← LLM 高相关引用分析（完整标题）
     refs.json                   ← 全部引用（含 DOI/pdf_url/relevance）
     todo_download.txt           ← 高相关性引用的下载清单
     session_*.jsonl             ← LLM 会话记录（仅保留最新）
@@ -109,15 +109,11 @@ python scripts/pdf2md.py path/to/paper.pdf
 ### 2. 单篇分析
 
 ```bash
-# Web UI（推荐，实时流式输出）
 python scripts/run_analysis_ui.py papers/<论文标题>/<论文标题>.md --focus "研究方法"
 # 自动打开 http://localhost:8765
-
-# CLI（无 UI，适合批量或脚本调用）
-python scripts/run_analysis.py papers/<论文标题>/<论文标题>.md --focus "研究方法"
 ```
 
-分析完成后，`papers/<论文标题>/` 下会生成 `analysis.md`、`refs.json`、`todo_download.txt`。
+分析完成后，`papers/<论文标题>/` 下会生成 `analysis_insight.md`、`analysis_refs.md`、`session_*.jsonl`。
 
 ### 3. 下载引用文献 PDF
 
@@ -141,22 +137,19 @@ python scripts/search_refs.py "论文标题" --doi "10.xxxx/xxxxx"
 ## run_analysis_ui.py 关键配置
 
 ```python
-MODEL = "gemma4-31b"        # 当前默认模型
-ENABLE_THINKING = True      # 31B 可开，26B 大输入下建议关
-MAX_SECTIONS = 4            # 每次最多分析章节数
+MODEL = "qwen3.6-27b"
+ENABLE_THINKING = True   # /no_think 前缀开启思维链（qwen3.6 语义反转）
 
 # LLM 调用参数
-"options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 4096}
+num_ctx=65536, num_predict=8192, temperature=0.1
 ```
 
-### 分析阶段
+### 分析流程（两轮 multi-turn，共享 KV cache）
 
-| 阶段 | 说明 |
-|------|------|
-| Phase 1 | 关键词匹配，选出最相关的 ≤4 个章节 |
-| Phase 2 | 逐章节：50 字摘要 + 提取与关注重点相关的引用标记 |
-| Phase 3 | 综合各章节摘要，输出 300 字深度分析 |
-| Phase 4 | 引用匹配与元数据补充，标记 high/low 相关性 |
+| 轮次 | 说明 | 输出文件 |
+|------|------|----------|
+| Turn 1 | 全文送入，输出论文在关注重点上的内容分析（总览 / 详细内容 / 小结） | `analysis_insight.md` |
+| Turn 2 | 接续同一对话，列出高相关引用（完整标题 + 作用说明） | `analysis_refs.md` |
 
 ---
 
@@ -167,7 +160,6 @@ MAX_SECTIONS = 4            # 每次最多分析章节数
 | PDF 下载成功率 | 管理学/经济学期刊约 10-20%，受 OA 覆盖率限制，非代码问题 |
 | 迭代扩展 | `expand.py` 待实现：自动读 todo_download.txt → 下载 → 分析 → 积累网络 |
 | 知识网络 | `network.json` 数据结构已设计，可视化层待实现 |
-| Phase 2 引用解析 | 依赖正则，可改为 JSON 结构化输出提高鲁棒性 |
 
 ---
 
@@ -191,9 +183,9 @@ ssh -i <home>/.ssh/<deploy-ssh-key> <deploy-user>@<ollama-host>
 
 | 卡 | 服务 | 显存 |
 |----|------|------|
-| GPU 1+2 | Ollama（gemma4-31b，双卡） | ~18GB |
+| GPU 1+2 | Ollama 双卡模型（gemma4-31b / supergemma4-26b / qwen3.5-27b） | ~18-26GB |
+| GPU 0 或单卡 | Ollama 单卡模型（qwen3.6-27b Q4_K_M） | ~22GB |
 | GPU 3 | MinerU API（Docker） | ~13GB |
-| GPU 0 | 保留 | — |
 
 ### Ollama 启动
 
@@ -207,10 +199,39 @@ nohup /data/home/<deploy-user>/bin/ollama serve > /tmp/ollama.log 2>&1 &
 
 ### 已部署模型
 
-| 模型 | Ollama 名称 | tok/s（双卡） | thinking |
-|------|------------|-------------|---------|
-| Gemma 4 31B | `gemma4-31b` | ~40.7 | ✅ 推荐 |
-| SuperGemma 4 26B | `supergemma4-26b` | ~148 | ❌ 大输入下发散 |
+| 模型 | Ollama 名称 | 量化 | tok/s | GPU 数 | thinking |
+|------|------------|------|-------|--------|---------|
+| Gemma 4 31B | `gemma4-31b` | — | ~40.7 | 双卡 | ✅ 推荐 |
+| SuperGemma 4 26B | `supergemma4-26b` | — | ~148 | 双卡 | ❌ 大输入下发散 |
+| Qwen 3.5 27B | `qwen3.5-27b` | Q5_K_M | — | 双卡 | ✅ |
+| Qwen 3.6 27B | `qwen3.6-27b` | Q4_K_M | ~40.6 | 单卡 | ✅ 多模态（见注意事项） |
+
+### qwen3.6-27b 思维链说明
+
+**模板**：v2 ChatML（`capabilities: ['completion', 'thinking']`）
+
+**⚠️ `/think` / `/no_think` 语义与直觉相反**（该 GGUF 的已知行为）：
+
+| 指令 | 实际效果 |
+|------|--------|
+| `system: "/no_think"` | **开启**思维链，`thinking` 字段有内容，content 干净 |
+| `system: "/think"` | **关闭**思维链，content 为直接回答 |
+
+**直接调用示例（开启思考）**：
+```bash
+curl http://<ollama-host>:13811/api/chat -d '{
+  "model": "qwen3.6-27b",
+  "stream": false,
+  "messages": [
+    {"role": "system", "content": "/no_think"},
+    {"role": "user", "content": "你的问题"}
+  ]
+}'
+# response.message.thinking → 推理过程
+# response.message.content  → 最终答案
+```
+
+**Cherry Studio**：thinking 开关正常（Cherry Studio 在客户端侧自行构建 ChatML，不受此影响）。
 
 ### MinerU 启动
 
