@@ -30,7 +30,7 @@ except FileNotFoundError as _e:
           f"('_dompurify.min.js','https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js')]]\"")
     sys.exit(1)
 
-OLLAMA_BASE = "http://<ollama-host>:13811"
+OLLAMA_BASE = "http://<ollama-host>:13812"
 OLLAMA_CHAT = f"{OLLAMA_BASE}/api/chat"
 MODEL = "qwen3.6-27b"
 
@@ -717,9 +717,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
     user2 = REFS_USER_TPL.format(focus=focus)
     messages.append({"role": "assistant", "content": insight})
     messages.append({"role": "user",      "content": user2})
-    turn2_tokens = (len(md_text) + len(insight)) // 3 + 1000
-    num_ctx2 = min(131072, ((turn2_tokens + 8192) // 2048 + 1) * 2048)
-    refs = call_llm_streaming(messages, num_ctx=num_ctx2, num_predict=8192) or ""
+    refs = call_llm_streaming(messages, num_ctx=65536, num_predict=8192) or ""
     tprint("Phase2 LLM 完成")
     log({"type": "phase2_refs", "content": refs})
 

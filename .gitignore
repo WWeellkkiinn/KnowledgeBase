@@ -1,6 +1,6 @@
-papers/
 .claude/
-codex/
+tests/
+.cache/
 __pycache__/
 *.pyc
 *.log
