@@ -1,0 +1,35 @@
+{
+  "nodes": {
+    "Organizing for AI Innovation Insights From an Empirical Exploration of US Patents": {
+      "title": "Organizing for AI Innovation Insights From an Empirical Exploration of US Patents",
+      "path": "papers/Organizing for AI Innovation Insights From an Empirical Exploration of US Patents",
+      "depth": 0,
+      "analyzed": true
+    },
+    "01_giczy_2022": {
+      "title": "01_giczy_2022",
+      "path": "papers/01_giczy_2022",
+      "depth": 0,
+      "analyzed": true
+    },
+    "02_arts_2018": {
+      "title": "02_arts_2018",
+      "path": "papers/02_arts_2018",
+      "depth": 0,
+      "analyzed": true
+    },
+    "03_iacus_2012": {
+      "title": "03_iacus_2012",
+      "path": "papers/03_iacus_2012",
+      "depth": 0,
+      "analyzed": false
+    },
+    "05_bena_2022": {
+      "title": "05_bena_2022",
+      "path": "papers/05_bena_2022",
+      "depth": 0,
+      "analyzed": true
+    }
+  },
+  "edges": []
+}

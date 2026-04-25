@@ -43,7 +43,7 @@ def main():
             f"{MINERU_API}/tasks",
             files={"files": (pdf_path.name, f, "application/pdf")},
             data={"return_md": "true", "backend": "hybrid-auto-engine"},
-            timeout=120,
+            timeout=300,
         )
     resp.raise_for_status()
     data = resp.json()

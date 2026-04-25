@@ -25,9 +25,11 @@
 | 层次 | 状态 |
 |------|------|
 | 单篇分析（PDF → 分析 → 引用提取） | ✅ 完成 |
-| 引用文献元数据补充与 PDF 下载 | ✅ 完成（下载成功率受 OA 覆盖率限制） |
-| 迭代扩展（自动下载并分析引用论文） | 🔲 待实现 |
-| 知识网络构建与可视化 | 🔲 待实现 |
+| 引用文献元数据补充与 PDF 下载 | ✅ 已接入分析流程（Phase 3 自动执行） |
+| 下载失败兜底清单（人工补） | ✅ 完成（`refs_failed.md`） |
+| 迭代扩展（对下载到的引用继续分析） | ✅ 完成（`expand.py` BFS，支持断点续跑） |
+| 知识网络（节点 + 边持久化） | ✅ 完成（`network.json`） |
+| 知识网络可视化 | 🔲 待实现 |
 
 ---
 
@@ -40,7 +42,8 @@ scripts/
   extract_refs.py    ← 解析论文引用（数字格式 [1] 和 APA 格式）
   search_refs.py     ← 搜索引用文献元数据 + PDF URL
   download_pdf.py    ← 下载 PDF（支持落地页解析）
-  run_analysis_ui.py ← 单篇分析 Web UI（SSE 流式，两轮 multi-turn）
+  run_analysis_ui.py ← 单篇分析 Web UI（SSE 流式，3 阶段：分析 → 引用 → 下载；支持 --headless）
+  expand.py          ← 递归展开引用网络（BFS，manifest 去重，断点续跑）
   _marked.min.js     ← Web UI 依赖（Markdown 渲染）
   _dompurify.min.js  ← Web UI 依赖（XSS 防护）
 ```
@@ -51,43 +54,65 @@ scripts/
 
 ```
 DOI 完整 → Unpaywall → OpenAlex DOI直查 → Semantic Scholar DOI直查
-             ↓（均无结果或 title 不符）
-标题搜索 → OpenAlex → Semantic Scholar → arXiv → CORE
+             ↓（均无结果、无 pdf_url 或 title 不符）
+标题搜索 → OpenAlex → Semantic Scholar → arXiv → RePEC → CORE → Google Scholar (scholarly)
 ```
 
 - 所有路径均进行**标题相似度验证**（阈值 0.80），防止错误 DOI 或误匹配
-- Unpaywall `best_oa_location` 字段同时返回直链（`url_for_pdf`）和落地页（`url`），两者均可被 `download_pdf.py` 处理
+- **关键行为**：某来源找到元数据但 `pdf_url` 为空时，**不会提前返回**，而是继续尝试后续来源，直到找到 PDF 链接或全部来源耗尽。元数据（doi、authors、year）保留自首次命中的来源。
+- RePEC (IDEAS.repec.org) 专为经济学/金融/管理学论文设计，覆盖大量工作论文版本
+- scholarly（Google Scholar 非官方）作为最后兜底，有限速风险但覆盖最广
 
 ### download_pdf.py 下载逻辑
 
-**两条分支：**
+`download_pdf.py` 是薄分发器，按 URL 特征选择 `scripts/downloaders/` 下的 handler：
 
-1. **普通站点**（默认）：`httpx` 直接 GET → 校验 PDF（Content-Type 或 `%PDF` 文件头）→ 若为落地页，按 `_LANDING_PAGE_RULES` 递归抽取真实 PDF 链接（最多 3 跳，复用同一 client 保留 cookie/Referer）
-2. **SSRN**（`ssrn.com` 域名）：走 `patchright` 启动真实 Chrome（持久化 profile，存于项目下 `.cache/browser_profile/`），等 Cloudflare 挑战通过，自动点"Download This Paper"按钮保存 PDF
+| Handler | 触发条件 | 策略 |
+|---|---|---|
+| `nber.py` | `nber.org` | URL 重写（旧格式 → 新格式）+ httpx |
+| `ssrn.py` | `ssrn.com` | patchright 浏览器 + CF Turnstile 自动点击 |
+| `generic.py` | 兜底（所有其他 URL） | httpx → landing page 递归 → Unpaywall fallback → SSRN 重定向检测 |
 
-**当前 landing 规则：** Harvard DASH、Gary King 个人主页、RePEc IDEAS、通用 DSpace。新增规则在 `_LANDING_PAGE_RULES` 列表追加一条即可。
+**新增来源**：在 `scripts/downloaders/` 下创建新模块，实现 `can_handle(url)` + `download(url, path)`，在 `download_pdf.py` 的 `_HANDLERS` 列表中插入合适位置即可。
 
-**SSRN 分支说明：** 会短暂弹出可见 Chrome 窗口（无头模式会被 Cloudflare 识破）。首次访问约 10s 通过挑战，后续复用 cookie 更快。需本机装有 Chrome。浏览器持久化 profile 存于项目下 `.cache/browser_profile/`（已 gitignore）。
+**SSRN 下载（全自动，无需手动操作）：**
+
+patchright headed 浏览器自动处理 Cloudflare Turnstile：
+- 检测到挑战页（标题含「请稍候」/「正在进行安全验证」）时，自动定位 `challenges.cloudflare.com` iframe 内的 checkbox 并点击
+- 优先尝试 CDP 接管已运行的真实 Chrome（`:9222`），不可用时自动启动 headed 浏览器
+
+**Wayback Machine（archive.org）：** 冷缓存响应慢，`generic.py` 对该域名使用 `httpx.Timeout(90.0, connect=30.0)` 单独控制读取超时。
+
+**当前 landing 规则（generic.py）：** Harvard DASH、Gary King 个人主页、RePEC IDEAS、通用 DSpace。新增规则在 `_LANDING_PAGE_RULES` 追加一条即可。
 
 ---
 
 ## 目录结构
 
 ```
-papers/                         ← 所有论文数据（分析产物入库，原始 PDF 不入库）
-  <论文标题>/
-    <论文标题>.pdf               ← 原始 PDF（手动放置或自动下载）
-    <论文标题>.md                ← MinerU 转换的 Markdown
-    analysis_insight.md         ← LLM 内容分析（总分总结构）
-    analysis_refs.md            ← LLM 高相关引用分析（完整标题）
-    refs.json                   ← 全部引用（含 DOI/pdf_url/relevance）
-    todo_download.txt           ← 高相关性引用的下载清单
-    session_*.jsonl             ← LLM 会话记录（仅保留最新）
+papers/                             ← 所有论文数据（分析产物入库，原始 PDF 不入库）
+  _manifest.json                    ← 已分析论文清单（expand.py 去重 + 断点续跑用）
+  <论文 stem>/                      ← stem 即文件名 basename（root 用论文标题，refs 用 NN_第一作者_年份）
+    <论文 stem>.pdf                 ← 原始 PDF（手动放置或被上级 refs/ 下载）
+    <论文 stem>.md                  ← MinerU 转换的 Markdown
+    analysis_insight.md             ← Phase 1：LLM 内容分析
+    analysis_refs.md                ← Phase 2：LLM 高相关引用分析（含可选 DOI）
+    refs/                           ← Phase 3：自动下载的引用 PDF
+      01_<第一作者>_<年份>.pdf       ← 编号与 analysis_refs.md 对齐，递归的入口
+      02_<第一作者>_<年份>.pdf
+      ...
+    refs_failed.md                  ← Phase 3：下载失败清单（仅失败时存在，供人工补）
+    session_*.jsonl                 ← LLM 会话记录
 
-scripts/                        ← 所有脚本
-  config.py                     ← API Keys（不提交）
+scripts/                            ← 所有脚本
+  config.py                         ← API Keys（不提交）
+  downloaders/                      ← PDF 下载 handler 插件目录
+    nber.py                         ← NBER 工作论文（URL 重写）
+    ssrn.py                         ← SSRN + Cloudflare Turnstile 自动点击
+    unpaywall.py                    ← DOI → OA PDF 直链 helper（被 generic 调用）
+    generic.py                      ← 通用 httpx + landing page + Unpaywall fallback
 
-network.json                    ← 知识网络数据（待实现）
+network.json                        ← 知识网络（节点 + 边），由 expand.py 维护
 ```
 
 **关于 papers/ 目录**：分析产物（Markdown、refs.json、分析结果等）纳入版本控制，原始 PDF 体积较大不建议提交。`tests/` 目录放测试用 PDF，已被 `.gitignore` 忽略。
@@ -104,18 +129,22 @@ network.json                    ← 知识网络数据（待实现）
 conda create -n kb python=3.12 -y
 conda activate kb
 pip install -r requirements.txt
-# SSRN 等 Cloudflare 站点需要真实 Chrome（用系统已装的 Chrome 即可，以下命令补全 Playwright 驱动）
-python -m patchright install chrome
 ```
 
 **日常使用：**
 
 ```powershell
 conda activate kb
-# 确认服务器上 Ollama（:13812）和 MinerU（:8000）已启动
+# 1. 确认服务器上 Ollama（:13812）和 MinerU（:8000）已启动
+# 2. 启动一个手动 Chrome 实例（SSRN 引用文件下载必需，每天/Chrome 关掉后重做）：
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --user-data-dir=.cache\real_profile
+# 3. 在该 Chrome 中访问 https://www.ssrn.com/ 一次（CF 一般自动放行；
+#    若标题卡在「请稍候」，等几秒或刷新即可）
 ```
 
-依赖清单（`requirements.txt`）：`httpx`、`patchright`（隐身 Playwright 分支，用于绕 SSRN 的 Cloudflare）。
+依赖清单（`requirements.txt`）：`httpx`、`patchright`（Playwright 隐身分支，提供 CDP 接管 API）。
 
 ### 1. PDF 转 Markdown
 
@@ -131,19 +160,37 @@ python scripts/run_analysis_ui.py papers/<论文标题>/<论文标题>.md --focu
 # 自动打开 http://localhost:8765
 ```
 
-分析完成后，`papers/<论文标题>/` 下会生成 `analysis_insight.md`、`analysis_refs.md`、`session_*.jsonl`。
+分析完成后，`papers/<论文标题>/` 下会生成：
 
-### 3. 下载引用文献 PDF
+- `analysis_insight.md`（Phase 1）
+- `analysis_refs.md`（Phase 2）
+- `refs/NN_<第一作者>_<年份>.pdf`（Phase 3 自动下载，编号与 Phase 2 一致）
+- `refs_failed.md`（仅失败时生成）—— 人工补下清单，逐条含标题/DOI/pdf_url/失败原因
+- `session_*.jsonl`
+
+### 3. 递归展开引用网络
 
 ```bash
-# 单条下载（测试用）
-python scripts/download_pdf.py <url> papers/<新论文标题>/<新论文标题>.pdf
+# 对 root 论文跑完整流程，再对它下载到的 refs/*.pdf 跑一层（共 2 层）
+python scripts/expand.py "papers/<root>/<root>.pdf" --focus "研究方法" --max-depth 1
 
-# 批量下载引用文献（todo_download.txt 中所有条目）
-# ← expand.py 待实现，当前需手动逐条下载
+# 更深递归 + 每篇限前 N 条 refs（控制预算）
+python scripts/expand.py "papers/<root>/<root>.pdf" --focus "研究方法" --max-depth 2 --max-breadth 5
 ```
 
-### 4. 查询论文元数据
+行为：
+- BFS 遍历，串行执行（MinerU 同步 + SSRN 浏览器互斥）
+- `papers/_manifest.json` 记录已分析的 stem，重跑命中即秒过（**支持断点续跑**）
+- 每篇完成即持久化 `network.json`（节点 + 边），中途 Ctrl+C 不丢
+- 失败节点（pdf2md / LLM / 下载失败）照样入网络图，但子树跳过；下载失败的单条引用进 `refs_failed.md`
+
+### 4. 手动下载单个 PDF（调试用）
+
+```bash
+python scripts/download_pdf.py <url> <输出路径.pdf>
+```
+
+### 5. 查询论文元数据
 
 ```bash
 python scripts/search_refs.py "论文标题" --doi "10.xxxx/xxxxx"
@@ -162,12 +209,13 @@ ENABLE_THINKING = True   # /no_think 前缀开启思维链（qwen3.6 语义反�
 num_ctx=65536, num_predict=8192, temperature=0.1
 ```
 
-### 分析流程（两轮 multi-turn，共享 KV cache）
+### 分析流程（3 阶段；前两阶段 multi-turn 共享 KV cache）
 
-| 轮次 | 说明 | 输出文件 |
-|------|------|----------|
-| Turn 1 | 全文送入，输出论文在关注重点上的内容分析（总览 / 详细内容 / 小结） | `analysis_insight.md` |
-| Turn 2 | 接续同一对话，列出高相关引用（完整标题 + 作用说明） | `analysis_refs.md` |
+| 阶段 | 说明 | 输出 |
+|------|------|------|
+| Phase 1 | 全文送入，输出论文在关注重点上的内容分析（总览 / 详细内容 / 小结） | `analysis_insight.md` |
+| Phase 2 | 接续同一对话，列出高相关引用（完整标题 + 作用说明） | `analysis_refs.md` |
+| Phase 3 | 逐条解析 Phase 2 引用 → `search_refs.py` 找 URL → `download_pdf.py` 下载 | `refs/*.pdf` + `refs_failed.md`（如有失败） |
 
 ---
 
@@ -175,9 +223,9 @@ num_ctx=65536, num_predict=8192, temperature=0.1
 
 | 项目 | 说明 |
 |------|------|
-| PDF 下载成功率 | 管理学/经济学期刊约 10-20%，受 OA 覆盖率限制，非代码问题 |
-| 迭代扩展 | `expand.py` 待实现：自动读 todo_download.txt → 下载 → 分析 → 积累网络 |
-| 知识网络 | `network.json` 数据结构已设计，可视化层待实现 |
+| PDF 下载成功率 | 受 OA 覆盖率限制；失败条目进 `refs_failed.md` 供人工介入 |
+| 递归去重粒度 | 当前仅按 stem（文件名）去重；未来遇到"同一论文不同 stem"时可升级为 DOI / title-slug |
+| 网络图可视化 | `network.json` 结构就绪（`nodes` + `edges`），未来接 Obsidian Canvas / D3 渲染 |
 
 ---
 

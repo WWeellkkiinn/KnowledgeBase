@@ -17,6 +17,10 @@ from pathlib import Path
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).parent))
+from search_refs import search as search_ref  # noqa: E402
+from download_pdf import download as download_pdf_fn  # noqa: E402
+
 # 从同目录读取本地 JS 库（避免 CDN 依赖）
 _SCRIPT_DIR = Path(__file__).parent
 try:
@@ -58,12 +62,43 @@ REFS_USER_TPL = (
     "2. 与「{focus}」的直接联系\n\n"
     "只输出高相关引用，不相关的直接忽略。\n\n"
     "输出格式（严格遵守）：\n\n"
-    "### [编号] 第一作者 et al. (年份) — 完整标题\n"
+    "### [编号] 第一作者 et al. (年份) — 完整标题  ·  DOI: 10.xxxx/xxxx\n"
     "**在论文中的作用**：xxx\n"
     "**与「{focus}」的联系**：xxx\n\n"
     "---\n\n"
-    "（每条引用之间用 --- 分隔，若只有一位作者则不加 et al.）"
+    "规则：\n"
+    "- 每条引用之间用 --- 分隔\n"
+    "- 若只有一位作者则不加 et al.\n"
+    "- DOI：若论文参考文献列表中明确给出，原样抄录在标题后；若未给出则省略整个 `  ·  DOI: ...` 部分，**绝不编造或猜测 DOI**"
 )
+
+# ── Ref parsing ───────────────────────────────────────────────────────────────
+
+# 匹配 LLM Phase 2 输出：`### 1. Giczy...` 或 `### [1] Giczy...`
+# 序号接受 `N.` / `[N]` / `[N].`；分隔符接受 em dash (—) 或 ASCII hyphen (-)
+_REF_HEADING = re.compile(
+    r'^###\s*\[?(\d+)\]?\.?\s*(.+?)\s+\((\d{4})\)\s*[—–-]\s*'
+    r'(.+?)(?:\s*·\s*DOI:\s*(\S+))?\s*$',
+    re.MULTILINE,
+)
+
+
+def _parse_refs(text: str) -> list[dict]:
+    """解析 analysis_refs.md 中的引用标题行为结构化条目。"""
+    out = []
+    for m in _REF_HEADING.finditer(text):
+        idx, authors, year, title, doi = m.groups()
+        first = re.match(r'[A-Za-z]+', authors)
+        out.append({
+            "index": int(idx),
+            "authors": authors.strip(),
+            "year": year,
+            "title": title.strip(),
+            "doi": (doi or "").strip(),
+            "first_author": (first.group(0).lower() if first else "unknown"),
+        })
+    return out
+
 
 # ── SSE broadcast ─────────────────────────────────────────────────────────────
 
@@ -235,6 +270,7 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;fon
     <div class="sb-title">\u5206\u6790\u9636\u6bb5</div>
     <div class="ph"><div class="ph-dot" id="d1">1</div><div class="ph-lbl" id="l1">\u8bba\u6587\u5185\u5bb9\u5206\u6790</div></div>
     <div class="ph"><div class="ph-dot" id="d2">2</div><div class="ph-lbl" id="l2">\u9ad8\u76f8\u5173\u5f15\u7528\u5206\u6790</div></div>
+    <div class="ph"><div class="ph-dot" id="d3">3</div><div class="ph-lbl" id="l3">\u4e0b\u8f7d\u5f15\u7528 PDF</div></div>
   </div>
   <div id="stream"></div>
 </div>
@@ -260,7 +296,7 @@ es.onopen=()=>set('conn','\u5df2\u8fde\u63a5');
 es.onerror=()=>set('conn','\u8fde\u63a5\u65ad\u5f00');
 es.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(x){console.error(x,e.data);}};
 
-const PHASE_MAX=2;
+const PHASE_MAX=3;
 function setPhase(n){
   // 夹紧到 [1, PHASE_MAX]，防御异常输入导致负宽/越界
   n=Math.max(1,Math.min(PHASE_MAX,n|0));
@@ -726,6 +762,73 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
 
     (output_dir / "analysis_refs.md").write_text(header + refs + "\n", encoding="utf-8")
 
+    # ── Phase 3：逐条搜索元数据并下载 PDF ─────────────────────────────────────
+    broadcast({"type": "iter", "n": 3, "max": 3, "label": "下载引用 PDF"})
+    tprint("Phase3 开始（搜索 + 下载）")
+
+    parsed = _parse_refs(refs)
+    if not parsed:
+        broadcast({"type": "info", "msg": "未解析到引用条目，跳过下载"})
+    else:
+        refs_dir = output_dir / "refs"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        failed: list[dict] = []
+        for r in parsed:
+            idx, title, year = r["index"], r["title"], r["year"]
+            src_doi = r.get("doi", "")
+            broadcast({"type": "tool_call", "tool": "search_refs",
+                       "args": {"title": title, "year": year, "doi": src_doi or "-"}})
+            try:
+                meta = search_ref(title, year=year, doi=src_doi)
+            except Exception as e:
+                meta = {"source": f"error:{type(e).__name__}", "pdf_url": "", "doi": ""}
+            src = meta.get("source", "?")
+            pdf_url = meta.get("pdf_url") or ""
+            doi = meta.get("doi") or src_doi
+            broadcast({"type": "tool_result",
+                       "content": f"source={src}  doi={doi or '-'}  pdf={'yes' if pdf_url else 'no'}"})
+            log({"type": "ref_search", "index": idx, "title": title,
+                 "source": src, "doi": doi, "pdf_url": pdf_url})
+
+            if not pdf_url:
+                failed.append({**r, "doi": doi, "pdf_url": "",
+                               "reason": f"未找到 PDF (source={src})"})
+                continue
+
+            fname = f"{idx:02d}_{r['first_author']}_{year}.pdf"
+            fpath = refs_dir / fname
+            broadcast({"type": "tool_call", "tool": "download_pdf",
+                       "args": {"url": pdf_url, "out": fname}})
+            try:
+                ok, msg = download_pdf_fn(pdf_url, str(fpath))
+            except Exception as e:
+                ok, msg = False, f"{type(e).__name__}: {e}"
+            broadcast({"type": "tool_result", "content": msg})
+            log({"type": "ref_download", "index": idx, "ok": ok,
+                 "path": str(fpath) if ok else "", "reason": "" if ok else msg})
+
+            if not ok:
+                failed.append({**r, "doi": doi, "pdf_url": pdf_url, "reason": msg})
+
+        if failed:
+            lines = [f"# 下载失败清单\n\n共 {len(failed)} 条需人工介入：\n"]
+            for f in failed:
+                lines.append(f"## [{f['index']}] {f['authors']} ({f['year']}) — {f['title']}")
+                lines.append(f"- doi: {f.get('doi') or '-'}")
+                lines.append(f"- pdf_url: {f.get('pdf_url') or '-'}")
+                lines.append(f"- reason: {f['reason']}\n")
+            failed_path = output_dir / "refs_failed.md"
+            # 保留上次人工批注：若已存在，重命名加时间戳后再写新文件
+            if failed_path.exists():
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                failed_path.rename(output_dir / f"refs_failed.{stamp}.md")
+            failed_path.write_text("\n".join(lines), encoding="utf-8")
+            broadcast({"type": "warn",
+                       "msg": f"下载失败 {len(failed)}/{len(parsed)} 条 → refs_failed.md"})
+        else:
+            broadcast({"type": "info", "msg": f"全部 {len(parsed)} 条下载成功"})
+    tprint("Phase3 完成")
+
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_path = output_dir / f"session_{ts}.jsonl"
     log({"type": "session_complete"})
@@ -734,10 +837,12 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
 
     broadcast({"type": "done", "log_path": str(log_path)})
 
-    time.sleep(2)
-    with _clients_lock:
-        for q in _clients:
-            q.put(None)
+    # 仅在有 SSE 客户端时才等它们收完再关：headless 下跳过以免浪费 2s
+    if _clients:
+        time.sleep(2)
+        with _clients_lock:
+            for q in _clients:
+                q.put(None)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -748,6 +853,8 @@ def main():
     parser.add_argument("--focus", required=True)
     parser.add_argument("--output-dir", default="papers")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--headless", action="store_true",
+                        help="不启 HTTP/浏览器，主线程跑完 3 阶段即退出（供 expand.py 递归用）")
     args = parser.parse_args()
 
     md_path = Path(args.md_path)
@@ -756,6 +863,11 @@ def main():
         sys.exit(1)
 
     output_dir = Path(args.output_dir) / md_path.stem
+
+    if args.headless:
+        print(f"[headless] {md_path.name}  focus={args.focus}")
+        _run_loop_inner(md_path, args.focus, output_dir)
+        return
 
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer.daemon_threads = True
