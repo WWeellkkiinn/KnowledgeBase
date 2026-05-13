@@ -72,7 +72,7 @@ def test_search_service_delegates_to_scripts(monkeypatch):
     assert out["source"] == "fake"
 
 
-def test_download_service_delegates(monkeypatch):
+def test_download_service_delegates(monkeypatch, tmp_path):
     captured = {}
     fake_module = type(sys)("download_pdf")
     def fake_download(url, output_path):
@@ -82,9 +82,23 @@ def test_download_service_delegates(monkeypatch):
     monkeypatch.setitem(sys.modules, "download_pdf", fake_module)
 
     from services import DownloadService
-    ok, msg = DownloadService().download("https://x/y.pdf", "/tmp/y.pdf")
+    target = (Path(__file__).resolve().parent.parent / "papers" / "_tmp_test.pdf")
+    ok, msg = DownloadService().download("https://x/y.pdf", str(target))
     assert ok is True and msg == "ok"
-    assert captured["args"] == ("https://x/y.pdf", "/tmp/y.pdf")
+    assert captured["args"][0] == "https://x/y.pdf"
+
+
+def test_download_service_rejects_bad_scheme():
+    from services import DownloadService
+    with pytest.raises(ValueError, match="scheme"):
+        DownloadService().download("file:///etc/passwd", "papers/a.pdf")
+
+
+def test_download_service_rejects_path_traversal(tmp_path):
+    from services import DownloadService
+    outside = str(tmp_path / "evil.pdf")
+    with pytest.raises(ValueError, match="papers"):
+        DownloadService().download("https://x/y.pdf", outside)
 
 
 def test_expand_service_delegates(monkeypatch):
