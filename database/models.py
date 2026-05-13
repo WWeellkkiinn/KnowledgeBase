@@ -1,0 +1,212 @@
+"""SQLAlchemy ORM 模型 —— 对齐 PLAN.md §3 schema。
+
+8 张表：
+  papers / journals / edges / tasks / subscriptions /
+  subscription_results / citations / sessions
+
+实现注意：
+- DateTime 一律 naive UTC：SQLite 不真正保存时区信息，强行写 timezone=True 会造成
+  naive/aware 混用陷阱。约定：写入侧统一用 `datetime.now(timezone.utc).replace(tzinfo=None)`，
+  读出后视为 UTC。
+- PLAN §3 中的列 `index` 在 ORM 落地为 `ref_index`（`index` 是 SQL 关键字）。
+- JSON 列中可能 in-place 修改的字段（payload_json / target_json）用 MutableDict 包装。
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from . import Base
+
+MutableJSON = MutableDict.as_mutable(JSON)
+
+
+class Journal(Base):
+    __tablename__ = "journals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issn: Mapped[str] = mapped_column(String(16), unique=True)
+    name: Mapped[str] = mapped_column(String(512))
+    publisher: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    quality_tier: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 1-4
+    is_predatory: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0"), nullable=False
+    )
+    oa_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    source_dataset: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class Paper(Base):
+    __tablename__ = "papers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stem: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    doi: Mapped[Optional[str]] = mapped_column(String(256), unique=True, nullable=True, index=True)
+    arxiv_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+    title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    authors_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    journal_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("journals.id", ondelete="SET NULL"), nullable=True
+    )
+    pdf_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    md_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    insight_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    refs_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="pending", server_default=text("'pending'"), nullable=False
+    )  # pending|analyzed|failed
+    failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(32), default="ref", server_default=text("'ref'"), nullable=False
+    )  # root|ref|forward|subscription
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+    analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    journal: Mapped[Optional[Journal]] = relationship(Journal, lazy="joined")
+
+
+class Edge(Base):
+    __tablename__ = "edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    from_paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    to_paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)  # backward|forward
+    # PLAN §3 的 `index`：backward 边来自分析序号；forward 边可能没有，因此允许 NULL
+    ref_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ref_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    discovered_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+
+    __table_args__ = (
+        # 仅对 ref_index 非空的边强制 "(from, direction, ref_index) 唯一"；
+        # SQLite partial index 在 migration 里手写（Alembic autogenerate 不支持 partial）。
+        UniqueConstraint("from_paper_id", "direction", "ref_index", name="uq_edge_indexed"),
+    )
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    paper_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    payload_json: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default="queued", server_default=text("'queued'"), nullable=False, index=True
+    )
+    attempt: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, default=3, server_default=text("3"), nullable=False
+    )
+    parent_task_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error_log: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)  # paper_citations|author_works|topic_search
+    target_json: Mapped[dict] = mapped_column(MutableJSON, nullable=False)
+    cron_expr: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("1"), nullable=False, index=True
+    )
+
+
+class SubscriptionResult(Base):
+    __tablename__ = "subscription_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subscription_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    paper_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="SET NULL"), nullable=True
+    )
+    raw_metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    notified: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0"), nullable=False
+    )
+    found_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+
+
+class Citation(Base):
+    __tablename__ = "citations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    citation_key: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    bibtex: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    apa: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class SessionRecord(Base):
+    """对应 papers/<stem>/session_*.jsonl 的索引。"""
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    jsonl_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    phase: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+Index("ix_tasks_status_type", Task.status, Task.type)
+Index("ix_subscriptions_active_next", Subscription.active, Subscription.next_run_at)
+
+
+__all__ = [
+    "Paper",
+    "Journal",
+    "Edge",
+    "Task",
+    "Subscription",
+    "SubscriptionResult",
+    "Citation",
+    "SessionRecord",
+]

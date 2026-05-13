@@ -1,7 +1,14 @@
 .claude/
-tests/
 .cache/
+.pytest_cache/
+tests/downloads/
 __pycache__/
 *.pyc
 *.log
 scripts/config.py
+
+# SQLite 数据库（DB 是真相源，但本地实例不入库；可通过 migrate_to_db.py 重建）
+kb.db
+kb.db-journal
+kb.db-shm
+kb.db-wal
