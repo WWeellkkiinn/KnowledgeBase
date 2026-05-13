@@ -532,3 +532,84 @@ def get_network():
         "total": total,
         "truncated": total > len(papers),
     })
+
+
+# ─── M4.3 失败诊断面板 ───────────────────────────────────────────────
+
+import os as _os
+import re as _re_fail
+from pathlib import Path as _Path
+
+
+def _categorize_reason(reason: str) -> str:
+    r = reason.lower()
+    if "403" in reason or "401" in reason:
+        return "paywalled"
+    if _re_fail.search(r"http [45]\d\d", reason):
+        return "http_error"
+    if "not a pdf" in r or "content-type" in r:
+        return "not_a_pdf"
+    if "timeout" in r or "browser fail" in r:
+        return "browser_timeout"
+    if "no pdf" in r or "not found" in r:
+        return "no_pdf_found"
+    return "other"
+
+
+def _parse_refs_failed(path: _Path) -> list[dict]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    items = []
+    for section in _re_fail.split(r"\n## \[", text)[1:]:
+        lines = section.strip().splitlines()
+        m = _re_fail.match(r"(\d+)\](.+)", lines[0]) if lines else None
+        if not m:
+            continue
+        ref_index = int(m.group(1))
+        header_rest = m.group(2).strip()
+        doi = pdf_url = reason = ""
+        for line in lines[1:]:
+            line = line.strip()
+            if line.startswith("- doi:"):
+                doi = line[6:].strip()
+            elif line.startswith("- pdf_url:"):
+                pdf_url = line[10:].strip()
+            elif line.startswith("- reason:"):
+                reason = line[9:].strip()
+        items.append({
+            "ref_index": ref_index,
+            "header": header_rest,
+            "doi": doi,
+            "pdf_url": pdf_url,
+            "reason": reason,
+            "category": _categorize_reason(reason),
+        })
+    return items
+
+
+@bp.get("/failures")
+def get_failures():
+    """扫描所有 papers/*/refs_failed.md，聚合失败条目及分类统计。"""
+    papers_root = _Path(_os.environ.get("PAPERS_DIR", "papers")).resolve()
+
+    items: list[dict] = []
+    # 构建 stem→paper_id 映射供关联
+    paper_map: dict[str, int] = {
+        row.stem: row.id
+        for row in g.db.execute(select(models.Paper)).scalars()
+    }
+
+    for failed_file in sorted(papers_root.glob("*/refs_failed.md")):
+        stem = failed_file.parent.name
+        paper_id = paper_map.get(stem)
+        for entry in _parse_refs_failed(failed_file):
+            items.append({**entry, "stem": stem, "paper_id": paper_id})
+
+    by_category: dict[str, int] = {}
+    for it in items:
+        cat = it["category"]
+        by_category[cat] = by_category.get(cat, 0) + 1
+
+    return jsonify({"total": len(items), "by_category": by_category, "items": items})

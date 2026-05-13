@@ -8,6 +8,7 @@ const nav = [
   { to: '/network', label: 'Network' },
   { to: '/review', label: 'Review' },
   { to: '/subscriptions', label: 'Subscriptions' },
+  { to: '/failures', label: 'Failures' },
 ]
 </script>
 

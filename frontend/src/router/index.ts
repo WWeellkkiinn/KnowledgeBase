@@ -16,6 +16,7 @@ const routes: RouteRecordRaw[] = [
     name: 'subscriptions',
     component: () => import('@/pages/Subscriptions.vue'),
   },
+  { path: '/failures', name: 'failures', component: () => import('@/pages/Failures.vue') },
 ]
 
 export default createRouter({

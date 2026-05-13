@@ -1,5 +1,6 @@
 import client from './client'
 import type {
+  FailuresResponse,
   ForwardTrackResult,
   InboxItem,
   ListResponse,
@@ -75,4 +76,8 @@ export const inboxApi = {
 
 export const healthApi = {
   ping: () => client.get<{ ok: boolean }>('/health').then((r) => r.data),
+}
+
+export const failuresApi = {
+  list: () => client.get<FailuresResponse>('/failures').then((r) => r.data),
 }

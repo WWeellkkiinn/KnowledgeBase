@@ -121,3 +121,20 @@ export interface NetworkGraph {
   nodes: NetworkNode[]
   edges: NetworkEdge[]
 }
+
+export interface FailureItem {
+  stem: string
+  paper_id: number | null
+  ref_index: number
+  header: string
+  doi: string
+  pdf_url: string
+  reason: string
+  category: string
+}
+
+export interface FailuresResponse {
+  total: number
+  by_category: Record<string, number>
+  items: FailureItem[]
+}
