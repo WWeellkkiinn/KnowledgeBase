@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import re
 
-from flask import Blueprint, g, jsonify, request
-from sqlalchemy import select
+from flask import Blueprint, Response, g, jsonify, request, stream_with_context
+from sqlalchemy import func, select
 
 from database import models
 
@@ -113,6 +113,18 @@ def list_papers():
 
     rows = g.db.execute(stmt).scalars().all()
     return jsonify({"items": [_paper_to_dict(p) for p in rows], "limit": limit, "offset": offset})
+
+
+@bp.get("/papers/stats")
+def papers_stats():
+    """轻量聚合：库内 paper 总数 + 已分析数，供 Dashboard 用，
+    避免前端为算计数把 500 条 papers 全拉回来。"""
+    total = g.db.execute(select(func.count()).select_from(models.Paper)).scalar_one()
+    analyzed = g.db.execute(
+        select(func.count()).select_from(models.Paper)
+        .where(models.Paper.status == "analyzed")
+    ).scalar_one()
+    return jsonify({"total": int(total), "analyzed": int(analyzed)})
 
 
 @bp.get("/papers/<int:paper_id>")
@@ -374,3 +386,149 @@ def get_all_bibtex():
         {"Content-Type": "application/x-bibtex; charset=utf-8",
          "Content-Disposition": 'attachment; filename="kb-citations.bib"'},
     )
+
+
+# ─── M3.5 跨论文综述 SSE 流 ───────────────────────────────────────
+
+import json as _json  # 模块顶部 import 避免每次请求做局部 import
+import threading as _threading
+from services import ReviewService as _ReviewService
+
+# 全局重入保护：同一进程内最多 _REVIEW_MAX_INFLIGHT 个综述流并发，
+# 防止用户连点导致 LLM 资源耗尽（review skill C2/X3 审查发现）。
+_REVIEW_MAX_INFLIGHT = 2
+_review_inflight = 0
+_review_lock = _threading.Lock()
+
+
+def _try_acquire_review_slot() -> bool:
+    global _review_inflight
+    with _review_lock:
+        if _review_inflight >= _REVIEW_MAX_INFLIGHT:
+            return False
+        _review_inflight += 1
+        return True
+
+
+def _release_review_slot() -> None:
+    global _review_inflight
+    with _review_lock:
+        _review_inflight = max(0, _review_inflight - 1)
+
+
+@bp.post("/reviews")
+def create_review():
+    """触发综述生成。SSE 流式响应，事件名 `chunk` / `done` / `error`。
+
+    body: {"paper_ids": [int, ...], "focus": str}
+    """
+    body = request.get_json(silent=True) or {}
+    raw_ids = body.get("paper_ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"error": "paper_ids required"}), 400
+    try:
+        paper_ids = [int(x) for x in raw_ids][:50]  # 上限 50 篇，防止 LLM 上下文爆
+    except (TypeError, ValueError):
+        return jsonify({"error": "paper_ids must be ints"}), 400
+    focus = str(body.get("focus") or "研究方法")[:200]
+
+    if not _try_acquire_review_slot():
+        return jsonify({"error": "too many concurrent reviews; try again later"}), 429
+
+    svc = _ReviewService()
+
+    def _emit_error(msg: str) -> str:
+        # SSE data 字段不允许裸 \n（spec 要求拆多行 data:）。
+        # JSON.stringify 已将 \n 转义为 "\\n"，但保险起见再保证单行。
+        return f"event: error\ndata: {_json.dumps({'error': msg})}\n\n"
+
+    def sse():
+        try:
+            for chunk in svc.generate_stream(g.db, paper_ids, focus=focus):
+                yield f"event: chunk\ndata: {_json.dumps(chunk, ensure_ascii=False)}\n\n"
+            yield "event: done\ndata: {}\n\n"
+        except Exception:
+            # 详细异常只落日志，不回显客户端（与 forward-track 策略一致）。
+            import logging
+            logging.getLogger(__name__).exception("review stream failed")
+            yield _emit_error("review stream failed")
+        finally:
+            _release_review_slot()
+
+    return Response(
+        stream_with_context(sse()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁 nginx 缓冲（如果有反代）
+        },
+    )
+
+
+# ─── M3.4 网络图全图（薄壳：纯只读聚合） ────────────────────────────
+
+
+@bp.get("/network")
+def get_network():
+    """返回 Cytoscape 渲染所需的 {nodes, edges, total}。
+
+    - nodes：携带 quality_tier（用于前端按 Tier 着色），N 大时不取 journal 详情
+    - edges：用 Python 端 paper_id_set 过滤（避免 SQLite 999 参数上限）
+    - total：库内 paper 总数，供前端判断是否截断
+    """
+    try:
+        limit = max(1, min(int(request.args.get("limit", 1000)), 2000))
+    except ValueError:
+        return jsonify({"error": "invalid pagination"}), 400
+
+    total = g.db.execute(
+        select(func.count()).select_from(models.Paper)
+    ).scalar_one()
+
+    papers = g.db.execute(
+        select(models.Paper).order_by(models.Paper.id.asc()).limit(limit)
+    ).scalars().all()
+    paper_id_set: set[int] = {p.id for p in papers}
+
+    journal_ids = [pid for pid in {p.journal_id for p in papers} if pid is not None]
+    journal_tier: dict[int, int | None] = {}
+    # SQLite 单语句最多 999 参数；超过时拆批查询避免崩溃。
+    _CHUNK = 800
+    for i in range(0, len(journal_ids), _CHUNK):
+        batch = journal_ids[i:i + _CHUNK]
+        if not batch:
+            continue
+        for j in g.db.execute(
+            select(models.Journal.id, models.Journal.quality_tier)
+            .where(models.Journal.id.in_(batch))
+        ).all():
+            journal_tier[j.id] = j.quality_tier
+
+    # Edge 全表扫一次然后 Python 过滤——比把 paper_id_set 塞进 in_ 安全
+    # （n=2000 时双 in_ 会超 SQLite 999 参数上限）。
+    edges_iter = g.db.execute(select(models.Edge)).scalars()
+    edges_out: list[dict] = []
+    for e in edges_iter:
+        if e.from_paper_id in paper_id_set and e.to_paper_id in paper_id_set:
+            edges_out.append({"id": e.id, "from": e.from_paper_id, "to": e.to_paper_id})
+
+    return jsonify({
+        "nodes": [
+            {
+                "id": p.id,
+                "stem": p.stem,
+                "title": p.title,
+                "year": p.year,
+                "status": p.status,
+                "source": p.source,
+                "quality_tier": (
+                    journal_tier.get(p.journal_id)
+                    if p.journal_id is not None else None
+                ),
+            }
+            for p in papers
+        ],
+        "edges": edges_out,
+        "total": total,
+        "truncated": total > len(papers),
+    })

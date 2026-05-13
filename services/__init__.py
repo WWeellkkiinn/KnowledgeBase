@@ -19,6 +19,7 @@ from .forward_track_service import ForwardTrackService
 from .journal_service import JournalService
 from .subscription_service import SubscriptionService
 from .citation_service import CitationService
+from .review_service import ReviewService
 
 __all__ = [
     "SearchService",
@@ -30,4 +31,5 @@ __all__ = [
     "JournalService",
     "SubscriptionService",
     "CitationService",
+    "ReviewService",
 ]
