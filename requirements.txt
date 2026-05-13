@@ -3,3 +3,5 @@ patchright==1.58.2
 sqlalchemy>=2.0
 alembic>=1.13
 pytest>=8.0
+flask>=3.0
+flask-socketio>=5.3
