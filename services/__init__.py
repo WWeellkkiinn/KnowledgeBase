@@ -15,6 +15,10 @@ from .download_service import DownloadService
 from .pdf2md_service import Pdf2MdService
 from .analysis_service import AnalysisService
 from .expand_service import ExpandService
+from .forward_track_service import ForwardTrackService
+from .journal_service import JournalService
+from .subscription_service import SubscriptionService
+from .citation_service import CitationService
 
 __all__ = [
     "SearchService",
@@ -22,4 +26,8 @@ __all__ = [
     "Pdf2MdService",
     "AnalysisService",
     "ExpandService",
+    "ForwardTrackService",
+    "JournalService",
+    "SubscriptionService",
+    "CitationService",
 ]

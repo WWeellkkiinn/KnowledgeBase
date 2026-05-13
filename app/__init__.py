@@ -28,6 +28,11 @@ def create_app(config: dict | None = None) -> Flask:
     # 都依赖；优先读环境变量，开发期 fallback 到随机 key（重启后失效，符合 dev 预期）。
     app.config["SECRET_KEY"] = os.environ.get("KB_SECRET_KEY") or secrets.token_hex(32)
     app.config["PROPAGATE_EXCEPTIONS"] = False
+    # 默认不启动 APScheduler（避免测试场景下意外起线程）；正式入口 scripts/serve.py
+    # 显式打开 KB_ENABLE_SCHEDULER=1
+    app.config["KB_ENABLE_SCHEDULER"] = (
+        os.environ.get("KB_ENABLE_SCHEDULER") == "1"
+    )
     app.config.update(config or {})
 
     @app.before_request
@@ -59,6 +64,10 @@ def create_app(config: dict | None = None) -> Flask:
     socketio.init_app(app)
     # 注册 socket handlers
     from .sockets import progress as _progress  # noqa: F401
+
+    if app.config.get("KB_ENABLE_SCHEDULER"):
+        from services.subscription_service import start_scheduler
+        start_scheduler()
 
     return app
 

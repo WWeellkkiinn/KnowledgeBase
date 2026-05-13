@@ -197,6 +197,24 @@ class SessionRecord(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class ForwardTrackCache(Base):
+    """前向追踪结果缓存（PLAN §8 risks：同 DOI 7 天内不重查）。
+
+    缓存键是归一化后的 DOI（小写、剥 https://doi.org/ 前缀），与 paper_id 解耦，
+    同一 DOI 多次查询共享一份缓存。SS 免费配额 100 req/5min，OpenAlex 无限速但
+    并发不稳定，缓存是 M2.3 订阅周期跑批前的必要保护。
+    """
+
+    __tablename__ = "forward_track_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    doi: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+
+
 Index("ix_tasks_status_type", Task.status, Task.type)
 Index("ix_subscriptions_active_next", Subscription.active, Subscription.next_run_at)
 # /api/papers?status=&source= 常见过滤路径
@@ -213,4 +231,5 @@ __all__ = [
     "SubscriptionResult",
     "Citation",
     "SessionRecord",
+    "ForwardTrackCache",
 ]
