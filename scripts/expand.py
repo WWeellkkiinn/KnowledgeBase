@@ -65,15 +65,15 @@ def _run_pdf2md(pdf_path: Path) -> Path | None:
     return Path(data["md_path"])
 
 
-def _run_analysis(md_path: Path, focus: str) -> bool:
+def _run_analysis(md_path: Path, focus: str, phase3_only: bool = False) -> bool:
     """调 run_analysis_ui --headless。stdout/stderr 透传给用户看进度。"""
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPTS / "run_analysis_ui.py"),
-         str(md_path), "--focus", focus, "--headless",
-         "--output-dir", str(PAPERS_DIR)],
-        cwd=str(ROOT),
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-    )
+    cmd = [sys.executable, str(SCRIPTS / "run_analysis_ui.py"),
+           str(md_path), "--focus", focus, "--headless",
+           "--output-dir", str(PAPERS_DIR)]
+    if phase3_only:
+        cmd.append("--phase3-only")
+    proc = subprocess.run(cmd, cwd=str(ROOT),
+                          env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     return proc.returncode == 0
 
 
@@ -128,28 +128,35 @@ def expand(root_pdf: Path, focus: str, max_depth: int, max_breadth: int | None):
             if prior:
                 print(f"  上次失败（{prior.get('error', 'analysis_failed')}），重试")
 
-            # Step 1: pdf2md（若入参已是 .md 则跳过，直接复用）
-            if pdf.suffix.lower() == ".md":
-                md_path: Path | None = pdf
+            # 若 papers/{stem}/ 下已有分析文件，跳过 pdf2md + Phase1+2，只跑 Phase3（断点续传）
+            paper_dir = PAPERS_DIR / stem
+            if (paper_dir / "analysis_insight.md").exists() and (paper_dir / "analysis_refs.md").exists():
+                print("  发现已有分析文件，跳过 Phase1+2，只跑 Phase3")
+                out_dir = paper_dir
+                md_path = paper_dir / f"{stem}.md"
+                ok = _run_analysis(md_path, focus, phase3_only=True)
             else:
-                md_path = _run_pdf2md(pdf)
-            if md_path is None:
-                manifest["analyzed"][stem] = {
-                    "path": None, "depth": depth, "parent": parent,
-                    "analyzed": False, "error": "pdf2md_failed",
-                }
-                graph["nodes"][stem] = {"title": stem, "depth": depth, "analyzed": False,
-                                        "error": "pdf2md_failed"}
-                if parent:
-                    _add_edge(graph, parent, stem, edge_meta)
-                _atomic_write_json(MANIFEST_PATH, manifest)
-                _atomic_write_json(GRAPH_PATH, graph)
-                continue
+                # Step 1: pdf2md（若入参已是 .md 则跳过，直接复用）
+                if pdf.suffix.lower() == ".md":
+                    md_path: Path | None = pdf
+                else:
+                    md_path = _run_pdf2md(pdf)
+                if md_path is None:
+                    manifest["analyzed"][stem] = {
+                        "path": None, "depth": depth, "parent": parent,
+                        "analyzed": False, "error": "pdf2md_failed",
+                    }
+                    graph["nodes"][stem] = {"title": stem, "depth": depth, "analyzed": False,
+                                            "error": "pdf2md_failed"}
+                    if parent:
+                        _add_edge(graph, parent, stem, edge_meta)
+                    _atomic_write_json(MANIFEST_PATH, manifest)
+                    _atomic_write_json(GRAPH_PATH, graph)
+                    continue
 
-            out_dir = md_path.parent
-
-            # Step 2: Phase 1-3
-            ok = _run_analysis(md_path, focus)
+                out_dir = md_path.parent
+                # Step 2: Phase 1-3
+                ok = _run_analysis(md_path, focus)
 
             title = _parse_title(out_dir / "analysis_insight.md") or stem
             graph["nodes"][stem] = {

@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 
 _OLD_URL = re.compile(r"https?://(?:www\.)?nber\.org/papers/(w\d+)\.pdf", re.I)
+_WID_RE = re.compile(r"working_papers/([wt]\d+)/")
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
     "Referer": "https://www.nber.org/",
@@ -30,6 +31,21 @@ def download(url: str, output_path: str) -> tuple[bool, str]:
             resp = client.get(url)
     except httpx.HTTPError as e:
         return False, f"{type(e).__name__}: {e}"
+
+    if resp.status_code == 403:
+        # NBER soft-paywalls some papers; try Unpaywall with the constructed DOI
+        from .unpaywall import extract_doi, lookup_pdf_url
+        from . import generic
+        doi = extract_doi(url)
+        if not doi:
+            wm = _WID_RE.search(url)
+            if wm:
+                doi = f"10.3386/{wm.group(1)}"
+        if doi:
+            alt = lookup_pdf_url(doi)
+            if alt and alt != url:
+                return generic.download(alt, output_path)
+        return False, f"HTTP {resp.status_code}  ({url})"
 
     if resp.status_code != 200:
         return False, f"HTTP {resp.status_code}  ({url})"

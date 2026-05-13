@@ -13,23 +13,31 @@ import urllib.parse
 
 import httpx
 
-# Semantic Scholar 匿名 API 限流严格（~100 req / 5min），命中 429 做指数退避
-SS_RETRY_WAITS = (2, 5, 10)
+from config import CORE_API_KEY, SS_API_KEY, UNPAYWALL_EMAIL as EMAIL
+
+# 有 API key 时限速 1 req/s；匿名时限流严格，做指数退避
+_SS_HEADERS = {"x-api-key": SS_API_KEY} if SS_API_KEY else {}
+_SS_INTERVAL = 1.0  # seconds between SS requests
+_ss_last_call = 0.0
+SS_RETRY_WAITS = (5,)  # 有 key 后只需重试一次
 
 
 def _ss_get(url: str, params: dict) -> httpx.Response | None:
-    """Semantic Scholar GET with 429 backoff. 返回最终响应（可能仍 429）或 None（放弃）。"""
+    """Semantic Scholar GET with rate limiting and 429 backoff."""
+    global _ss_last_call
+    elapsed = time.time() - _ss_last_call
+    if elapsed < _SS_INTERVAL:
+        time.sleep(_SS_INTERVAL - elapsed)
     for i, wait in enumerate((0, *SS_RETRY_WAITS)):
         if wait:
             time.sleep(wait)
-        resp = httpx.get(url, params=params, timeout=TIMEOUT)
+        _ss_last_call = time.time()
+        resp = httpx.get(url, params=params, headers=_SS_HEADERS, timeout=TIMEOUT)
         if resp.status_code != 429:
             return resp
         print(f"[ss] 429 rate-limited, retry {i + 1}/{len(SS_RETRY_WAITS)} after {wait}s",
               file=sys.stderr)
     return None
-
-from config import CORE_API_KEY, UNPAYWALL_EMAIL as EMAIL
 
 TIMEOUT = 15
 TITLE_MATCH_THRESHOLD = 0.80
@@ -411,31 +419,45 @@ def _repec(title: str, doi: str = "") -> dict | None:
 
 def _scholarly(title: str) -> dict | None:
     """Google Scholar 搜索（最后 fallback，有限速风险）。"""
-    try:
-        from scholarly import scholarly as _sc
-    except ImportError:
+    import threading
+
+    result: list = [None]
+    exc: list = [None]
+
+    def _fetch():
+        try:
+            from scholarly import scholarly as _sc
+            results = _sc.search_pubs(title)
+            result[0] = next(results, None)
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_fetch, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    if t.is_alive():
+        print("[scholarly] timeout (30s)", file=sys.stderr)
         return None
-    try:
-        results = _sc.search_pubs(title)
-        pub = next(results, None)
-        if not pub:
-            return None
-        returned_title = pub.get("bib", {}).get("title", "")
-        if returned_title and not _title_similar(title, returned_title):
-            print(f"[scholarly] title mismatch: {returned_title!r}", file=sys.stderr)
-            return None
-        pdf_url = pub.get("eprint_url", "") or ""
-        year = str(pub.get("bib", {}).get("pub_year", ""))
-        return {
-            "title": returned_title or title,
-            "doi": "",
-            "pdf_url": pdf_url,
-            "year": year,
-            "authors": "",
-        }
-    except Exception as e:
-        print(f"[scholarly] {e}", file=sys.stderr)
+    if exc[0]:
+        print(f"[scholarly] {exc[0]}", file=sys.stderr)
         return None
+    pub = result[0]
+
+    if not pub:
+        return None
+    returned_title = pub.get("bib", {}).get("title", "")
+    if returned_title and not _title_similar(title, returned_title):
+        print(f"[scholarly] title mismatch: {returned_title!r}", file=sys.stderr)
+        return None
+    pdf_url = pub.get("eprint_url", "") or ""
+    year = str(pub.get("bib", {}).get("pub_year", ""))
+    return {
+        "title": returned_title or title,
+        "doi": "",
+        "pdf_url": pdf_url,
+        "year": year,
+        "authors": "",
+    }
 
 
 if __name__ == "__main__":

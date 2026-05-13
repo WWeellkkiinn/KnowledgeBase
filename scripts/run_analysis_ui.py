@@ -702,13 +702,13 @@ def run_loop(md_path: Path, focus: str, output_dir: Path):
                 q.put(None)
 
 
-def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
+def _run_loop_inner(md_path: Path, focus: str, output_dir: Path, phase3_only: bool = False):
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     with _clients_lock:
         _event_buffer.clear()
     broadcast({"type": "session_start", "session_id": session_id,
                "md_name": md_path.name, "focus": focus})
-    md_text = md_path.read_text(encoding="utf-8")
+    md_text = "" if phase3_only else md_path.read_text(encoding="utf-8")
     raw_log: list[dict] = [{"type": "session_start",
                              "timestamp": datetime.now().isoformat(),
                              "model": MODEL, "focus": focus, "md_path": str(md_path)}]
@@ -728,54 +728,66 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
 
     sys_content = SYSTEM_TPL
 
-    # ── Phase 1：论文内容分析（总分总） ────────────────────────────────────────
-    broadcast({"type": "iter", "n": 1, "max": 2, "label": "论文内容分析"})
-    tprint("Phase1 LLM 开始（内容分析）")
+    if phase3_only:
+        # 跳过 Phase1+2，直接读现有 analysis_refs.md
+        tprint("Phase3-only 模式：跳过 Phase1+2，读取已有 analysis_refs.md")
+        refs_text = (output_dir / "analysis_refs.md").read_text(encoding="utf-8")
+        parsed = _parse_refs(refs_text)
+    else:
+        # ── Phase 1：论文内容分析（总分总） ────────────────────────────────────────
+        broadcast({"type": "iter", "n": 1, "max": 2, "label": "论文内容分析"})
+        tprint("Phase1 LLM 开始（内容分析）")
 
-    user1 = INSIGHT_USER_TPL.format(md_text=md_text, focus=focus)
-    messages = [{"role": "system", "content": sys_content},
-                {"role": "user",   "content": user1}]
-    insight = call_llm_streaming(messages, num_ctx=65536, num_predict=8192) or ""
-    tprint("Phase1 LLM 完成")
+        user1 = INSIGHT_USER_TPL.format(md_text=md_text, focus=focus)
+        messages = [{"role": "system", "content": sys_content},
+                    {"role": "user",   "content": user1}]
+        insight = call_llm_streaming(messages, num_ctx=65536, num_predict=8192) or ""
+        tprint("Phase1 LLM 完成")
 
-    if not insight:
-        broadcast({"type": "err", "msg": "Phase1 返回空内容，分析中止"})
-        return
+        if not insight:
+            broadcast({"type": "err", "msg": "Phase1 返回空内容，分析中止"})
+            return
 
-    log({"type": "phase1_insight", "content": insight})
+        log({"type": "phase1_insight", "content": insight})
 
-    (output_dir / "analysis_insight.md").write_text(header + insight + "\n", encoding="utf-8")
+        (output_dir / "analysis_insight.md").write_text(header + insight + "\n", encoding="utf-8")
 
-    # ── Phase 2：高相关引用分析（multi-turn，复用 KV cache） ──────────────────
-    broadcast({"type": "iter", "n": 2, "max": 2, "label": "高相关引用分析"})
-    tprint("Phase2 LLM 开始（引用分析）")
+        # ── Phase 2：高相关引用分析（multi-turn，复用 KV cache） ──────────────────
+        broadcast({"type": "iter", "n": 2, "max": 2, "label": "高相关引用分析"})
+        tprint("Phase2 LLM 开始（引用分析）")
 
-    user2 = REFS_USER_TPL.format(focus=focus)
-    messages.append({"role": "assistant", "content": insight})
-    messages.append({"role": "user",      "content": user2})
-    refs = call_llm_streaming(messages, num_ctx=65536, num_predict=8192) or ""
-    tprint("Phase2 LLM 完成")
-    log({"type": "phase2_refs", "content": refs})
+        user2 = REFS_USER_TPL.format(focus=focus)
+        messages.append({"role": "assistant", "content": insight})
+        messages.append({"role": "user",      "content": user2})
+        refs = call_llm_streaming(messages, num_ctx=65536, num_predict=8192) or ""
+        tprint("Phase2 LLM 完成")
+        log({"type": "phase2_refs", "content": refs})
 
-    if not refs:
-        broadcast({"type": "warn", "msg": "Phase2 LLM 未返回内容"})
+        if not refs:
+            broadcast({"type": "warn", "msg": "Phase2 LLM 未返回内容"})
 
-    (output_dir / "analysis_refs.md").write_text(header + refs + "\n", encoding="utf-8")
+        (output_dir / "analysis_refs.md").write_text(header + refs + "\n", encoding="utf-8")
+        parsed = _parse_refs(refs)
 
     # ── Phase 3：逐条搜索元数据并下载 PDF ─────────────────────────────────────
     broadcast({"type": "iter", "n": 3, "max": 3, "label": "下载引用 PDF"})
     tprint("Phase3 开始（搜索 + 下载）")
 
-    parsed = _parse_refs(refs)
     if not parsed:
         broadcast({"type": "info", "msg": "未解析到引用条目，跳过下载"})
     else:
         refs_dir = output_dir / "refs"
         refs_dir.mkdir(parents=True, exist_ok=True)
         failed: list[dict] = []
-        for r in parsed:
+        for i, r in enumerate(parsed, 1):
             idx, title, year = r["index"], r["title"], r["year"]
             src_doi = r.get("doi", "")
+            fname = f"{idx:02d}_{r['first_author']}_{year}.pdf"
+            fpath = refs_dir / fname
+            if fpath.exists() and fpath.stat().st_size > 1000:
+                tprint(f"Phase3 [{i}/{len(parsed)}] 已存在，跳过: {fname}")
+                continue
+            tprint(f"Phase3 [{i}/{len(parsed)}] 搜索 #{idx}: {title[:60]}")
             broadcast({"type": "tool_call", "tool": "search_refs",
                        "args": {"title": title, "year": year, "doi": src_doi or "-"}})
             try:
@@ -785,6 +797,7 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
             src = meta.get("source", "?")
             pdf_url = meta.get("pdf_url") or ""
             doi = meta.get("doi") or src_doi
+            tprint(f"Phase3 [{i}/{len(parsed)}] 结果: source={src}  pdf={'yes' if pdf_url else 'no'}")
             broadcast({"type": "tool_result",
                        "content": f"source={src}  doi={doi or '-'}  pdf={'yes' if pdf_url else 'no'}"})
             log({"type": "ref_search", "index": idx, "title": title,
@@ -795,14 +808,14 @@ def _run_loop_inner(md_path: Path, focus: str, output_dir: Path):
                                "reason": f"未找到 PDF (source={src})"})
                 continue
 
-            fname = f"{idx:02d}_{r['first_author']}_{year}.pdf"
-            fpath = refs_dir / fname
+            tprint(f"Phase3 [{i}/{len(parsed)}] 下载: {fname}")
             broadcast({"type": "tool_call", "tool": "download_pdf",
                        "args": {"url": pdf_url, "out": fname}})
             try:
                 ok, msg = download_pdf_fn(pdf_url, str(fpath))
             except Exception as e:
                 ok, msg = False, f"{type(e).__name__}: {e}"
+            tprint(f"Phase3 [{i}/{len(parsed)}] 下载结果: {msg[:80]}")
             broadcast({"type": "tool_result", "content": msg})
             log({"type": "ref_download", "index": idx, "ok": ok,
                  "path": str(fpath) if ok else "", "reason": "" if ok else msg})
@@ -855,6 +868,8 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--headless", action="store_true",
                         help="不启 HTTP/浏览器，主线程跑完 3 阶段即退出（供 expand.py 递归用）")
+    parser.add_argument("--phase3-only", action="store_true",
+                        help="跳过 Phase1+2，读现有 analysis_refs.md 只跑 Phase3（断点续传）")
     args = parser.parse_args()
 
     md_path = Path(args.md_path)
@@ -866,7 +881,7 @@ def main():
 
     if args.headless:
         print(f"[headless] {md_path.name}  focus={args.focus}")
-        _run_loop_inner(md_path, args.focus, output_dir)
+        _run_loop_inner(md_path, args.focus, output_dir, phase3_only=args.phase3_only)
         return
 
     ThreadingHTTPServer.allow_reuse_address = True

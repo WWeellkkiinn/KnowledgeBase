@@ -37,6 +37,8 @@ _LANDING_PAGE_RULES = [
     ("gking.harvard.edu", r'<a\s[^>]*href=["\']([^"\'\s]+\.pdf)["\']'),
     ("ideas.repec.org",
      r'<input [^>]*name=["\']url["\'][^>]*value=["\'](https?://[^"\']+)["\']'),
+    # CORE landing pages sometimes wrap the actual PDF behind a redirect page
+    ("core.ac.uk", r'<a\s[^>]*href=["\']([^"\']*(?:download/pdf|download/\d+|/reader/)[^"\']*)["\']'),
     (None, r'<a\s[^>]*href=["\']([^"\']*bitstream[^"\']+\.pdf[^"\']*)["\']'),
 ]
 
