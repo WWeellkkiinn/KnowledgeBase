@@ -11,7 +11,8 @@
 | 页面 | 功能 |
 |------|------|
 | **Dashboard** | 论文总数、运行任务、活跃订阅、未读 Inbox，一览全库状态 |
-| **Papers** | 所有论文列表，按状态/来源过滤，点进去看详情、引用关系、前向追踪 |
+| **Papers** | 所有论文列表，按状态/来源过滤 |
+| **论文详情** | 基本信息、引用出边（References）、引用入边（Cited by / 前向追踪）、BibTeX 下载 |
 | **Network** | Cytoscape 引用网络图，节点按期刊 Tier 着色（金/银/铜），点击跳详情 |
 | **Review** | 勾选若干篇论文 + 输入关注维度，一键生成流式综述（调 Ollama） |
 | **Subscriptions** | 创建订阅（论文被引 / 作者新作 / 话题搜索），定时自动检查 |
@@ -21,6 +22,7 @@
 
 | 命令 | 功能 |
 |------|------|
+| `pdf2md.py` | PDF → Markdown（调 MinerU） |
 | `run_analysis_ui.py` | 单篇论文三阶段分析：内容分析 → 引用提取 → PDF 批量下载 |
 | `expand.py` | 从根论文 BFS 递归展开，支持断点续跑 |
 | `search_refs.py` | 查询单篇论文元数据 + PDF 链接（调试用） |
@@ -176,6 +178,22 @@ python scripts/expand.py papers/my_paper/my_paper.pdf --focus "研究方法" --m
 
 ---
 
+## BibTeX / 引用导出
+
+论文详情页右上角有「下载 BibTeX」按钮（需要有 DOI），也可通过 API 批量导出：
+
+```bash
+# 全库 BibTeX（直接在浏览器访问或 curl 下载）
+curl http://localhost:5000/api/citations.bib -o kb-all.bib
+
+# 单篇 BibTeX
+curl http://localhost:5000/api/papers/<id>/citations.bib -o paper.bib
+```
+
+首次导出时后端自动生成 BibTeX 条目并缓存；可通过「刷新引用」按钮强制重新生成。
+
+---
+
 ## PDF 下载搜索链
 
 给定标题 + DOI，按顺序逐源搜索，有 PDF 链接即返回：
@@ -235,11 +253,15 @@ KnowledgeBase/
     run_analysis_ui.py          ← 单篇分析
     expand.py                   ← BFS 递归展开
     pdf2md.py                   ← PDF → Markdown（调 MinerU）
-    search_refs.py              ← 元数据搜索
-    download_pdf.py             ← PDF 下载
+    search_refs.py              ← 元数据搜索（8 个来源）
+    download_pdf.py             ← PDF 下载分发器
     downloaders/                ← 下载 handler 插件
+    extract_refs.py             ← 从 Markdown 解析引用列表
+    cross_analysis.py           ← 跨论文数据汇总
+    backfill_journals.py        ← 期刊质量数据补全
     config.py                   ← API Keys（不提交）
     migrate_to_db.py            ← 一次性迁移脚本
+  tests/                        ← pytest 测试套件（156 个用例）
   papers/                       ← 所有论文产物（人类可读副本）
   kb.db                         ← SQLite 主数据库
   alembic.ini
