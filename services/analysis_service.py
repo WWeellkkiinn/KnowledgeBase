@@ -1,16 +1,30 @@
 """AnalysisService —— 三阶段 LLM 流水线。
 
 M1.3 最小抽离：通过 subprocess 调用 scripts/run_analysis_ui.py 的 --headless 模式，
-保证 CLI 行为字节级等价。Phase 2 解析能力以静态方法暴露（被搜索/扩展复用）。
+保证 CLI 行为字节级等价。
+
+`parse_refs` 是纯正则函数，在本模块内副本实现，避免触发
+`scripts/run_analysis_ui.py` 的 `from search_refs import search` 链路，
+那条链路会强制要求 `scripts/config.py`（含 API 密钥）。本副本与 scripts 中
+原版必须保持同步。
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from ._paths import ROOT
+
 _ANALYSIS_CLI = ROOT / "scripts" / "run_analysis_ui.py"
+
+# 与 scripts/run_analysis_ui.py:79 _REF_HEADING 保持同步
+_REF_HEADING = re.compile(
+    r'^###\s*\[?(\d+)\]?\.?\s*(.+?)\s+\((\d{4})\)\s*[—–-]\s*'
+    r'(.+?)(?:\s*·\s*DOI:\s*(\S+))?\s*$',
+    re.MULTILINE,
+)
 
 
 class AnalysisService:
@@ -38,7 +52,20 @@ class AnalysisService:
 
     @staticmethod
     def parse_refs(text: str) -> list[dict]:
-        """Static helper to parse `analysis_refs.md` content into structured refs."""
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from run_analysis_ui import _parse_refs  # type: ignore
-        return _parse_refs(text)
+        """解析 analysis_refs.md 中的引用标题行为结构化条目。
+
+        签名/字段与 scripts/run_analysis_ui.py:_parse_refs 完全一致。
+        """
+        out: list[dict] = []
+        for m in _REF_HEADING.finditer(text):
+            idx, authors, year, title, doi = m.groups()
+            first = re.match(r'[A-Za-z]+', authors)
+            out.append({
+                "index": int(idx),
+                "authors": authors.strip(),
+                "year": year,
+                "title": title.strip(),
+                "doi": (doi or "").strip(),
+                "first_author": (first.group(0).lower() if first else "unknown"),
+            })
+        return out

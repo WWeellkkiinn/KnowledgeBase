@@ -1,7 +1,7 @@
 """Pdf2MdService —— PDF → Markdown 转换。
 
-底层调用 scripts/pdf2md.py（subprocess 形态，主程序返回 JSON 到 stdout）。
-保留 subprocess 调用方式以保 CLI 等价；后续 milestone 可改为直接 import。
+底层调用 scripts/pdf2md.py（subprocess，stdout 末尾输出 JSON）。
+stdout 末尾允许有非 JSON 噪声（如日志、警告），扫描从后往前找首条可解析 JSON。
 """
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from ._paths import ROOT
+
 _PDF2MD = ROOT / "scripts" / "pdf2md.py"
 
 
@@ -19,9 +20,10 @@ class Pdf2MdService:
         self.db_session = db_session
 
     def convert(self, pdf_path: Path, output_dir: Path | None = None) -> dict:
-        """Run pdf2md.py subprocess and parse last-line JSON output.
+        """Run pdf2md.py and return parsed JSON dict.
 
-        Returns: {"md_path": str, "sections": [...]} or {"error": str}.
+        Returns: {"md_path": str, "sections": [...]} on success;
+                 {"error": str} on failure.
         """
         cmd = [sys.executable, str(_PDF2MD), str(pdf_path)]
         if output_dir is not None:
@@ -29,9 +31,16 @@ class Pdf2MdService:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
         if proc.returncode != 0:
             return {"error": proc.stderr.strip() or f"exit {proc.returncode}"}
-        # 取最后一行 JSON（pdf2md.py 在 stderr 打进度，stdout 仅 JSON 结果）
-        last = (proc.stdout.strip().splitlines() or [""])[-1]
-        try:
-            return json.loads(last)
-        except json.JSONDecodeError:
-            return {"error": f"non-JSON stdout: {last[:200]}"}
+
+        # 从后往前找首条可解析 JSON。pdf2md 在 stdout 末尾输出结果，但允许
+        # 同 stream 上有非 JSON 噪声（如 logging.warning 错落到 stdout）。
+        lines = proc.stdout.strip().splitlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        return {"error": f"no JSON found in stdout (last 200 chars): {proc.stdout[-200:]}"}

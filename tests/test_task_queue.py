@@ -78,8 +78,8 @@ def test_reset_stale(session):
     q = TaskQueue(session)
     t1 = q.enqueue("analyze")
     t2 = q.enqueue("analyze")
-    q.fetch_next()  # t1 → running
-    q.fetch_next()  # t2 → running
+    q.fetch_next()  # t1 → running, attempt=1
+    q.fetch_next()  # t2 → running, attempt=1
     n = q.reset_stale()
     assert n == 2
     session.refresh(t1); session.refresh(t2)
@@ -87,6 +87,28 @@ def test_reset_stale(session):
     assert t2.status == "queued"
     assert t1.started_at is None
     assert t2.started_at is None
+    # 关键：崩溃恢复后 attempt 必须回滚，不消耗重试预算
+    assert t1.attempt == 0
+    assert t2.attempt == 0
+
+
+def test_reset_stale_preserves_retry_budget(session):
+    """崩溃恢复后 max_attempts=1 的任务仍能完整跑一次。"""
+    q = TaskQueue(session)
+    t = q.enqueue("analyze", max_attempts=1)
+    q.fetch_next()       # attempt=1 (consumed only attempt)
+    q.reset_stale()      # 模拟崩溃；attempt 回滚到 0
+    session.refresh(t)
+    assert t.attempt == 0
+    assert t.status == "queued"
+    # 再 fetch：attempt 重新自增到 1，仍在预算内
+    re_picked = q.fetch_next()
+    assert re_picked.id == t.id
+    assert re_picked.attempt == 1
+    # 完成后状态正确
+    q.mark_done(t.id)
+    session.refresh(t)
+    assert t.status == "completed"
 
 
 def test_count_by_status(session):

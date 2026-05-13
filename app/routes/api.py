@@ -9,6 +9,13 @@ from database import models
 bp = Blueprint("api", __name__)
 
 
+def _iso_utc(dt) -> str | None:
+    """序列化 naive UTC datetime 为带 Z 后缀的 ISO8601，避免前端按本地时区误解析。"""
+    if dt is None:
+        return None
+    return dt.isoformat(timespec="seconds") + "Z"
+
+
 def _paper_to_dict(p: models.Paper) -> dict:
     return {
         "id": p.id,
@@ -22,8 +29,8 @@ def _paper_to_dict(p: models.Paper) -> dict:
         "md_path": p.md_path,
         "insight_path": p.insight_path,
         "refs_path": p.refs_path,
-        "added_at": p.added_at.isoformat() if p.added_at else None,
-        "analyzed_at": p.analyzed_at.isoformat() if p.analyzed_at else None,
+        "added_at": _iso_utc(p.added_at),
+        "analyzed_at": _iso_utc(p.analyzed_at),
     }
 
 
@@ -49,8 +56,8 @@ def _task_to_dict(t: models.Task) -> dict:
         "parent_task_id": t.parent_task_id,
         "payload": t.payload_json,
         "error_log": t.error_log,
-        "started_at": t.started_at.isoformat() if t.started_at else None,
-        "finished_at": t.finished_at.isoformat() if t.finished_at else None,
+        "started_at": _iso_utc(t.started_at),
+        "finished_at": _iso_utc(t.finished_at),
     }
 
 

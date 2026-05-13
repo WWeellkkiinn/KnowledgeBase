@@ -100,11 +100,25 @@ class TaskQueue:
     # ─── 崩溃恢复 ────────────────────────────────────────────────────
 
     def reset_stale(self) -> int:
-        """把所有 status=running 的任务重置为 queued。返回受影响行数。"""
+        """把所有 status=running 的任务重置为 queued，并回滚 attempt 计数。
+
+        语义：崩溃恢复时不应额外消耗重试预算。`fetch_next` 在领取时会再次自增
+        `attempt`，所以这里必须先减 1（不小于 0），保持 max_attempts 的语义不变。
+        """
+        from sqlalchemy import case, literal
+
+        attempt_col = models.Task.attempt
         stmt = (
             update(models.Task)
             .where(models.Task.status == "running")
-            .values(status="queued", started_at=None)
+            .values(
+                status="queued",
+                started_at=None,
+                attempt=case(
+                    (attempt_col > 0, attempt_col - 1),
+                    else_=literal(0),
+                ),
+            )
         )
         result = self.session.execute(stmt)
         self.session.flush()
@@ -113,6 +127,11 @@ class TaskQueue:
     # ─── 查询 ────────────────────────────────────────────────────────
 
     def count_by_status(self) -> dict[str, int]:
+        """聚合任务计数，按 status 分组。
+
+        注意：返回稀疏 dict —— 没有任务的 status 不会出现在 key 中，调用方应使用
+        `counts.get("running", 0)` 而非直接索引。
+        """
         from sqlalchemy import func as sa_func
         rows = self.session.execute(
             select(models.Task.status, sa_func.count(models.Task.id))

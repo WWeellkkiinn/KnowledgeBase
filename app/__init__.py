@@ -24,13 +24,16 @@ def create_app(config: dict | None = None) -> Flask:
 
     @app.teardown_request
     def _close_session(exc=None):
+        """teardown 只负责 rollback + close。
+
+        路由写入必须显式 `g.db.commit()`；M1.5 当前路由全部只读，所以这里不再
+        隐式提交，避免后续路由捕获异常返回 200 时把脏写入意外落库。
+        """
         db = g.pop("db", None)
         if db is None:
             return
         try:
-            if exc is None:
-                db.commit()
-            else:
+            if exc is not None:
                 db.rollback()
         finally:
             db.close()
