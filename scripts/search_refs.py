@@ -127,6 +127,8 @@ def search(title: str, year: str = "", doi: str = "") -> dict:
         (lambda: _arxiv(title), "arxiv"),
         (lambda: _repec(title, doi), "repec"),
         (lambda: _core(title, doi), "core"),
+        (lambda: _zenodo(title, year), "zenodo"),
+        (lambda: _pubmed(title, year), "pubmed"),
         (lambda: _scholarly(title), "scholarly"),
     ]:
         r = fn()
@@ -414,6 +416,114 @@ def _repec(title: str, doi: str = "") -> dict | None:
         }
     except Exception as e:
         print(f"[repec] {e}", file=sys.stderr)
+        return None
+
+
+def _zenodo(title: str, year: str = "") -> dict | None:
+    """Zenodo 开放获取仓库搜索（M4.1）。"""
+    try:
+        q = f'title:"{title}"'
+        if year:
+            q += f" AND publication_date:[{year}-01-01 TO {year}-12-31]"
+        resp = httpx.get(
+            "https://zenodo.org/api/records",
+            params={"q": q, "type": "publication", "size": 3},
+            timeout=TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        hits = resp.json().get("hits", {}).get("hits", [])
+        if not hits:
+            return None
+        rec = hits[0]
+        meta = rec.get("metadata", {})
+        returned_title = meta.get("title", "")
+        if not _title_similar(title, returned_title):
+            print(f"[zenodo] title mismatch: {returned_title!r}", file=sys.stderr)
+            return None
+        doi = meta.get("doi", "")
+        pdf_url = ""
+        for f in rec.get("files", []):
+            key = f.get("key", "")
+            if f.get("type") == "pdf" or key.lower().endswith(".pdf"):
+                pdf_url = f.get("links", {}).get("self", "")
+                break
+        authors = ", ".join(c.get("name", "") for c in meta.get("creators", [])[:3])
+        return {
+            "title": returned_title,
+            "doi": doi,
+            "pdf_url": pdf_url,
+            "year": str(meta.get("publication_date", year))[:4],
+            "authors": authors,
+        }
+    except Exception as e:
+        print(f"[zenodo] {e}", file=sys.stderr)
+        return None
+
+
+def _pubmed(title: str, year: str = "") -> dict | None:
+    """PubMed/PMC 搜索，有开放获取 PDF 时直接返回（M4.2）。"""
+    try:
+        term = f'"{title}"[Title]'
+        if year:
+            term += f" AND {year}[PDAT]"
+        resp = httpx.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={"db": "pubmed", "term": term, "retmax": 3, "retmode": "json"},
+            timeout=TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        ids = resp.json().get("esearchresult", {}).get("idlist", [])
+        if not ids:
+            return None
+        pmid = ids[0]
+
+        sum_resp = httpx.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+            params={"db": "pubmed", "id": pmid, "retmode": "json"},
+            timeout=TIMEOUT,
+        )
+        if sum_resp.status_code != 200:
+            return None
+        result = sum_resp.json().get("result", {}).get(pmid, {})
+        returned_title = result.get("title", "")
+        if returned_title and not _title_similar(title, returned_title):
+            print(f"[pubmed] title mismatch: {returned_title!r}", file=sys.stderr)
+            return None
+
+        doi = ""
+        for uid in result.get("articleids", []):
+            if uid.get("idtype") == "doi":
+                doi = uid.get("value", "")
+                break
+        authors_list = [a.get("name", "") for a in result.get("authors", [])[:3]]
+        year_pub = result.get("pubdate", "")[:4]
+
+        # 尝试找 PMC 开放获取 PDF
+        pdf_url = ""
+        link_resp = httpx.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi",
+            params={"dbfrom": "pubmed", "db": "pmc", "id": pmid, "retmode": "json"},
+            timeout=TIMEOUT,
+        )
+        if link_resp.status_code == 200:
+            for ls in link_resp.json().get("linksets", []):
+                for ld in ls.get("linksetdbs", []):
+                    if ld.get("dbto") == "pmc":
+                        pmc_ids = ld.get("links", [])
+                        if pmc_ids:
+                            pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmc_ids[0]}/pdf/"
+
+        return {
+            "title": returned_title or title,
+            "doi": doi,
+            "pdf_url": pdf_url,
+            "year": year_pub or year,
+            "authors": ", ".join(authors_list),
+        }
+    except Exception as e:
+        print(f"[pubmed] {e}", file=sys.stderr)
         return None
 
 
