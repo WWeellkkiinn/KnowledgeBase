@@ -40,7 +40,7 @@ def _utcnow() -> datetime:
 
 
 _BIBTEX_ESCAPE = {
-    "\\": r"\\textbackslash{}",
+    "\\": r"\textbackslash{}",
     "&": r"\&",
     "%": r"\%",
     "$": r"\$",
@@ -50,17 +50,34 @@ _BIBTEX_ESCAPE = {
     "}": r"\}",
     "~": r"\textasciitilde{}",
     "^": r"\textasciicircum{}",
+    # `@` 不属于 BibTeX 字段值的合法字符 —— 若用户控制的 title/author 含
+    # `@article{...}` 形态会被 .bib parser 视为新 entry 起点（注入风险）。
+    # `@` 在花括号内严格说是合法字符，但安全起见替换为 HTML/普通转义。
+    "@": r"{@}",
 }
+
+# 控制字符（包括 \r \n \t \x00-\x1f）一律剥成空格，避免跨字段污染 .bib
+_CONTROL_CHARS = {chr(c) for c in range(32)} - {" "}
 
 
 def bibtex_escape(s: str) -> str:
-    """转义 BibTeX 特殊字符。注意 `\\` 必须先处理避免双重转义。"""
+    """转义 BibTeX 特殊字符 + 清洗控制字符。`\\` 排在第一位避免二次转义。"""
     if not s:
         return ""
     out = []
     for ch in s:
-        out.append(_BIBTEX_ESCAPE.get(ch, ch))
+        if ch in _CONTROL_CHARS:
+            out.append(" ")
+        else:
+            out.append(_BIBTEX_ESCAPE.get(ch, ch))
     return "".join(out)
+
+
+def apa_sanitize(s: str) -> str:
+    """APA 输出字段：去控制字符（含 \\r \\n \\t），保留可打印 ASCII + Unicode。"""
+    if not s:
+        return ""
+    return "".join(" " if ch in _CONTROL_CHARS else ch for ch in s)
 
 
 def slug_for_key(name: str) -> str:
@@ -89,12 +106,16 @@ def parse_authors(authors_json) -> list[dict]:
         return {"family": full, "given": "", "full": full}
 
     if isinstance(authors_json, str):
-        # 逗号分隔且带分号的情况优先用分号切
-        seps = [";", ",", "&"]
-        for sep in seps:
-            if sep in authors_json:
-                return [_split_name(x) for x in authors_json.split(sep) if x.strip()]
-        return [_split_name(authors_json)] if authors_json.strip() else []
+        # 多作者分隔：分号 > " and " > "&"；纯逗号是有歧义的（既可能是作者间分隔，
+        # 也可能是 "Family, Given" 格式），保守地不按逗号切。
+        s = authors_json.strip()
+        if not s:
+            return []
+        for sep in [";", " and ", "&"]:
+            if sep in s:
+                return [_split_name(x) for x in s.split(sep) if x.strip()]
+        # 无可信分隔符 → 当作单作者（即使含逗号，_split_name 内会按 "Family, Given" 解析）
+        return [_split_name(s)]
 
     out: list[dict] = []
     for a in authors_json:
@@ -194,14 +215,14 @@ def render_apa(
 
     author_strs = []
     for a in authors:
-        family = a.get("family", "")
-        initials = _initials(a.get("given", ""))
+        family = apa_sanitize(a.get("family", ""))
+        initials = _initials(apa_sanitize(a.get("given", "")))
         if family and initials:
             author_strs.append(f"{family}, {initials}")
         elif family:
             author_strs.append(family)
         elif a.get("full"):
-            author_strs.append(a["full"])
+            author_strs.append(apa_sanitize(a["full"]))
 
     if len(author_strs) >= 2:
         author_part = ", ".join(author_strs[:-1]) + ", & " + author_strs[-1]
@@ -210,15 +231,19 @@ def render_apa(
     else:
         author_part = ""
 
+    safe_title = apa_sanitize(title)
+    safe_journal = apa_sanitize(journal) if journal else None
+    safe_doi = apa_sanitize(doi) if doi else None
+
     parts = []
     if author_part:
         parts.append(author_part + ".")
     parts.append(f"({year if year else 'n.d.'}).")
-    parts.append(f"{title}." if title else "")
-    if journal:
-        parts.append(f"{journal}.")
-    if doi:
-        parts.append(f"https://doi.org/{doi}")
+    parts.append(f"{safe_title}." if safe_title else "")
+    if safe_journal:
+        parts.append(f"{safe_journal}.")
+    if safe_doi:
+        parts.append(f"https://doi.org/{safe_doi}")
     return " ".join(p for p in parts if p).strip()
 
 
@@ -286,11 +311,11 @@ class CitationService:
         return citation
 
     def bibtex_for_all(self, session: Session) -> str:
-        """全库 BibTeX 拼接（按 paper.id 顺序）。"""
+        """全库 BibTeX 拼接（按 paper.id 顺序）。只取 bibtex 列，避免 ORM 全量 hydrate。"""
         rows = session.execute(
-            select(models.Citation).order_by(models.Citation.paper_id.asc())
-        ).scalars().all()
-        return "\n\n".join(r.bibtex for r in rows if r.bibtex)
+            select(models.Citation.bibtex).order_by(models.Citation.paper_id.asc())
+        ).all()
+        return "\n\n".join(b for (b,) in rows if b)
 
     # ─── OpenAlex 兜底 ─────────────────────────────────────────────
 
@@ -303,6 +328,10 @@ class CitationService:
             return None
 
     def _fetch_openalex(self, doi: str) -> Optional[dict]:
+        from .forward_track_service import _normalize_doi
+        doi = _normalize_doi(doi or "")
+        if not doi:
+            return None
         try:
             mailto = self._openalex_mailto()
             params = {"mailto": mailto} if mailto else {}

@@ -109,6 +109,11 @@ class JournalService:
             _log.error("[journal] seed root must be a JSON array, got %s", type(data).__name__)
             return {"inserted": 0, "updated": 0, "skipped": 0}
 
+        # 预加载现有 journals → dict，避免 seed 每行触发一次 SELECT
+        existing_by_issn = {
+            j.issn: j for j in
+            session.execute(select(models.Journal)).scalars().all()
+        }
         inserted = updated = skipped = 0
         for row in data:
             if not isinstance(row, dict):
@@ -132,9 +137,7 @@ class JournalService:
             if not isinstance(source_dataset, str):
                 source_dataset = "manual"
 
-            existing = session.execute(
-                select(models.Journal).where(models.Journal.issn == issn)
-            ).scalar_one_or_none()
+            existing = existing_by_issn.get(issn)
             if existing is None:
                 session.add(models.Journal(
                     issn=issn,
@@ -193,7 +196,11 @@ class JournalService:
         OpenAlex `primary_location.source` 字段：
           { id, display_name, issn_l, issn, type, host_organization_name, ... }
         我们只取 issn_l(优先) / issn[0] / display_name / host_organization_name。
+
+        DOI 走 ForwardTrackService 同款字符集校验，防 URL 路径注入。
         """
+        from .forward_track_service import _normalize_doi
+        doi = _normalize_doi(doi or "")
         if not doi:
             return None
         mailto = _openalex_mailto()

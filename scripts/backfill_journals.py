@@ -48,19 +48,25 @@ def main() -> int:
         if args.max:
             papers = papers[:args.max]
 
-        stats = {"linked": 0, "no_doi": 0, "no_journal": 0}
+        stats = {"linked": 0, "no_doi": 0, "no_journal": 0, "failed": 0}
         for i, p in enumerate(papers, 1):
             if not p.doi:
                 stats["no_doi"] += 1
                 continue
-            j = svc.attach_to_paper(session, p)  # meta=None → OpenAlex 兜底
-            if j is None:
-                stats["no_journal"] += 1
-            else:
-                stats["linked"] += 1
-                tier = j.quality_tier if j.quality_tier is not None else "?"
-                print(f"  [{i}/{len(papers)}] {p.stem} → {j.name} (Tier {tier})")
-            session.commit()
+            try:
+                j = svc.attach_to_paper(session, p)  # meta=None → OpenAlex 兜底
+                if j is None:
+                    stats["no_journal"] += 1
+                else:
+                    stats["linked"] += 1
+                    tier = j.quality_tier if j.quality_tier is not None else "?"
+                    print(f"  [{i}/{len(papers)}] {p.stem} → {j.name} (Tier {tier})")
+                session.commit()
+            except Exception as e:
+                # 单篇失败不中断；回滚后继续下一篇，保住前 N-1 篇的成果
+                session.rollback()
+                stats["failed"] += 1
+                print(f"  [{i}/{len(papers)}] {p.stem} FAILED: {e}")
             if args.sleep > 0 and i < len(papers):
                 time.sleep(args.sleep)
 

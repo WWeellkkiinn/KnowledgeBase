@@ -15,6 +15,7 @@ APScheduler/Worker 可能在多线程并发执行；构造时传入的 db_sessio
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
@@ -36,19 +37,67 @@ _SS_BASE = "https://api.semanticscholar.org/graph/v1"
 _OPENALEX_BASE = "https://api.openalex.org"
 _PER_PAGE = 100  # 双源都按 100 上限拉，避免分页递归（M2.1 单页够用）
 
+# SS 免费配额 100 req/5min；间隔 1.0s 即上限附近。多线程共用同一限速器避免并发突破。
+import threading as _threading
+_SS_INTERVAL = 1.0
+_SS_LOCK = _threading.Lock()
+_ss_last_call = 0.0
+
+
+def _ss_get(url: str, params: dict, headers: dict) -> Optional["httpx.Response"]:
+    """SS GET 限速器：所有 forward-track 调用走这里，节流到 _SS_INTERVAL。
+    遇 429 退避一次（5s）后重试一次。失败返回 None。
+    """
+    global _ss_last_call
+    import time as _t
+    with _SS_LOCK:
+        elapsed = _t.time() - _ss_last_call
+        if elapsed < _SS_INTERVAL:
+            _t.sleep(_SS_INTERVAL - elapsed)
+        for attempt in (0, 1):
+            if attempt:
+                _t.sleep(5.0)
+            _ss_last_call = _t.time()
+            try:
+                resp = httpx.get(url, params=params, headers=headers, timeout=_TIMEOUT)
+            except Exception as e:
+                _log.warning("[ss] http error: %s", e)
+                return None
+            if resp.status_code != 429:
+                return resp
+            _log.warning("[ss] 429 rate-limited; backing off")
+        return None
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+_DOI_ALLOWED = re.compile(r"^10\.[0-9]{1,9}/[A-Za-z0-9._;()/:\-]+$")
+
+
 def _normalize_doi(doi: str) -> str:
-    """归一化 DOI：剥 https://doi.org/ 前缀，去空白，转小写。"""
+    """归一化 DOI：剥 https://doi.org/ 前缀，去空白，转小写，校验 RFC 字符集。
+
+    DOI 字符集（Crossref 规范）：10.<registrant>/<suffix>，suffix 接受
+    [a-zA-Z0-9._;()/:-] 等。不允许空格 / `?` / `&` / `#` / `..` 等 URL 元字符，
+    否则拒绝（防止把 DOI 拼入 SS/OpenAlex URL 时逃逸路径）。
+    """
     d = (doi or "").strip()
     for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
         if d.lower().startswith(prefix):
             d = d[len(prefix):]
             break
-    return d.lower()
+    d = d.lower()
+    if not d:
+        return ""
+    # 严格校验：不符合规范的 DOI 返回空（调用方需处理空串）
+    if not _DOI_ALLOWED.match(d):
+        return ""
+    # 额外挡 `..`（regex 接受 `.` 因为合法 DOI suffix 含点，但连续两点疑似 traversal）
+    if ".." in d:
+        return ""
+    return d
 
 
 def _ss_headers() -> dict:
@@ -92,7 +141,8 @@ class ForwardTrackService:
         """
         doi_norm = _normalize_doi(doi)
         if not doi_norm:
-            raise ValueError("doi is required")
+            # 输入 DOI 缺失或不符合 10.x/y 字符集（防止 URL 路径注入）
+            raise ValueError("doi is required or invalid")
 
         session = self.db_session or SessionLocal()
         owns_session = self.db_session is None
@@ -170,16 +220,17 @@ class ForwardTrackService:
     # ─── 数据源 ─────────────────────────────────────────────────────
 
     def _fetch_ss(self, doi: str, limit: int) -> list[dict]:
-        """SS Citing Papers。失败返回 []，不阻塞另一源。"""
+        """SS Citing Papers。失败返回 []，不阻塞另一源。走 _ss_get 节流（1 req/s）。"""
         try:
             url = f"{_SS_BASE}/paper/DOI:{doi}/citations"
             params = {
                 "fields": "title,year,authors,externalIds",
                 "limit": min(limit, _PER_PAGE),
             }
-            resp = httpx.get(url, params=params, headers=_ss_headers(), timeout=_TIMEOUT)
-            if resp.status_code != 200:
-                _log.warning("[ss] forward-track %s: HTTP %s", doi, resp.status_code)
+            resp = _ss_get(url, params, _ss_headers())
+            if resp is None or resp.status_code != 200:
+                code = "n/a" if resp is None else resp.status_code
+                _log.warning("[ss] forward-track %s: HTTP %s", doi, code)
                 return []
             out: list[dict] = []
             for entry in resp.json().get("data", []):

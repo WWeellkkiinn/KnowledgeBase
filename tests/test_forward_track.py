@@ -44,6 +44,26 @@ def test_normalize_doi_strips_prefix_and_lowercases():
     assert _normalize_doi("") == ""
 
 
+def test_normalize_doi_rejects_url_injection_chars():
+    """DOI 含 `?` / `&` / `#` / 空格 / `..` 应被拒绝（返回空），防 URL 路径逃逸。"""
+    for bad in [
+        "10.1/foo?injected=bar",
+        "10.1/foo&x=y",
+        "10.1/foo#frag",
+        "10.1/foo bar",  # 空格
+        "10.1/../../etc",  # path traversal
+        "javascript:alert(1)",  # 完全非 DOI
+        "/etc/passwd",
+    ]:
+        assert _normalize_doi(bad) == "", f"failed to reject: {bad!r}"
+
+
+def test_normalize_doi_accepts_standard_doi_chars():
+    """合法 DOI 字符集（letters, digits, `.`, `/`, `_`, `-`, `()`, `;`, `:`）应通过。"""
+    assert _normalize_doi("10.1038/s41586-021-03491-6") == "10.1038/s41586-021-03491-6"
+    assert _normalize_doi("10.1234/abc.def_ghi-jkl") == "10.1234/abc.def_ghi-jkl"
+
+
 # ─── 合并去重 ────────────────────────────────────────────────────────
 
 

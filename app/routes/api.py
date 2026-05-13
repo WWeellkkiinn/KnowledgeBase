@@ -1,12 +1,23 @@
 """REST API blueprint（M1.5 最小只读集）。"""
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import select
 
 from database import models
 
 bp = Blueprint("api", __name__)
+
+# 文件名清洗：仅允许 ASCII 字母数字 + 常见安全字符。剥所有控制字符（含 \r \n）
+# 与引号，防止 Content-Disposition header 注入（HTTP response splitting）。
+_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_filename(stem: str, ext: str) -> str:
+    cleaned = _FILENAME_SAFE.sub("_", (stem or "").strip())[:120] or "file"
+    return f"{cleaned}{ext}"
 
 
 def _iso_utc(dt) -> str | None:
@@ -157,9 +168,12 @@ def forward_track(paper_id: int):
         return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    except Exception as e:
+    except Exception:
+        # 详细异常文本（含 SQL / URL / 路径）只落日志，不回显客户端
         g.db.rollback()
-        return jsonify({"error": "forward-track failed", "detail": str(e)}), 502
+        import logging
+        logging.getLogger(__name__).exception("forward-track failed")
+        return jsonify({"error": "forward-track failed"}), 502
 
 
 @bp.get("/tasks")
@@ -258,9 +272,22 @@ def update_subscription(sub_id: int):
 @bp.delete("/subscriptions/<int:sub_id>")
 def delete_subscription(sub_id: int):
     from services import SubscriptionService
-    ok = SubscriptionService.delete(g.db, sub_id)
-    if not ok:
+    # 删除前若有未读 inbox 项，要求显式 ?force=1 确认（避免静默丢未读通知）
+    sub = g.db.get(models.Subscription, sub_id)
+    if sub is None:
         return jsonify({"error": "not found"}), 404
+    unread = g.db.execute(
+        select(models.SubscriptionResult.id)
+        .where(models.SubscriptionResult.subscription_id == sub_id)
+        .where(models.SubscriptionResult.notified.is_(False))
+        .limit(1)
+    ).first()
+    if unread is not None and request.args.get("force") not in ("1", "true", "yes"):
+        return jsonify({
+            "error": "subscription has unread results",
+            "hint": "DELETE ?force=1 to confirm",
+        }), 409
+    SubscriptionService.delete(g.db, sub_id)
     g.db.commit()
     return "", 204
 
@@ -332,7 +359,7 @@ def get_paper_bibtex(paper_id: int):
         cite.bibtex or "",
         200,
         {"Content-Type": "application/x-bibtex; charset=utf-8",
-         "Content-Disposition": f'attachment; filename="{p.stem}.bib"'},
+         "Content-Disposition": f'attachment; filename="{_safe_filename(p.stem, ".bib")}"'},
     )
 
 

@@ -45,6 +45,27 @@ def test_bibtex_escape_handles_special_chars():
     assert bibtex_escape("{nested}") == r"\{nested\}"
 
 
+def test_bibtex_escape_protects_at_sign_injection():
+    """攻击者控制 paper.title 含 `@article{evil` 不应被 .bib parser 解释为新 entry。"""
+    out = bibtex_escape("normal @article{evil,")
+    assert "@article" not in out  # @ 已被 {@} 包裹
+    assert "{@}article" in out
+
+
+def test_bibtex_escape_strips_control_chars():
+    """\\r \\n \\t \\x00 等控制字符替换为空格，避免 .bib 字段跨行污染。"""
+    out = bibtex_escape("a\r\nb\tc\x00d")
+    assert "\r" not in out and "\n" not in out
+    assert "\x00" not in out
+    assert "a" in out and "b" in out and "c" in out and "d" in out
+
+
+def test_bibtex_escape_textbackslash_no_double():
+    """`\\` 转义结果应是 `\\textbackslash{}` 而非 `\\\\textbackslash{}`。"""
+    out = bibtex_escape("a\\b")
+    assert out == r"a\textbackslash{}b"
+
+
 def test_bibtex_escape_empty():
     assert bibtex_escape("") == ""
     assert bibtex_escape(None) == ""
@@ -69,6 +90,20 @@ def test_parse_authors_comma_string():
     assert len(out) == 2
     assert out[0]["family"] == "Smith"
     assert out[1]["family"] == "Doe"
+
+
+def test_parse_authors_single_family_given_no_split():
+    """单作者 "Smith, John" 不应被错误地拆为两个作者（修复 C1 审查发现）。"""
+    out = parse_authors("Smith, John")
+    assert len(out) == 1
+    assert out[0]["family"] == "Smith"
+    assert out[0]["given"] == "John"
+
+
+def test_parse_authors_and_separator():
+    """带 ' and ' 分隔的多作者字符串应正确拆分。"""
+    out = parse_authors("Smith, J and Doe, J")
+    assert len(out) == 2
 
 
 def test_parse_authors_none_or_empty():

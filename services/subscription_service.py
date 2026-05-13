@@ -38,23 +38,48 @@ def _utcnow() -> datetime:
 # 这里只在没装 APScheduler 时用作 fallback，计算下一次执行时间。
 # 支持："every Nm/Nh/Nd" 简化语法 + 默认 7 天。
 def parse_simple_interval(expr: str) -> timedelta:
-    """解析极简间隔表达式。失败默认 7 天。
+    """解析间隔表达式（含极简 + 标准 cron）。失败/负数默认 7 天。
 
-    APScheduler 标准 cron 语法 ("0 3 * * 1") 不在此处解析 —— 由
-    add_subscription_job() 直接喂给 CronTrigger.from_crontab。
+    支持：
+    - `every Nm/Nh/Nd`、`Nm/Nh/Nd`（极简）
+    - `M H D Mon DoW` 5 段 cron 标准语法（用 CroniterTrigger 估下次触发；失败回退 7 天）
+
+    返回的是"下一次执行需要等多久"，调用方加到 _utcnow() 即可得 next_run_at。
     """
     e = (expr or "").strip().lower()
+    if not e:
+        return timedelta(days=7)
     if e.startswith("every "):
         e = e[len("every "):].strip()
+    # 极简单位
     try:
-        if e.endswith("m"):
-            return timedelta(minutes=int(e[:-1]))
-        if e.endswith("h"):
-            return timedelta(hours=int(e[:-1]))
-        if e.endswith("d"):
-            return timedelta(days=int(e[:-1]))
+        n: Optional[int] = None
+        unit = e[-1] if e else ""
+        if unit in ("m", "h", "d") and e[:-1].lstrip("-").isdigit():
+            n = int(e[:-1])
+            if n <= 0:
+                return timedelta(days=7)
+            if unit == "m":
+                return timedelta(minutes=n)
+            if unit == "h":
+                return timedelta(hours=n)
+            return timedelta(days=n)
     except ValueError:
         pass
+    # 标准 cron：用 APScheduler CronTrigger 算下次触发
+    if len(e.split()) == 5:
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+            from datetime import timezone as _tz
+            trig = CronTrigger.from_crontab(e, timezone=_tz.utc)
+            now_aware = datetime.now(_tz.utc)
+            nxt = trig.get_next_fire_time(None, now_aware)
+            if nxt is not None:
+                delta = nxt - now_aware
+                if delta.total_seconds() > 0:
+                    return delta
+        except Exception:
+            pass
     return timedelta(days=7)
 
 
@@ -137,10 +162,23 @@ class SubscriptionService:
 
     # 验证 target_json 形状
 
+    _MAX_TARGET_KEYS = 16
+    _MAX_TARGET_STR_LEN = 1024
+
     @staticmethod
     def _validate_target(type: str, target: dict) -> None:
         if not isinstance(target, dict):
             raise ValueError("target must be a dict")
+        # 防止 megabyte 级 dict / 嵌套炸弹
+        if len(target) > SubscriptionService._MAX_TARGET_KEYS:
+            raise ValueError(f"target has too many keys (>{SubscriptionService._MAX_TARGET_KEYS})")
+        for k, v in target.items():
+            if not isinstance(k, str) or len(k) > 64:
+                raise ValueError("target keys must be short strings")
+            if isinstance(v, str) and len(v) > SubscriptionService._MAX_TARGET_STR_LEN:
+                raise ValueError(f"target value too long for key {k!r}")
+            if isinstance(v, (list, dict)) and len(str(v)) > 4096:
+                raise ValueError(f"target nested value too large for key {k!r}")
         if type == "paper_citations":
             if not target.get("doi"):
                 raise ValueError("paper_citations target requires 'doi'")
@@ -154,9 +192,13 @@ class SubscriptionService:
     # ─── 执行 ─────────────────────────────────────────────────────
 
     def run_due(self, session: Optional[Session] = None) -> dict:
-        """扫一次 due subscriptions，逐个执行。
+        """扫一次 due subscriptions，逐个执行 + 立即 commit（订阅之间独立）。
 
         返回 {ran, found, errors}。仅在调度器内调用；HTTP 路由不应直接调（耗时）。
+
+        事务策略：每个订阅独立 commit / rollback，避免一个订阅失败连带丢失另一个
+        订阅的 last_run_at 写入。owns 模式下用自管 session；外部传入 session 时
+        调用方负责事务边界，但本方法仍按 sub 边界 flush/rollback（不主动 commit）。
         """
         owns = session is None
         session = session or SessionLocal()
@@ -169,19 +211,35 @@ class SubscriptionService:
             due = list(session.execute(stmt).scalars().all())
             ran = errors = found = 0
             for sub in due:
+                exec_ok = False
                 try:
                     n = self._execute_one(session, sub)
                     found += n
                     ran += 1
+                    exec_ok = True
                 except Exception as e:
                     _log.warning("[subscription %d] %s failed: %s", sub.id, sub.type, e)
                     errors += 1
-                finally:
-                    sub.last_run_at = _utcnow()
-                    sub.next_run_at = _utcnow() + parse_simple_interval(sub.cron_expr)
-                    session.flush()
-            if owns:
-                session.commit()
+                    # 部分订阅 _execute_one 可能让 session 进入异常态；先回滚再写元数据
+                    if owns:
+                        session.rollback()
+                # 元数据更新（last_run_at / next_run_at）放在 try 外、独立 try
+                try:
+                    now2 = _utcnow()
+                    sub.last_run_at = now2
+                    sub.next_run_at = now2 + parse_simple_interval(sub.cron_expr)
+                    if owns:
+                        session.commit()
+                    else:
+                        session.flush()
+                except Exception as e:
+                    _log.exception("[subscription %d] metadata update failed: %s",
+                                   sub.id, e)
+                    if owns:
+                        session.rollback()
+                    errors += 1
+                    if exec_ok:
+                        ran -= 1  # 若 metadata 写失败，本轮不算 ran 成功
             return {"ran": ran, "found": found, "errors": errors}
         except Exception:
             if owns:
@@ -208,6 +266,18 @@ class SubscriptionService:
             return 0
         return 0
 
+    @staticmethod
+    def _result_dedup_key(item: dict) -> tuple:
+        """返回 (kind, value) 去重键：有 DOI 用 DOI，否则用 (title, year)。"""
+        doi = (item.get("doi") or "").strip().lower()
+        if doi:
+            return ("doi", doi)
+        title = (item.get("title") or "").strip().lower()
+        year = item.get("year")
+        if title:
+            return ("ty", title, year)
+        return ("none", id(item))  # 无信息量：用 id 保证每次都进入，但不真正重复入库
+
     def _materialize_citing(
         self,
         session: Session,
@@ -216,25 +286,30 @@ class SubscriptionService:
     ) -> int:
         """把 forward-track 返回的 citing_papers 落到 subscription_results。
 
-        去重策略：同 subscription 下，新发现的 paper.doi 与历史 results 中的 doi 不重复。
+        去重：同 subscription 下，按 (DOI) 或 (title, year) 去重。无 DOI 也无 title
+        的 item 跳过（无信息量）。
+        历史去重集仅 select 必要字段（raw_metadata_json 整列），订阅长期运行的代价
+        可接受；超大规模时可加 results 上 (subscription_id, doi) 索引。
         """
         if not citing_papers:
             return 0
-        seen = set()
-        existing = session.execute(
-            select(models.SubscriptionResult).where(
+        seen: set = set()
+        rows = session.execute(
+            select(models.SubscriptionResult.raw_metadata_json).where(
                 models.SubscriptionResult.subscription_id == sub.id,
             )
-        ).scalars().all()
-        for r in existing:
-            doi = (r.raw_metadata_json or {}).get("doi", "")
-            if doi:
-                seen.add(doi)
+        ).all()
+        for (meta,) in rows:
+            key = self._result_dedup_key(meta or {})
+            if key[0] != "none":
+                seen.add(key)
 
         new = 0
         for item in citing_papers:
-            doi = item.get("doi", "")
-            if doi and doi in seen:
+            key = self._result_dedup_key(item)
+            if key[0] == "none":
+                continue  # 没 DOI 没 title 的丢弃
+            if key in seen:
                 continue
             session.add(models.SubscriptionResult(
                 subscription_id=sub.id,
@@ -242,8 +317,7 @@ class SubscriptionService:
                 raw_metadata_json=item,
                 notified=False,
             ))
-            if doi:
-                seen.add(doi)
+            seen.add(key)
             new += 1
         session.flush()
         return new

@@ -99,6 +99,31 @@ def test_delete_subscription(client):
     assert r2.status_code == 404
 
 
+def test_delete_subscription_blocked_when_unread(client):
+    """有未读 inbox 结果时，DELETE 应 409 要求 ?force=1 确认。"""
+    sid = client.post("/api/subscriptions", json={
+        "type": "paper_citations", "target": {"doi": "10.1/x"},
+        "cron_expr": "every 7d",
+    }).get_json()["id"]
+    _seed_result(client, sid, doi="10.1/cite", notified=False)
+
+    r = client.delete(f"/api/subscriptions/{sid}")
+    assert r.status_code == 409
+
+    r2 = client.delete(f"/api/subscriptions/{sid}?force=1")
+    assert r2.status_code == 204
+
+
+def test_create_subscription_rejects_oversize_target(client):
+    """target_json 单值超过 1024 字符应被拒绝（DoS 防御）。"""
+    r = client.post("/api/subscriptions", json={
+        "type": "paper_citations",
+        "target": {"doi": "10.1/x", "junk": "A" * 2000},
+        "cron_expr": "every 7d",
+    })
+    assert r.status_code == 400
+
+
 # ─── inbox ──────────────────────────────────────────────────────────
 
 
@@ -173,6 +198,28 @@ def test_paper_bibtex_download(client):
     assert r.status_code == 200
     assert "application/x-bibtex" in r.headers["Content-Type"]
     assert b"@misc{smith2020study" in r.data or b"@article{smith2020study" in r.data
+    # Content-Disposition 必须用清洗后的文件名（无 \r\n / 引号 / 路径分隔符）
+    cd = r.headers["Content-Disposition"]
+    assert "\r" not in cd and "\n" not in cd
+
+
+def test_paper_bibtex_filename_sanitizes_dangerous_stem(client, tmp_path):
+    """paper.stem 即使含 \\r\\n / 引号也不能逃逸 Content-Disposition header。"""
+    import app as app_pkg
+    with app_pkg.SessionLocal() as s:
+        from database import models
+        p = models.Paper(stem='evil\r\n"crlf', title="X", source="root",
+                         status="analyzed", year=2020)
+        s.add(p); s.commit()
+        pid = p.id
+        client.post(f"/api/papers/{pid}/citation", json={})
+
+    r = client.get(f"/api/papers/{pid}/citations.bib")
+    assert r.status_code == 200
+    cd = r.headers["Content-Disposition"]
+    assert "\r" not in cd and "\n" not in cd
+    # `"` 被替换为下划线
+    assert '"crlf' not in cd
 
 
 def test_paper_bibtex_404(client):

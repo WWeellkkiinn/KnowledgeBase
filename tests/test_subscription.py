@@ -40,9 +40,20 @@ def test_parse_simple_interval():
     assert parse_simple_interval("every 5m") == timedelta(minutes=5)
     assert parse_simple_interval("3h") == timedelta(hours=3)
     assert parse_simple_interval("every 2d") == timedelta(days=2)
-    # 无法识别 → 默认 7 天
-    assert parse_simple_interval("0 3 * * 1") == timedelta(days=7)
     assert parse_simple_interval("") == timedelta(days=7)
+
+
+def test_parse_simple_interval_supports_cron():
+    """标准 cron 表达式应交给 APScheduler CronTrigger 计算下次触发时间。"""
+    # 每周一 3:00 UTC：下次触发距 now 必在 (0, 7天]，不应再静默回退到 7d
+    delta = parse_simple_interval("0 3 * * 1")
+    assert timedelta(0) < delta <= timedelta(days=8)
+
+
+def test_parse_simple_interval_rejects_negative():
+    """负数 / 0 应回退 7 天，避免 next_run_at 永远 <= now 触发死循环。"""
+    assert parse_simple_interval("every -5m") == timedelta(days=7)
+    assert parse_simple_interval("0m") == timedelta(days=7)
 
 
 # ─── CRUD ────────────────────────────────────────────────────────────
