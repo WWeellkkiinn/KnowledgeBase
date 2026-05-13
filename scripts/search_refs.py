@@ -422,8 +422,11 @@ def _repec(title: str, doi: str = "") -> dict | None:
 def _zenodo(title: str, year: str = "") -> dict | None:
     """Zenodo 开放获取仓库搜索（M4.1）。"""
     try:
-        q = f'title:"{title}"'
-        if year:
+        # 转义双引号防止 Lucene 语法注入（C3/X3 审查）
+        safe_title = title.replace('"', '\\"')
+        q = f'title:"{safe_title}"'
+        # year 仅允许 4 位数字，防止 Lucene 语法注入（X1 审查）
+        if year and re.fullmatch(r"\d{4}", year):
             q += f" AND publication_date:[{year}-01-01 TO {year}-12-31]"
         resp = httpx.get(
             "https://zenodo.org/api/records",
@@ -449,11 +452,13 @@ def _zenodo(title: str, year: str = "") -> dict | None:
                 pdf_url = f.get("links", {}).get("self", "")
                 break
         authors = ", ".join(c.get("name", "") for c in meta.get("creators", [])[:3])
+        raw_date = meta.get("publication_date")
+        year_out = str(raw_date)[:4] if raw_date is not None else year
         return {
             "title": returned_title,
             "doi": doi,
             "pdf_url": pdf_url,
-            "year": str(meta.get("publication_date", year))[:4],
+            "year": year_out,
             "authors": authors,
         }
     except Exception as e:
@@ -465,7 +470,8 @@ def _pubmed(title: str, year: str = "") -> dict | None:
     """PubMed/PMC 搜索，有开放获取 PDF 时直接返回（M4.2）。"""
     try:
         term = f'"{title}"[Title]'
-        if year:
+        # year 仅允许 4 位数字，防止 Entrez 查询语法注入（X1 审查）
+        if year and re.fullmatch(r"\d{4}", year):
             term += f" AND {year}[PDAT]"
         resp = httpx.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
@@ -488,7 +494,10 @@ def _pubmed(title: str, year: str = "") -> dict | None:
             return None
         result = sum_resp.json().get("result", {}).get(pmid, {})
         returned_title = result.get("title", "")
-        if returned_title and not _title_similar(title, returned_title):
+        # 空 title 无法验证匹配，直接放弃避免误收（C1 审查）
+        if not returned_title:
+            return None
+        if not _title_similar(title, returned_title):
             print(f"[pubmed] title mismatch: {returned_title!r}", file=sys.stderr)
             return None
 

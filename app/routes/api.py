@@ -537,15 +537,18 @@ def get_network():
 # ─── M4.3 失败诊断面板 ───────────────────────────────────────────────
 
 import os as _os
-import re as _re_fail
 from pathlib import Path as _Path
+
+# 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
+_BASE_DIR = _Path(__file__).parent.parent.parent.resolve()
 
 
 def _categorize_reason(reason: str) -> str:
     r = reason.lower()
-    if "403" in reason or "401" in reason:
+    # 用 "HTTP 4xx" 前缀而非裸数字，避免 "4031"/"14032" 等子串误匹配（C1 审查）
+    if "http 403" in r or "http 401" in r:
         return "paywalled"
-    if _re_fail.search(r"http [45]\d\d", reason):
+    if re.search(r"http [45]\d\d", r):
         return "http_error"
     if "not a pdf" in r or "content-type" in r:
         return "not_a_pdf"
@@ -562,9 +565,9 @@ def _parse_refs_failed(path: _Path) -> list[dict]:
     except OSError:
         return []
     items = []
-    for section in _re_fail.split(r"\n## \[", text)[1:]:
+    for section in re.split(r"\n## \[", text)[1:]:
         lines = section.strip().splitlines()
-        m = _re_fail.match(r"(\d+)\](.+)", lines[0]) if lines else None
+        m = re.match(r"(\d+)\](.+)", lines[0]) if lines else None
         if not m:
             continue
         ref_index = int(m.group(1))
@@ -593,12 +596,19 @@ def _parse_refs_failed(path: _Path) -> list[dict]:
 def get_failures():
     """扫描所有 papers/*/refs_failed.md，聚合失败条目及分类统计。"""
     papers_root = _Path(_os.environ.get("PAPERS_DIR", "papers")).resolve()
+    # 防止 PAPERS_DIR 被设为项目外路径（C3 审查路径遍历）
+    try:
+        papers_root.relative_to(_BASE_DIR)
+    except ValueError:
+        return jsonify({"error": "PAPERS_DIR must be inside project root"}), 400
 
     items: list[dict] = []
-    # 构建 stem→paper_id 映射供关联
+    # 只取 stem/id 两列，避免全量 Paper 行进内存（C2/X2 审查）
     paper_map: dict[str, int] = {
-        row.stem: row.id
-        for row in g.db.execute(select(models.Paper)).scalars()
+        stem: pid
+        for stem, pid in g.db.execute(
+            select(models.Paper.stem, models.Paper.id)
+        ).all()
     }
 
     for failed_file in sorted(papers_root.glob("*/refs_failed.md")):
