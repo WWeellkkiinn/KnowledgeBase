@@ -12,3 +12,6 @@ kb.db
 kb.db-journal
 kb.db-shm
 kb.db-wal
+
+# 迁移脚本运行报告（每次重跑覆盖，不入库）
+migration_report.md
