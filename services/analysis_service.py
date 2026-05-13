@@ -38,8 +38,15 @@ class AnalysisService:
         output_dir: Path | None = None,
         headless: bool = True,
         phase3_only: bool = False,
+        timeout: float | None = None,
     ) -> int:
-        """Run full pipeline on a markdown file. Returns exit code (0=ok)."""
+        """Run full pipeline on a markdown file. Returns exit code (0=ok).
+
+        参数注入防护：argparse 会把 `--xxx` 当 flag，若 focus 由 HTTP 输入
+        以 `-`/`--` 起头会被吃成 unknown flag。拒之。
+        """
+        if not focus or focus.startswith("-"):
+            raise ValueError("focus 不能为空或以 '-' 开头")
         cmd = [sys.executable, str(_ANALYSIS_CLI), str(md_path), "--focus", focus]
         if output_dir is not None:
             cmd += ["--output-dir", str(output_dir)]
@@ -47,7 +54,10 @@ class AnalysisService:
             cmd.append("--headless")
         if phase3_only:
             cmd.append("--phase3-only")
-        proc = subprocess.run(cmd)
+        try:
+            proc = subprocess.run(cmd, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return -1
         return proc.returncode
 
     @staticmethod

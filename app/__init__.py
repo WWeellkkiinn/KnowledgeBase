@@ -5,17 +5,29 @@
 """
 from __future__ import annotations
 
+import os
+import secrets
+
 from flask import Flask, g
 from flask_socketio import SocketIO
 
 from database import SessionLocal
 
 
-socketio = SocketIO(cors_allowed_origins=["http://localhost:5173"], async_mode="threading")
+# CORS allowlist 支持环境变量覆盖；默认放行 Vite dev 的 localhost 与 127.0.0.1。
+_DEFAULT_CORS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_CORS = os.environ.get("KB_CORS_ORIGINS")
+_CORS_LIST = [s.strip() for s in _CORS.split(",")] if _CORS else _DEFAULT_CORS
+
+socketio = SocketIO(cors_allowed_origins=_CORS_LIST, async_mode="threading")
 
 
 def create_app(config: dict | None = None) -> Flask:
     app = Flask(__name__)
+    # SECRET_KEY 必须设置：flask-socketio polling transport 与未来 Flask session
+    # 都依赖；优先读环境变量，开发期 fallback 到随机 key（重启后失效，符合 dev 预期）。
+    app.config["SECRET_KEY"] = os.environ.get("KB_SECRET_KEY") or secrets.token_hex(32)
+    app.config["PROPAGATE_EXCEPTIONS"] = False
     app.config.update(config or {})
 
     @app.before_request

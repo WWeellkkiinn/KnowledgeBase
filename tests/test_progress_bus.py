@@ -45,7 +45,32 @@ def test_buffer_bounded():
 def test_listener_exception_isolated():
     bus = ProgressBus()
     seen: list[dict] = []
-    bus.subscribe("c", lambda e: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    def _boom(_e):
+        raise RuntimeError("boom")
+
+    bus.subscribe("c", _boom)
     bus.subscribe("c", seen.append)
-    bus.publish("c", "y")  # 不能因 listener 异常崩溃
+    bus.publish("c", "y")  # 第一个 listener 抛错不能阻断第二个
     assert len(seen) == 1
+
+
+def test_concurrent_publish_subscribe():
+    """多线程并发 publish 不丢事件，listeners 列表线程安全。"""
+    import threading
+    bus = ProgressBus(buffer_size=10000)
+    received: list[dict] = []
+    lock = threading.Lock()
+
+    def listener(ev):
+        with lock:
+            received.append(ev)
+
+    bus.subscribe("*", listener)
+    threads = [
+        threading.Thread(target=lambda i=i: [bus.publish(f"t{i}", "x", {"j": j}) for j in range(50)])
+        for i in range(4)
+    ]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    assert len(received) == 200  # 4 threads × 50 events

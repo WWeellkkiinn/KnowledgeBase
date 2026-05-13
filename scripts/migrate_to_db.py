@@ -189,16 +189,19 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _upsert_paper(session, rec: PaperRecord, report: Report) -> models.Paper:
-    """Upsert by stem.
+def _upsert_paper(session, rec: PaperRecord, report: Report,
+                  existing_by_stem: dict[str, models.Paper]) -> models.Paper:
+    """Upsert by stem。
 
     覆盖策略分两类：
       - 文件系统派生字段（path/status/source）：总是覆盖（哪怕变 None），
-        因为这些字段必须反映当前磁盘状态，否则重跑会留下 stale stale row。
+        因为这些字段必须反映当前磁盘状态，否则重跑会留下 stale row。
       - 元数据字段（title/year/doi）：best-effort，仅在新值非空时填入，
         避免一次解析失败就把已知元数据擦掉。
+
+    `existing_by_stem` 由调用方一次性查出，避免每条记录 N+1 单点查询。
     """
-    existing = session.query(models.Paper).filter_by(stem=rec.stem).one_or_none()
+    existing = existing_by_stem.get(rec.stem)
     status = "analyzed" if rec.has_insight else "pending"
     # 总是覆盖
     fs_fields = {
@@ -244,6 +247,15 @@ def _load_edges(session, paper_by_stem: dict[str, int], report: Report) -> None:
     edges = data.get("edges", []) or []
     report.edges_total = len(edges)
 
+    # 一次性把现有的 backward edges 全部加载到内存索引，避免 N+1 单点查询
+    from sqlalchemy import select as _select
+    existing_edges = session.execute(
+        _select(models.Edge).where(models.Edge.direction == "backward")
+    ).scalars().all()
+    existing_by_key: dict[tuple[int, str, int | None], models.Edge] = {
+        (e.from_paper_id, e.direction, e.ref_index): e for e in existing_edges
+    }
+
     seen_in_run: set[tuple[int, str, int | None]] = set()
     for edge in edges:
         src = edge.get("from")
@@ -269,11 +281,7 @@ def _load_edges(session, paper_by_stem: dict[str, int], report: Report) -> None:
             continue
         seen_in_run.add(key)
 
-        existing = session.query(models.Edge).filter_by(
-            from_paper_id=src_id,
-            direction="backward",
-            ref_index=idx,
-        ).one_or_none()
+        existing = existing_by_key.get(key)
         if existing is None:
             session.add(models.Edge(
                 from_paper_id=src_id,
@@ -391,20 +399,29 @@ def run_migration(report_path: Path) -> Report:
 
     try:
         with Session() as s:
+            # 一次性预加载 papers 索引，避免 _upsert_paper 内 N+1 单点查询
+            from sqlalchemy import select as _select
+            existing_papers = s.execute(_select(models.Paper)).scalars().all()
+            existing_by_stem = {p.stem: p for p in existing_papers}
+
             paper_by_stem: dict[str, int] = {}
             for rec in records:
                 try:
-                    paper = _upsert_paper(s, rec, report)
+                    paper = _upsert_paper(s, rec, report, existing_by_stem)
                     paper_by_stem[rec.stem] = paper.id
                 except Exception as e:
                     report.errors.append(f"paper {rec.stem}: {e!r}")
                     continue
                 if not rec.has_insight or not rec.pdf_path or not rec.title:
                     missing_records.append(rec)
-            s.commit()
-
-            _load_edges(s, paper_by_stem, report)
-            s.commit()
+            try:
+                _load_edges(s, paper_by_stem, report)
+                # papers + edges 同事务原子提交：edges 失败时 papers 一起回滚
+                s.commit()
+            except Exception as e:
+                report.errors.append(f"edges/transaction: {e!r}")
+                s.rollback()
+                raise
     finally:
         # 无论成功失败都写报告，便于操作员排查
         _write_report(report, missing_records, report_path)

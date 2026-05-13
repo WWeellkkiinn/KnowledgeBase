@@ -5,6 +5,12 @@
 - 启动时 reset_stale：扫 `running` → 重置为 `queued`（崩溃恢复）
 - 自动重试：失败任务 attempt < max_attempts 时回排队
 
+并发模型：单进程 worker（SocketIO threading 模式下多 HTTP worker 走同一进程）。
+fetch_next 用 SELECT + UPDATE，多线程并发情况下可能两个 worker 同时领取同一行
+（无 SELECT FOR UPDATE）；要在多进程/多 worker 下安全运行需扩展 lease：
+- 加 `worker_id` 列
+- fetch_next 改 atomic UPDATE...RETURNING 配 lease 时间戳
+
 与 _manifest.json 共存：M1.4 期间双写（manifest 仍由 expand.py 维护），
 未来 milestone 完成切换后移除 manifest 入口。
 """
@@ -13,10 +19,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import case, literal, select, update
 from sqlalchemy.orm import Session
 
 from database import models
+
+_ERROR_LOG_MAX_BYTES = 8 * 1024  # 8KB 上限，避免无界增长
 
 
 def _utcnow() -> datetime:
@@ -87,14 +95,18 @@ class TaskQueue:
         task = self.session.get(models.Task, task_id)
         if task is None:
             return
-        task.error_log = (task.error_log or "") + f"\n[attempt {task.attempt}] {error}"
-        task.finished_at = _utcnow()
+        combined = (task.error_log or "") + f"\n[attempt {task.attempt}] {error}"
+        # 截断防无界增长，保留最新的尾部（重要错误信息更可能在末尾）
+        if len(combined) > _ERROR_LOG_MAX_BYTES:
+            combined = "...[truncated]...\n" + combined[-_ERROR_LOG_MAX_BYTES:]
+        task.error_log = combined
         if task.attempt < task.max_attempts:
             task.status = "queued"
             task.started_at = None
             task.finished_at = None
         else:
             task.status = "failed"
+            task.finished_at = _utcnow()
         self.session.flush()
 
     # ─── 崩溃恢复 ────────────────────────────────────────────────────
@@ -105,8 +117,6 @@ class TaskQueue:
         语义：崩溃恢复时不应额外消耗重试预算。`fetch_next` 在领取时会再次自增
         `attempt`，所以这里必须先减 1（不小于 0），保持 max_attempts 的语义不变。
         """
-        from sqlalchemy import case, literal
-
         attempt_col = models.Task.attempt
         stmt = (
             update(models.Task)

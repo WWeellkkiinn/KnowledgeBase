@@ -71,7 +71,7 @@ def list_papers():
     status = request.args.get("status")
     source = request.args.get("source")
     try:
-        limit = min(int(request.args.get("limit", 200)), 1000)
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
         offset = max(int(request.args.get("offset", 0)), 0)
     except ValueError:
         return jsonify({"error": "invalid pagination"}), 400
@@ -89,15 +89,20 @@ def list_papers():
 
 @bp.get("/papers/<int:paper_id>")
 def get_paper(paper_id: int):
+    from sqlalchemy import or_
+
     p = g.db.get(models.Paper, paper_id)
     if p is None:
         return jsonify({"error": "not found"}), 404
-    edges_out = g.db.execute(
-        select(models.Edge).where(models.Edge.from_paper_id == paper_id)
+    # 单次查询同时取出 out + in 边，按 from/to 二分到两个列表
+    rows = g.db.execute(
+        select(models.Edge).where(
+            or_(models.Edge.from_paper_id == paper_id,
+                models.Edge.to_paper_id == paper_id)
+        )
     ).scalars().all()
-    edges_in = g.db.execute(
-        select(models.Edge).where(models.Edge.to_paper_id == paper_id)
-    ).scalars().all()
+    edges_out = [e for e in rows if e.from_paper_id == paper_id]
+    edges_in = [e for e in rows if e.to_paper_id == paper_id]
     return jsonify({
         "paper": _paper_to_dict(p),
         "edges_out": [_edge_to_dict(e) for e in edges_out],
@@ -110,7 +115,7 @@ def list_tasks():
     status = request.args.get("status")
     type_ = request.args.get("type")
     try:
-        limit = min(int(request.args.get("limit", 100)), 500)
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
     except ValueError:
         return jsonify({"error": "invalid pagination"}), 400
 

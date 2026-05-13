@@ -19,16 +19,23 @@ class Pdf2MdService:
     def __init__(self, db_session=None) -> None:
         self.db_session = db_session
 
-    def convert(self, pdf_path: Path, output_dir: Path | None = None) -> dict:
+    def convert(self, pdf_path: Path, output_dir: Path | None = None,
+                timeout: float | None = 600.0) -> dict:
         """Run pdf2md.py and return parsed JSON dict.
 
         Returns: {"md_path": str, "sections": [...]} on success;
-                 {"error": str} on failure.
+                 {"error": str} on failure (含 timeout)。
         """
         cmd = [sys.executable, str(_PDF2MD), str(pdf_path)]
         if output_dir is not None:
             cmd += ["--output-dir", str(output_dir)]
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"error": f"timeout after {timeout}s"}
         if proc.returncode != 0:
             return {"error": proc.stderr.strip() or f"exit {proc.returncode}"}
 

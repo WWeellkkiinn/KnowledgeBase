@@ -82,7 +82,8 @@ class Paper(Base):
     )
     analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    journal: Mapped[Optional[Journal]] = relationship(Journal, lazy="joined")
+    # lazy="select"（默认）—— 列表场景不强制 JOIN，详情场景按需访问
+    journal: Mapped[Optional[Journal]] = relationship(Journal, lazy="select")
 
 
 class Edge(Base):
@@ -198,6 +199,9 @@ class SessionRecord(Base):
 
 Index("ix_tasks_status_type", Task.status, Task.type)
 Index("ix_subscriptions_active_next", Subscription.active, Subscription.next_run_at)
+# /api/papers?status=&source= 常见过滤路径
+Index("ix_papers_status", Paper.status)
+Index("ix_papers_source", Paper.source)
 
 
 __all__ = [
