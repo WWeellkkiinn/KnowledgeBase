@@ -90,15 +90,6 @@ async function render() {
           },
         },
         {
-          selector: 'node[source = "root"]',
-          style: {
-            width: 36,
-            height: 36,
-            'border-width': 2,
-            'border-color': '#0f172a',
-          },
-        },
-        {
           selector: 'edge',
           style: {
             width: 1,
@@ -110,7 +101,7 @@ async function render() {
         },
       ],
       layout: { name: layoutName, animate: false, fit: true, padding: 30 },
-      wheelSensitivity: 0.2,
+      wheelSensitivity: 0.95,
     })
 
     cy.value.on('tap', 'node', (evt) => {
@@ -174,7 +165,6 @@ onBeforeUnmount(() => {
         <span class="inline-block h-3 w-3 rounded-full" style="background:#94a3b8"></span>
         未知 / 无期刊
       </span>
-      <span class="ml-4">大节点 = root，箭头 = 引用方向</span>
     </div>
 
     <div
