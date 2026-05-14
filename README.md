@@ -11,9 +11,9 @@
 | 页面 | 功能 |
 |------|------|
 | **概览** | 论文总数、运行任务、活跃订阅、未读 Inbox，一览全库状态 |
-| **论文库** | 所有论文列表，按状态/来源过滤 |
-| **论文详情** | 基本信息、DB 引用出边（参考文献）、后向追踪（API 查它引用了谁）、前向追踪（API 查谁引用了它）、BibTeX 下载；追踪结果自动写入引用图 |
-| **引用图** | Cytoscape 引用网络图，节点按期刊 Tier 着色（金/银/铜），点击跳详情 |
+| **论文库** | 核心库 / 探索库双层级列表；分页（URL 参数持久化，详情页返回自动定位）；批量移库 / 删除；全选 / 半选 checkbox |
+| **论文详情** | 结构化元数据（作者 / 年份 / DOI / 期刊 Tier）、摘要、内容分析；核心论文自动预加载引用与被引数据；引用/被引列表三行格式（标题 / 作者年份 / 期刊DOI）；BibTeX 下载 |
+| **引用图** | Cytoscape 引用网络图，**仅显示核心库论文**；节点大小按被引量相对缩放；节点按期刊 Tier 着色（金/银/铜）；边自动去重并修正方向（forward/backward 归一化），过滤时序不可能的边；点击节点跳详情 |
 | **综述** | 勾选若干篇论文 + 输入关注维度，一键生成流式综述（调 Ollama） |
 | **订阅** | 创建订阅（论文被引 / 作者新作 / 话题搜索），定时自动检查 |
 | **失败诊断** | 所有下载失败的引用汇总，按付费墙 / 非PDF / 超时等分类，方便批量处理 |
@@ -137,20 +137,38 @@ python scripts/run_analysis_ui.py papers/my_paper/my_paper.md --focus "研究方
 
 论文分析入库后，在论文详情页可以通过 API 查询引用关系，**结果自动写入 papers + edges 表，引用图即时更新**。
 
-### 后向追踪（这篇论文引用了哪些论文）
+### 核心库论文（自动触发）
 
-1. 打开**论文库**，点进任意一篇有 DOI 的论文
-2. 切换到**后向引用**标签页
-3. 点击「查询后向引用」
+打开**核心库**中任意有 DOI 的论文详情页，后向追踪（参考文献）和前向追踪（被引用）**同时自动触发**，无需切换 Tab 等待。
 
-返回：被查论文的参考文献列表，每条包含标题、作者、年份、DOI、摘要、来源（SS / OpenAlex）。
+### 探索库论文（不追踪被引量）
 
-### 前向追踪（谁引用了这篇论文）
+探索库论文仅展示已入库的引用关系，被引量显示 0。如需统计，先将论文移至核心库。
 
-1. 同上，切换到**被引用**标签页
-2. 点击「触发前向追踪」
+### 数据来源（三源并行）
 
-两种追踪均同时查询 Semantic Scholar 和 OpenAlex，结果去重合并。7 天内同一 DOI 命中缓存，不重复请求。没有 DOI 的论文无法触发（按钮置灰）。
+每次追踪同时查询三个来源并去重合并：
+
+| 方向 | 来源 |
+|------|------|
+| 后向（参考文献） | Semantic Scholar + OpenAlex + Crossref |
+| 前向（被引用） | Semantic Scholar + OpenAlex |
+
+7 天内同一 DOI 命中缓存，不重复请求。没有 DOI 的论文无法触发。
+
+### 全量批量抓取
+
+```bash
+# 对所有核心论文重新抓取引用（凌晨跑，无上限）
+python scripts/fetch_all_citations.py
+
+# 仅前向 / 仅后向
+python scripts/fetch_all_citations.py --forward-only
+python scripts/fetch_all_citations.py --backward-only
+
+# 清空缓存强制重抓（需输入 yes 确认）
+python scripts/fetch_all_citations.py --clear-cache
+```
 
 ---
 
@@ -300,6 +318,7 @@ KnowledgeBase/
 | 后端 | Flask 3 + Flask-SocketIO + SQLAlchemy 2 + APScheduler |
 | 数据库 | SQLite（`kb.db`） |
 | 前端 | Vue 3.5 + Vite 5 + Tailwind CSS 3 + Pinia + Cytoscape.js |
+| 引用 API | Semantic Scholar + OpenAlex + Crossref（三源并行，ThreadPoolExecutor） |
 | LLM | Ollama（`http://<ollama-host>:13812`，模型 `qwen3.6-27b`） |
 | PDF 转换 | MinerU API（`http://<ollama-host>:8000`） |
 | HTTP 客户端 | httpx |
