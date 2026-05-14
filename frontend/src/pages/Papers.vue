@@ -1,22 +1,30 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { papersApi } from '@/api/endpoints'
 import type { Paper } from '@/types/api'
+
+const route = useRoute()
+const router = useRouter()
 
 const items = ref<Paper[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const hasMore = ref(false)
 
-const tier = ref<'core' | 'stub'>('core')
-const offset = ref(0)
 const pageSize = 50
+const routeTier = route.query.tier === 'stub' ? 'stub' : 'core'
+const routePage = Number(route.query.page)
+const tier = ref<'core' | 'stub'>(routeTier)
+const offset = ref(routePage > 1 ? (routePage - 1) * pageSize : 0)
 const selectedIds = ref<Set<number>>(new Set())
 const batchLoading = ref(false)
 const selectedCount = computed(() => selectedIds.value.size)
 const pageIds = computed(() => items.value.map((p) => p.id))
 const allPageSelected = computed(() => pageIds.value.length > 0 && pageIds.value.every((id) => selectedIds.value.has(id)))
+const somePageSelected = computed(() => pageIds.value.some((id) => selectedIds.value.has(id)))
+const headerCheckboxRef = ref<HTMLInputElement | null>(null)
+const currentPage = computed(() => Math.floor(offset.value / pageSize) + 1)
 
 async function fetchPage() {
   const requestedTier = tier.value
@@ -33,9 +41,11 @@ async function fetchPage() {
     hasMore.value = resp.items.length > pageSize
     items.value = resp.items.slice(0, pageSize)
   } catch (e: unknown) {
-    if (tier.value === requestedTier) error.value = e instanceof Error ? e.message : String(e)
+    if (tier.value === requestedTier && offset.value === requestedOffset)
+      error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    if (tier.value === requestedTier) loading.value = false
+    if (tier.value === requestedTier && offset.value === requestedOffset)
+      loading.value = false
   }
 }
 
@@ -47,10 +57,22 @@ watch(tier, () => {
   fetchPage()
 })
 
+let _routeWatchReady = false
+watch([tier, offset], () => {
+  if (!_routeWatchReady) { _routeWatchReady = true; return }
+  router.replace({ query: { tier: tier.value, page: currentPage.value } })
+}, { flush: 'post' })
+
 watch(items, () => {
   const pageSet = new Set(pageIds.value)
   selectedIds.value = new Set([...selectedIds.value].filter((id) => pageSet.has(id)))
 })
+
+watch([allPageSelected, somePageSelected], () => {
+  if (headerCheckboxRef.value) {
+    headerCheckboxRef.value.indeterminate = somePageSelected.value && !allPageSelected.value
+  }
+}, { immediate: true })
 
 const canPrev = computed(() => offset.value > 0)
 const canNext = computed(() => hasMore.value)
@@ -149,14 +171,12 @@ function tierClass(tier: number | null | undefined) {
       {{ error }}
     </p>
 
-    <div v-if="loading && items.length === 0" class="text-sm text-slate-500">加载中…</div>
-    <p v-else-if="items.length === 0" class="text-sm text-slate-500">暂无论文。</p>
-
-    <div v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white">
-      <div v-if="selectedCount > 0" class="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-        <span class="text-slate-600">已选 {{ selectedCount }} 篇</span>
-        <div class="flex gap-2">
+    <div class="flex h-10 items-center justify-between text-sm">
+      <div class="flex items-center gap-2">
+        <template v-if="selectedCount > 0">
+          <span class="text-slate-600">已选 {{ selectedCount }} 篇</span>
           <button
+            v-if="tier === 'stub'"
             class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
             :disabled="batchLoading"
             @click="moveSelected(true)"
@@ -164,6 +184,7 @@ function tierClass(tier: number | null | undefined) {
             移至核心库
           </button>
           <button
+            v-if="tier === 'core'"
             class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
             :disabled="batchLoading"
             @click="moveSelected(false)"
@@ -177,13 +198,37 @@ function tierClass(tier: number | null | undefined) {
           >
             删除
           </button>
-        </div>
+        </template>
+        <span v-else class="text-slate-500">第 {{ currentPage }} 页</span>
       </div>
+      <div class="flex gap-2">
+        <button
+          class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
+          :disabled="!canPrev || loading"
+          @click="prevPage"
+        >
+          上一页
+        </button>
+        <button
+          class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
+          :disabled="!canNext || loading"
+          @click="nextPage"
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+
+    <div v-if="loading && items.length === 0" class="text-sm text-slate-500">加载中…</div>
+    <p v-else-if="items.length === 0" class="text-sm text-slate-500">暂无论文。</p>
+
+    <div v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <table class="w-full text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500">
           <tr>
             <th class="px-3 py-2 w-10">
               <input
+                ref="headerCheckboxRef"
                 type="checkbox"
                 :checked="allPageSelected"
                 @change="togglePage"
@@ -235,26 +280,6 @@ function tierClass(tier: number | null | undefined) {
           </tr>
         </tbody>
       </table>
-    </div>
-
-    <div class="flex items-center justify-between text-sm">
-      <span class="text-slate-500">偏移 {{ offset }} · 本页 {{ items.length }}</span>
-      <div class="flex gap-2">
-        <button
-          class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
-          :disabled="!canPrev || loading"
-          @click="prevPage"
-        >
-          上一页
-        </button>
-        <button
-          class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
-          :disabled="!canNext || loading"
-          @click="nextPage"
-        >
-          下一页
-        </button>
-      </div>
     </div>
   </section>
 </template>

@@ -43,7 +43,7 @@ class _BaseTrackService:
     def __init__(self, db_session: Optional[Session] = None) -> None:
         self.db_session = db_session
 
-    def _fetch(self, doi: str, limit: int) -> list:
+    def _fetch(self, doi: str, limit: Optional[int]) -> list:
         raise NotImplementedError
 
     def track(
@@ -51,7 +51,7 @@ class _BaseTrackService:
         doi: str,
         *,
         refresh: bool = False,
-        limit: int = 100,
+        limit: Optional[int] = None,
         from_paper_id: Optional[int] = None,
     ) -> dict:
         doi_norm = normalize_doi(doi)

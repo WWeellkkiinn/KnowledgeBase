@@ -31,14 +31,18 @@ function colorFor(tier: number | null): string {
   return TIER_COLOR[String(tier)] ?? TIER_COLOR.unknown
 }
 
-function nodeSize(c: number): number { return Math.min(20 + c * 2, 60) }
-
 async function render() {
   loading.value = true
   error.value = null
   try {
-    const data: NetworkGraph & { total?: number; truncated?: boolean; nodes: Array<{ id: number; stem: string; title: string | null; quality_tier: number | null; source: string | null; year: number | null; authors_json: string[] | null; citation_count: number }> } =
-      await networkApi.get(1000)
+    const data = await networkApi.get(1000) as Omit<NetworkGraph, 'nodes'> & {
+      total?: number
+      truncated?: boolean
+      nodes: Array<NetworkGraph['nodes'][number] & {
+        authors_json?: string[] | null
+        citation_count?: number
+      }>
+    }
     if (disposed) return  // 组件已卸载，丢弃响应
     stats.value = {
       nodes: data.nodes.length,
@@ -53,6 +57,9 @@ async function render() {
     // 节点数大时改用更稳的 grid layout，避免 cose 在 200+ 节点冻结主线程
     // （C2+X2 审查）。100 是经验阈值。
     const layoutName = data.nodes.length > 100 ? 'grid' : 'cose'
+    const counts = data.nodes.map(n => n.citation_count ?? 0)
+    const maxCnt = Math.max(counts.reduce((a, b) => Math.max(a, b), 0), 1)
+    const nodeSize = (c: number) => Math.round(16 + (c / maxCnt) * 48)
     cy.value = cytoscape({
       container: container.value,
       elements: [

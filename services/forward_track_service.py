@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from database import models
 from .reference_fetcher import fetch_cited_by
 from ._track_base import _BaseTrackService
@@ -15,5 +17,5 @@ class ForwardTrackService(_BaseTrackService):
     _count_key = "citing_count"
     _direction = "forward"
 
-    def _fetch(self, doi: str, limit: int) -> list:
+    def _fetch(self, doi: str, limit: Optional[int]) -> list:
         return fetch_cited_by(doi, limit)

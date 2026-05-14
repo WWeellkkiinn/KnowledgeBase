@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from database import models
 from .reference_fetcher import fetch_references
 from ._track_base import _BaseTrackService
@@ -16,5 +18,5 @@ class BackwardTrackService(_BaseTrackService):
     _direction = "backward"
     _cache_ttl = None  # 参考文献发表后不变，永不过期
 
-    def _fetch(self, doi: str, limit: int) -> list:
+    def _fetch(self, doi: str, limit: Optional[int]) -> list:
         return fetch_references(doi, limit)

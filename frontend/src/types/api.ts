@@ -53,6 +53,7 @@ export interface ReferenceEntry {
   authors: string
   abstract: string
   source: 'ss' | 'openalex' | 'both' | string
+  venue_name?: string
 }
 
 export interface ForwardTrackResult {

@@ -32,8 +32,8 @@ _OPENALEX_BASE = "https://api.openalex.org"
 _TIMEOUT = 30
 _PER_PAGE = 100
 
-# SS 免费配额 100 req/5min；1 req/s 节流，多线程共享
-_SS_INTERVAL = 1.0
+# SS API key 认证后限速 1 req/s（官方值），实测 0.8s 无 429，更快
+_SS_INTERVAL = 0.8
 _SS_LOCK = threading.Lock()
 _ss_last_call: float = 0.0
 
@@ -191,28 +191,40 @@ _OA_SELECT = "title,doi,publication_year,authorships,abstract_inverted_index,pri
 
 # ─── 前向抓取：谁引用了这篇 ─────────────────────────────────────────────────
 
-def _ss_cited_by(doi: str, limit: int) -> list[ReferenceItem]:
+def _ss_cited_by(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
     try:
-        resp = _ss_get(
-            f"{_SS_BASE}/paper/DOI:{doi}/citations",
-            {"fields": _SS_FIELDS, "limit": min(limit, _PER_PAGE)},
-            _ss_headers(),
-        )
-        if resp is None or resp.status_code != 200:
-            _log.warning("[ss] cited_by %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
-            return []
-        _data = resp.json().get("data")
-        return [
-            _ss_item(entry.get("citingPaper") or {}, "ss")
-            for entry in (_data if _data is not None else [])
-            if entry.get("citingPaper")
-        ]
+        results: list[ReferenceItem] = []
+        offset = 0
+        while True:
+            page_size = _PER_PAGE if limit is None else min(_PER_PAGE, limit - len(results))
+            if page_size <= 0:
+                break
+            resp = _ss_get(
+                f"{_SS_BASE}/paper/DOI:{doi}/citations",
+                {"fields": _SS_FIELDS, "limit": page_size, "offset": offset},
+                _ss_headers(),
+            )
+            if resp is None or resp.status_code != 200:
+                _log.warning("[ss] cited_by %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
+                return results
+            _data = resp.json().get("data") or []
+            batch = [
+                _ss_item(entry.get("citingPaper") or {}, "ss")
+                for entry in _data
+                if entry.get("citingPaper")
+            ]
+            results.extend(batch)
+            # 用原始响应条目数判断是否到末页，避免 null 过滤导致提前退出
+            if len(_data) < page_size or (limit is not None and len(results) >= limit):
+                break
+            offset += _PER_PAGE
+        return results
     except Exception as e:
         _log.warning("[ss] cited_by %s: %s", doi, e)
         return []
 
 
-def _oa_cited_by(doi: str, limit: int) -> list[ReferenceItem]:
+def _oa_cited_by(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
     try:
         mailto = _openalex_mailto()
         p: dict = {"mailto": mailto} if mailto else {}
@@ -222,17 +234,29 @@ def _oa_cited_by(doi: str, limit: int) -> list[ReferenceItem]:
         work_id = (r1.json().get("id") or "").rsplit("/", 1)[-1]
         if not work_id:
             return []
-        p2: dict = {
-            "filter": f"cites:{work_id}",
-            "select": _OA_SELECT,
-            "per-page": min(limit, _PER_PAGE),
-        }
-        if mailto:
-            p2["mailto"] = mailto
-        r2 = httpx.get(f"{_OPENALEX_BASE}/works", params=p2, timeout=_TIMEOUT)
-        if r2.status_code != 200:
-            return []
-        return [_oa_item(w) for w in r2.json().get("results", [])]
+        results: list[ReferenceItem] = []
+        cursor: Optional[str] = "*"
+        while cursor:
+            page_size = _PER_PAGE if limit is None else min(_PER_PAGE, limit - len(results))
+            if page_size <= 0:
+                break
+            p2: dict = {
+                "filter": f"cites:{work_id}",
+                "select": _OA_SELECT,
+                "per-page": page_size,
+                "cursor": cursor,
+            }
+            if mailto:
+                p2["mailto"] = mailto
+            r2 = httpx.get(f"{_OPENALEX_BASE}/works", params=p2, timeout=_TIMEOUT)
+            if r2.status_code != 200:
+                return results
+            data = r2.json()
+            results.extend(_oa_item(w) for w in data.get("results", []))
+            cursor = (data.get("meta") or {}).get("next_cursor")
+            if limit is not None and len(results) >= limit:
+                break
+        return results
     except Exception as e:
         _log.warning("[openalex] cited_by %s: %s", doi, e)
         return []
@@ -240,31 +264,80 @@ def _oa_cited_by(doi: str, limit: int) -> list[ReferenceItem]:
 
 # ─── 后向抓取：这篇引用了谁 ─────────────────────────────────────────────────
 
-def _ss_references(doi: str, limit: int) -> list[ReferenceItem]:
+def _ss_references(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
     try:
-        resp = _ss_get(
-            f"{_SS_BASE}/paper/DOI:{doi}/references",
-            {"fields": _SS_FIELDS, "limit": min(limit, _PER_PAGE)},
-            _ss_headers(),
-        )
-        if resp is None or resp.status_code != 200:
-            _log.warning("[ss] references %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
-            return []
-        _data = resp.json().get("data")
-        return [
-            _ss_item(entry.get("citedPaper") or {}, "ss")
-            for entry in (_data if _data is not None else [])
-            if entry.get("citedPaper")
-        ]
+        results: list[ReferenceItem] = []
+        offset = 0
+        while True:
+            page_size = _PER_PAGE if limit is None else min(_PER_PAGE, limit - len(results))
+            if page_size <= 0:
+                break
+            resp = _ss_get(
+                f"{_SS_BASE}/paper/DOI:{doi}/references",
+                {"fields": _SS_FIELDS, "limit": page_size, "offset": offset},
+                _ss_headers(),
+            )
+            if resp is None or resp.status_code != 200:
+                _log.warning("[ss] references %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
+                return results
+            _data = resp.json().get("data") or []
+            batch = [
+                _ss_item(entry.get("citedPaper") or {}, "ss")
+                for entry in _data
+                if entry.get("citedPaper")
+            ]
+            results.extend(batch)
+            if len(_data) < page_size or (limit is not None and len(results) >= limit):
+                break
+            offset += _PER_PAGE
+        return results
     except Exception as e:
         _log.warning("[ss] references %s: %s", doi, e)
         return []
 
 
 _OA_ID_RE = re.compile(r"^W\d+$")
+_CR_WORKS = "https://api.crossref.org/works"
 
 
-def _oa_references(doi: str, limit: int) -> list[ReferenceItem]:
+def _cr_references(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
+    """Crossref 后向：一次请求拿到完整参考文献列表，polite pool 无实际限速。"""
+    try:
+        mailto = _openalex_mailto()  # 复用同一邮箱进 polite pool
+        p: dict = {"mailto": mailto} if mailto else {}
+        resp = httpx.get(f"{_CR_WORKS}/{doi}", params=p, timeout=_TIMEOUT)
+        if resp.status_code != 200:
+            return []
+        refs = (resp.json().get("message") or {}).get("reference") or []
+        if limit is not None:
+            refs = refs[:limit]
+        results: list[ReferenceItem] = []
+        for r in refs:
+            raw_doi = r.get("DOI") or ""
+            title = (r.get("article-title") or r.get("volume-title") or "").strip()
+            year_raw = r.get("year")
+            try:
+                year: Optional[int] = int(year_raw) if year_raw else None
+            except (ValueError, TypeError):
+                year = None
+            author = (r.get("author") or "").strip()
+            journal = (r.get("journal-title") or r.get("series-title") or "").strip()
+            results.append(ReferenceItem(
+                doi=normalize_doi(raw_doi),
+                title=title,
+                year=year,
+                authors=author,
+                abstract="",
+                source="crossref",
+                venue_name=journal,
+            ))
+        return [r for r in results if r.doi or r.title]
+    except Exception as e:
+        _log.warning("[crossref] references %s: %s", doi, e)
+        return []
+
+
+def _oa_references(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
     """OpenAlex 后向：先取 referenced_works ID 列表，再并行批量查详情。"""
     try:
         mailto = _openalex_mailto()
@@ -278,7 +351,9 @@ def _oa_references(doi: str, limit: int) -> list[ReferenceItem]:
             for rid in (r1.json().get("referenced_works") or [])
             if rid
         ]
-        ref_ids = [rid for rid in ref_ids if _OA_ID_RE.match(rid)][:limit]
+        ref_ids = [rid for rid in ref_ids if _OA_ID_RE.match(rid)]
+        if limit is not None:
+            ref_ids = ref_ids[:limit]
         if not ref_ids:
             return []
 
@@ -353,17 +428,47 @@ def merge_dedup(*lists: Iterable[ReferenceItem]) -> list[ReferenceItem]:
 
 # ─── 公开 API ────────────────────────────────────────────────────────────────
 
-def fetch_cited_by(doi: str, limit: int = 100) -> list[ReferenceItem]:
-    """前向：查谁引用了这篇论文。返回 ReferenceItem 列表，已去重合并。"""
+def fetch_cited_by(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
     doi_norm = normalize_doi(doi)
     if not doi_norm:
-        raise ValueError("invalid doi")
-    return merge_dedup(_ss_cited_by(doi_norm, limit), _oa_cited_by(doi_norm, limit))
+        raise ValueError('invalid doi')
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_ss = ex.submit(_ss_cited_by, doi_norm, limit)
+        f_oa = ex.submit(_oa_cited_by, doi_norm, limit)
+    ss_res: list[ReferenceItem] = []
+    oa_res: list[ReferenceItem] = []
+    try:
+        ss_res = f_ss.result()
+    except Exception as e:
+        _log.warning('[fetch_cited_by] SS failed: %s', e)
+    try:
+        oa_res = f_oa.result()
+    except Exception as e:
+        _log.warning('[fetch_cited_by] OA failed: %s', e)
+    return merge_dedup(ss_res, oa_res)
 
 
-def fetch_references(doi: str, limit: int = 100) -> list[ReferenceItem]:
-    """后向：查这篇论文引用了哪些论文。返回 ReferenceItem 列表，已去重合并。"""
+def fetch_references(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
     doi_norm = normalize_doi(doi)
     if not doi_norm:
-        raise ValueError("invalid doi")
-    return merge_dedup(_ss_references(doi_norm, limit), _oa_references(doi_norm, limit))
+        raise ValueError('invalid doi')
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_ss = ex.submit(_ss_references, doi_norm, limit)
+        f_oa = ex.submit(_oa_references, doi_norm, limit)
+        f_cr = ex.submit(_cr_references, doi_norm, limit)
+    ss_res: list[ReferenceItem] = []
+    oa_res: list[ReferenceItem] = []
+    cr_res: list[ReferenceItem] = []
+    try:
+        ss_res = f_ss.result()
+    except Exception as e:
+        _log.warning('[fetch_references] SS failed: %s', e)
+    try:
+        oa_res = f_oa.result()
+    except Exception as e:
+        _log.warning('[fetch_references] OA failed: %s', e)
+    try:
+        cr_res = f_cr.result()
+    except Exception as e:
+        _log.warning('[fetch_references] CR failed: %s', e)
+    return merge_dedup(ss_res, oa_res, cr_res)

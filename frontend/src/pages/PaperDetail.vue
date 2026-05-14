@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { papersApi } from '@/api/endpoints'
 import type { BackwardTrackResult, ForwardTrackResult, PaperDetail } from '@/types/api'
 
 const route = useRoute()
+const router = useRouter()
 defineProps<{ id: string }>()
 const paperId = computed(() => Number(route.params.id))
+
+function goBack() {
+  if (window.history.state?.back) router.back()
+  else router.push('/papers')
+}
 
 const detail = ref<PaperDetail | null>(null)
 const loading = ref(false)
@@ -35,22 +41,21 @@ async function load() {
   detail.value = null
   insightContent.value = null
   insightError.value = null
-  insightLoading.value = false  // 重置：防止旧请求 finally 未触发时 loading 残留
+  insightLoading.value = false
   btResult.value = null
   btError.value = null
+  btLoading.value = false  // 重置：防止旧请求 finally 竞态导致新论文无法触发追踪
   ftResult.value = null
   ftError.value = null
+  ftLoading.value = false
   try {
     const result = await papersApi.get(requestedId)
     if (paperId.value !== requestedId) return  // 已切换到其他论文，丢弃响应
     detail.value = result
     // 核心论文自动触发追踪，stub 论文等待用户手动操作
     if (detail.value.paper.is_core && detail.value.paper.doi) {
-      if (tab.value === 'refs' && !btResult.value && !btLoading.value) {
-        runBackwardTrack(false)
-      } else if (tab.value === 'cited' && !ftResult.value && !ftLoading.value) {
-        runForwardTrack(false)
-      }
+      if (!btLoading.value) runBackwardTrack(false)
+      if (!ftLoading.value) runForwardTrack(false)
     }
     // 有 insight 则异步加载；requestedId 防止写入错误论文
     if (detail.value.paper.insight_path) {
@@ -132,14 +137,18 @@ const authorList = computed(() => {
 })
 
 const refCount = computed(() => btResult.value?.references_count ?? detail.value?.edges_out.length ?? 0)
-const citedCount = computed(() => ftResult.value?.citing_count ?? detail.value?.edges_in.length ?? 0)
+const citedCount = computed(() => {
+  if (ftResult.value) return ftResult.value.citing_count
+  if (!detail.value?.paper.is_core) return 0
+  return detail.value?.edges_in.length ?? 0
+})
 </script>
 
 <template>
   <section class="space-y-5">
-    <RouterLink to="/papers" class="text-sm text-blue-600 hover:underline">
+    <button @click="goBack" class="text-sm text-blue-600 hover:underline">
       ← 返回论文库
-    </RouterLink>
+    </button>
 
     <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
       {{ error }}
@@ -153,7 +162,7 @@ const citedCount = computed(() => ftResult.value?.citing_count ?? detail.value?.
           {{ detail.paper.title || detail.paper.stem }}
         </h1>
 
-        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm items-baseline">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm items-start">
           <template v-if="authorList">
             <dt class="text-slate-400 whitespace-nowrap">作者</dt>
             <dd class="text-slate-700">{{ authorList }}</dd>
@@ -254,13 +263,19 @@ const citedCount = computed(() => ftResult.value?.citing_count ?? detail.value?.
             <li
               v-for="(r, i) in btResult.referenced_papers"
               :key="r.doi || i"
-              class="py-3 text-sm"
+              class="py-3 space-y-0.5"
             >
-              <div class="font-medium text-slate-700">{{ r.title || '(无标题)' }}</div>
-              <div class="mt-0.5 text-xs text-slate-500">
-                {{ r.authors }} · {{ r.year ?? '?' }}
-                <span class="ml-2 rounded bg-slate-100 px-1 text-slate-500">{{ r.source }}</span>
-                <span v-if="r.doi" class="ml-2 font-mono">{{ r.doi }}</span>
+              <div class="text-sm font-medium text-slate-700 leading-snug">{{ r.title || '(无标题)' }}</div>
+              <div class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                <span>{{ r.year ?? '?' }}</span>
+                <span>·</span>
+                <span class="truncate">{{ r.authors }}</span>
+                <span class="rounded bg-slate-100 px-1 text-slate-500">{{ r.source }}</span>
+              </div>
+              <div v-if="r.venue_name || r.doi" class="text-xs text-slate-400">
+                <span v-if="r.venue_name">{{ r.venue_name }}</span>
+                <span v-if="r.venue_name && r.doi"> · </span>
+                <span v-if="r.doi" class="font-mono">{{ r.doi }}</span>
               </div>
               <details v-if="r.abstract" class="mt-1">
                 <summary class="cursor-pointer text-xs text-blue-600 hover:underline">摘要</summary>
@@ -317,13 +332,19 @@ const citedCount = computed(() => ftResult.value?.citing_count ?? detail.value?.
             <li
               v-for="(c, i) in ftResult.citing_papers"
               :key="c.doi || i"
-              class="py-3 text-sm"
+              class="py-3 space-y-0.5"
             >
-              <div class="font-medium text-slate-700">{{ c.title || '(无标题)' }}</div>
-              <div class="mt-0.5 text-xs text-slate-500">
-                {{ c.authors }} · {{ c.year ?? '?' }}
-                <span class="ml-2 rounded bg-slate-100 px-1 text-slate-500">{{ c.source }}</span>
-                <span v-if="c.doi" class="ml-2 font-mono">{{ c.doi }}</span>
+              <div class="text-sm font-medium text-slate-700 leading-snug">{{ c.title || '(无标题)' }}</div>
+              <div class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                <span>{{ c.year ?? '?' }}</span>
+                <span>·</span>
+                <span class="truncate">{{ c.authors }}</span>
+                <span class="rounded bg-slate-100 px-1 text-slate-500">{{ c.source }}</span>
+              </div>
+              <div v-if="c.venue_name || c.doi" class="text-xs text-slate-400">
+                <span v-if="c.venue_name">{{ c.venue_name }}</span>
+                <span v-if="c.venue_name && c.doi"> · </span>
+                <span v-if="c.doi" class="font-mono">{{ c.doi }}</span>
               </div>
               <details v-if="c.abstract" class="mt-1">
                 <summary class="cursor-pointer text-xs text-blue-600 hover:underline">摘要</summary>
@@ -332,6 +353,9 @@ const citedCount = computed(() => ftResult.value?.citing_count ?? detail.value?.
             </li>
           </ul>
         </div>
+        <p v-if="!ftResult && !ftLoading && !detail.paper.is_core" class="text-xs text-slate-400">
+          探索库论文不统计被引量。如需查看，请先加入核心库。
+        </p>
       </div>
     </article>
   </section>

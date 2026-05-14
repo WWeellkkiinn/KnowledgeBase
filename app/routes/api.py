@@ -200,6 +200,9 @@ def forward_track(paper_id: int):
     依赖论文有 DOI；无 DOI 返回 422。命中缓存（7 天内）则返回 `cached: true`，
     传 `refresh=true` 可强制重查。
     """
+    if request.content_length is not None and request.content_length > 1024:
+        return jsonify({"error": "request body too large"}), 413
+
     p = g.db.get(models.Paper, paper_id)
     if p is None:
         return jsonify({"error": "not found"}), 404
@@ -208,10 +211,14 @@ def forward_track(paper_id: int):
 
     body = request.get_json(silent=True) or {}
     refresh = bool(body.get("refresh", False))
-    try:
-        limit = max(1, min(int(body.get("limit", 100)), 200))
-    except (TypeError, ValueError):
-        return jsonify({"error": "invalid limit"}), 400
+    raw_limit = body.get("limit")
+    if raw_limit is None:
+        limit = None
+    else:
+        try:
+            limit = max(1, min(int(raw_limit), 10000))
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid limit"}), 400
 
     from services import ForwardTrackService
     try:
@@ -245,10 +252,14 @@ def backward_track(paper_id: int):
 
     body = request.get_json(silent=True) or {}
     refresh = bool(body.get("refresh", False))
-    try:
-        limit = max(1, min(int(body.get("limit", 100)), 200))
-    except (TypeError, ValueError):
-        return jsonify({"error": "invalid limit"}), 400
+    raw_limit = body.get("limit")
+    if raw_limit is None:
+        limit = None
+    else:
+        try:
+            limit = max(1, min(int(raw_limit), 10000))
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid limit"}), 400
 
     from services import BackwardTrackService
     try:
