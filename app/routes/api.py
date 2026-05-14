@@ -1,12 +1,15 @@
 """REST API blueprint（M1.5 最小只读集）。"""
 from __future__ import annotations
 
+import logging
 import re
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 from sqlalchemy import func, select
 
 from database import models
+
+_log = logging.getLogger(__name__)
 
 bp = Blueprint("api", __name__)
 
@@ -172,20 +175,54 @@ def forward_track(paper_id: int):
 
     from services import ForwardTrackService
     try:
-        # 用请求 session 而非自建：与 before_request 的 g.db 共享事务
         result = ForwardTrackService(db_session=g.db).track(
-            p.doi, refresh=refresh, limit=limit
+            p.doi, refresh=refresh, limit=limit, from_paper_id=paper_id
         )
         g.db.commit()
         return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
-        # 详细异常文本（含 SQL / URL / 路径）只落日志，不回显客户端
         g.db.rollback()
-        import logging
-        logging.getLogger(__name__).exception("forward-track failed")
+        _log.exception("forward-track failed")
         return jsonify({"error": "forward-track failed"}), 502
+
+
+@bp.post("/papers/<int:paper_id>/backward-track")
+def backward_track(paper_id: int):
+    """触发后向追踪：查这篇论文引用了哪些论文。可选 body：`{"refresh": true, "limit": 100}`。
+
+    依赖论文有 DOI；无 DOI 返回 422。7 天缓存，`refresh=true` 强制重查。
+    """
+    if request.content_length is not None and request.content_length > 1024:
+        return jsonify({"error": "request body too large"}), 413
+
+    p = g.db.get(models.Paper, paper_id)
+    if p is None:
+        return jsonify({"error": "not found"}), 404
+    if not p.doi:
+        return jsonify({"error": "paper has no DOI"}), 422
+
+    body = request.get_json(silent=True) or {}
+    refresh = bool(body.get("refresh", False))
+    try:
+        limit = max(1, min(int(body.get("limit", 100)), 200))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid limit"}), 400
+
+    from services import BackwardTrackService
+    try:
+        result = BackwardTrackService(db_session=g.db).track(
+            p.doi, refresh=refresh, limit=limit, from_paper_id=paper_id
+        )
+        g.db.commit()
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        g.db.rollback()
+        _log.exception("backward-track failed")
+        return jsonify({"error": "backward-track failed"}), 502
 
 
 @bp.get("/tasks")
@@ -449,8 +486,7 @@ def create_review():
             yield "event: done\ndata: {}\n\n"
         except Exception:
             # 详细异常只落日志，不回显客户端（与 forward-track 策略一致）。
-            import logging
-            logging.getLogger(__name__).exception("review stream failed")
+            _log.exception("review stream failed")
             yield _emit_error("review stream failed")
         finally:
             _release_review_slot()

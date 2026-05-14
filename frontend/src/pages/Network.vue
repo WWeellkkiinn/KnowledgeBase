@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="space-y-4">
     <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">Network</h1>
+      <h1 class="text-2xl font-bold">引用图</h1>
       <div class="flex items-center gap-3 text-sm text-slate-500">
         <span>
           {{ stats.nodes }} 节点 · {{ stats.edges }} 边
@@ -160,15 +160,15 @@ onBeforeUnmount(() => {
     <div class="flex items-center gap-4 text-xs text-slate-500">
       <span class="flex items-center gap-1">
         <span class="inline-block h-3 w-3 rounded-full" style="background:#fbbf24"></span>
-        Tier 1
+        一级期刊
       </span>
       <span class="flex items-center gap-1">
         <span class="inline-block h-3 w-3 rounded-full" style="background:#a3a3a3"></span>
-        Tier 2
+        二级期刊
       </span>
       <span class="flex items-center gap-1">
         <span class="inline-block h-3 w-3 rounded-full" style="background:#b45309"></span>
-        Tier 3
+        三级期刊
       </span>
       <span class="flex items-center gap-1">
         <span class="inline-block h-3 w-3 rounded-full" style="background:#94a3b8"></span>

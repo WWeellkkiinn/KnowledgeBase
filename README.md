@@ -10,13 +10,13 @@
 
 | 页面 | 功能 |
 |------|------|
-| **Dashboard** | 论文总数、运行任务、活跃订阅、未读 Inbox，一览全库状态 |
-| **Papers** | 所有论文列表，按状态/来源过滤 |
-| **论文详情** | 基本信息、引用出边（References）、引用入边（Cited by / 前向追踪）、BibTeX 下载 |
-| **Network** | Cytoscape 引用网络图，节点按期刊 Tier 着色（金/银/铜），点击跳详情 |
-| **Review** | 勾选若干篇论文 + 输入关注维度，一键生成流式综述（调 Ollama） |
-| **Subscriptions** | 创建订阅（论文被引 / 作者新作 / 话题搜索），定时自动检查 |
-| **Failures** | 所有下载失败的引用汇总，按付费墙 / 非PDF / 超时等分类，方便批量处理 |
+| **概览** | 论文总数、运行任务、活跃订阅、未读 Inbox，一览全库状态 |
+| **论文库** | 所有论文列表，按状态/来源过滤 |
+| **论文详情** | 基本信息、DB 引用出边（参考文献）、后向追踪（API 查它引用了谁）、前向追踪（API 查谁引用了它）、BibTeX 下载；追踪结果自动写入引用图 |
+| **引用图** | Cytoscape 引用网络图，节点按期刊 Tier 着色（金/银/铜），点击跳详情 |
+| **综述** | 勾选若干篇论文 + 输入关注维度，一键生成流式综述（调 Ollama） |
+| **订阅** | 创建订阅（论文被引 / 作者新作 / 话题搜索），定时自动检查 |
+| **失败诊断** | 所有下载失败的引用汇总，按付费墙 / 非PDF / 超时等分类，方便批量处理 |
 
 ### CLI（分析新论文，写入数据库）
 
@@ -24,11 +24,10 @@
 |------|------|
 | `pdf2md.py` | PDF → Markdown（调 MinerU） |
 | `run_analysis_ui.py` | 单篇论文三阶段分析：内容分析 → 引用提取 → PDF 批量下载 |
-| `expand.py` | 从根论文 BFS 递归展开，支持断点续跑 |
 | `search_refs.py` | 查询单篇论文元数据 + PDF 链接（调试用） |
 | `download_pdf.py` | 下载单个 PDF（调试用） |
 
-> CLI 负责"写入"，Web 负责"查看 + 监控 + 综述"。两者共享同一个 SQLite 数据库。
+> CLI 负责"分析入库"，Web 负责"查看 + 引用追踪 + 监控 + 综述"。两者共享同一个 SQLite 数据库。
 
 ---
 
@@ -107,29 +106,26 @@ python scripts/run_analysis_ui.py papers/my_paper/my_paper.md --focus "研究方
 
 论文自动写入数据库，刷新 Web UI 即可看到。
 
-### Step 4（可选）：递归展开引用网络
-
-```bash
-# 展开 1 层（root + 它的所有引用）
-python scripts/expand.py papers/my_paper/my_paper.pdf --focus "研究方法" --max-depth 1
-
-# 展开 2 层，每层最多 5 篇（控制预算）
-python scripts/expand.py papers/my_paper/my_paper.pdf --focus "研究方法" --max-depth 2 --max-breadth 5
-```
-
-支持断点续跑：已分析的论文会被跳过，Ctrl+C 后重跑不丢数据。
-
 ---
 
-## 前向追踪（谁引用了这篇？）
+## 引用追踪（Web UI）
 
-单篇论文分析完成后，Web UI 里可以查"谁引用了它"：
+论文分析入库后，在论文详情页可以通过 API 查询引用关系，**结果自动写入 papers + edges 表，引用图即时更新**。
 
-1. 打开 **Papers** 页面，点进任意一篇有 DOI 的论文
-2. 切换到 **Cited by** 标签页
-3. 点击「触发前向追踪」按钮
+### 后向追踪（这篇论文引用了哪些论文）
 
-系统同时查询 Semantic Scholar 和 OpenAlex，结果去重后显示。7 天内同一 DOI 命中缓存，不重复请求。没有 DOI 的论文无法触发（按钮置灰）。
+1. 打开**论文库**，点进任意一篇有 DOI 的论文
+2. 切换到**后向引用**标签页
+3. 点击「查询后向引用」
+
+返回：被查论文的参考文献列表，每条包含标题、作者、年份、DOI、摘要、来源（SS / OpenAlex）。
+
+### 前向追踪（谁引用了这篇论文）
+
+1. 同上，切换到**被引用**标签页
+2. 点击「触发前向追踪」
+
+两种追踪均同时查询 Semantic Scholar 和 OpenAlex，结果去重合并。7 天内同一 DOI 命中缓存，不重复请求。没有 DOI 的论文无法触发（按钮置灰）。
 
 ---
 
@@ -235,23 +231,26 @@ KnowledgeBase/
     routes/api.py               ← REST API（papers / tasks / subscriptions / reviews / failures 等）
     sockets/progress.py         ← Socket.IO 实时进度推送
   services/                     ← 业务服务层
+    _track_base.py              ← 前/后向追踪共享基类（缓存、图写入逻辑）
+    reference_fetcher.py        ← SS + OpenAlex API 封装（fetch_cited_by / fetch_references）
+    graph_writer.py             ← 追踪结果写入 papers + edges 表
+    forward_track_service.py    ← 前向追踪（谁引用了这篇）
+    backward_track_service.py   ← 后向追踪（这篇引用了哪些）
     analysis_service.py         ← 三阶段分析流水线
-    forward_track_service.py    ← 前向追踪（SS + OpenAlex）
     subscription_service.py     ← 订阅调度（APScheduler）
     review_service.py           ← 跨论文综述生成（map-reduce + Ollama）
     journal_service.py          ← 期刊质量评分
     citation_service.py         ← BibTeX 生成与导出
   database/
-    models.py                   ← SQLAlchemy 模型（8 张表）
+    models.py                   ← SQLAlchemy 模型（9 张表，含 BackwardTrackCache）
     migrations/                 ← Alembic 迁移文件
     seed/journals.json          ← 期刊 Tier 数据
   frontend/                     ← Vue 3 + Vite + Tailwind SPA
-    src/pages/                  ← Dashboard / Papers / Network / Review / Subscriptions / Failures
+    src/pages/                  ← 概览 / 论文库 / 引用图 / 综述 / 订阅 / 失败诊断
     src/stores/                 ← Pinia 状态管理
     src/api/                    ← axios + Socket.IO 封装
-  scripts/                      ← CLI 入口（保留，行为不变）
+  scripts/                      ← CLI 入口
     run_analysis_ui.py          ← 单篇分析
-    expand.py                   ← BFS 递归展开
     pdf2md.py                   ← PDF → Markdown（调 MinerU）
     search_refs.py              ← 元数据搜索（8 个来源）
     download_pdf.py             ← PDF 下载分发器
@@ -323,6 +322,6 @@ docker run -d --name mineru-api-kb \
 
 | 项目 | 说明 |
 |------|------|
-| PDF 下载成功率 | 受 OA 覆盖率限制，付费墙期刊无法自动下载；失败条目进 Failures 页面 |
+| PDF 下载成功率 | 受 OA 覆盖率限制，付费墙期刊无法自动下载；失败条目进失败诊断页面 |
 | 新论文分析 | 目前只能通过 CLI 触发，Web UI 没有"上传并分析"入口 |
-| BFS 展开 | 只能通过 CLI 触发，Web UI 没有"展开引用网络"入口 |
+| 引用追踪 API 限速 | Semantic Scholar 100 次/5分钟；OpenAlex 无强制限制但建议保留 mailto |

@@ -43,16 +43,27 @@ export interface PaperDetail {
   edges_in: Edge[]
 }
 
+export interface ReferenceEntry {
+  doi: string
+  title: string
+  year: number | null
+  authors: string
+  abstract: string
+  source: 'ss' | 'openalex' | 'both' | string
+}
+
 export interface ForwardTrackResult {
   doi: string
   citing_count: number
-  citing_papers: Array<{
-    doi: string
-    title: string
-    year: number | null
-    authors: string
-    source: 'ss' | 'openalex' | 'both' | string
-  }>
+  citing_papers: ReferenceEntry[]
+  cached: boolean
+  fetched_at: string
+}
+
+export interface BackwardTrackResult {
+  doi: string
+  references_count: number
+  referenced_papers: ReferenceEntry[]
   cached: boolean
   fetched_at: string
 }

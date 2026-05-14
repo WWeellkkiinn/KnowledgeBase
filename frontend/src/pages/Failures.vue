@@ -57,7 +57,7 @@ const filtered = computed<FailureItem[]>(() => {
 
 <template>
   <section class="space-y-5">
-    <h1 class="text-2xl font-bold">Failure Diagnostics</h1>
+    <h1 class="text-2xl font-bold">失败诊断</h1>
 
     <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">{{ error }}</p>
     <p v-if="loading" class="text-sm text-slate-500">加载中…</p>

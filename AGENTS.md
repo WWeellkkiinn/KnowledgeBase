@@ -6,9 +6,6 @@
 # 单篇论文三阶段分析（内容 → 引用 → 下载）
 python scripts/run_analysis_ui.py <md_path> --focus <关注点> [--headless]
 
-# BFS 递归展开引用网络（断点续跑）
-python scripts/expand.py <root_pdf> --focus <关注点> [--max-depth 1] [--max-breadth N]
-
 # 查询单篇论文元数据 + PDF 链接
 python scripts/search_refs.py "<title>" [--year <year>] [--doi "<doi>"]
 
@@ -47,7 +44,6 @@ DOI 路径：Unpaywall → OpenAlex(DOI) → Semantic Scholar(DOI)
 
 ```
 papers/
-  _manifest.json              ← BFS 去重表（CLI 断点续跑用）
   <stem>/
     <stem>.pdf                ← 原始 PDF
     <stem>.md                 ← MinerU 转换
@@ -56,9 +52,10 @@ papers/
     refs/*.pdf                ← Phase 3 下载成功
     refs_failed.md            ← 下载失败清单（含原因）
     session_*.jsonl           ← LLM 会话记录
-network.json                  ← 知识图谱（nodes + edges，CLI 维护）
 kb.db                         ← SQLite 主数据库（Web + CLI 共用）
 ```
+
+引用图（nodes + edges）存储在 `kb.db` 的 `papers` 和 `edges` 表，通过 Web UI 的前/后向追踪自动扩充。
 
 ## REST API 端点（`http://localhost:5000/api/`）
 
@@ -67,7 +64,8 @@ kb.db                         ← SQLite 主数据库（Web + CLI 共用）
 | GET | `/papers` | 论文列表（`?status=&source=&limit=&offset=`） |
 | GET | `/papers/stats` | 总数 + 已分析数 |
 | GET | `/papers/<id>` | 论文详情 + edges |
-| POST | `/papers/<id>/forward-track` | 触发前向追踪 |
+| POST | `/papers/<id>/forward-track` | 前向追踪（谁引用了这篇），结果写入引用图 |
+| POST | `/papers/<id>/backward-track` | 后向追踪（这篇引用了谁），结果写入引用图 |
 | GET | `/papers/<id>/citations.bib` | 单篇 BibTeX 下载 |
 | POST | `/papers/<id>/citation` | 生成/刷新 BibTeX |
 | GET | `/citations.bib` | 全库 BibTeX |

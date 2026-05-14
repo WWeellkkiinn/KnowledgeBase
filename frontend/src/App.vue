@@ -3,12 +3,12 @@ import { RouterLink, RouterView } from 'vue-router'
 import ProgressToast from '@/components/ProgressToast.vue'
 
 const nav = [
-  { to: '/', label: 'Dashboard' },
-  { to: '/papers', label: 'Papers' },
-  { to: '/network', label: 'Network' },
-  { to: '/review', label: 'Review' },
-  { to: '/subscriptions', label: 'Subscriptions' },
-  { to: '/failures', label: 'Failures' },
+  { to: '/', label: '概览' },
+  { to: '/papers', label: '论文库' },
+  { to: '/network', label: '引用图' },
+  { to: '/review', label: '综述' },
+  { to: '/subscriptions', label: '订阅' },
+  { to: '/failures', label: '失败诊断' },
 ]
 </script>
 

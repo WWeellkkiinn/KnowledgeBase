@@ -73,7 +73,7 @@ async function remove(id: number) {
 <template>
   <section class="space-y-4">
     <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">Subscriptions</h1>
+      <h1 class="text-2xl font-bold">订阅管理</h1>
       <button
         class="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700"
         @click="showForm = !showForm"
@@ -122,7 +122,7 @@ async function remove(id: number) {
         <input
           v-model="form.author_id"
           class="w-full rounded border border-slate-300 px-2 py-1"
-          placeholder="OpenAlex / SS author id"
+          placeholder="OpenAlex 或 Semantic Scholar 作者 ID"
         />
       </div>
       <div v-if="form.type === 'topic_search'">
@@ -148,7 +148,7 @@ async function remove(id: number) {
           <tr>
             <th class="px-3 py-2">#</th>
             <th class="px-3 py-2">类型</th>
-            <th class="px-3 py-2">Target</th>
+            <th class="px-3 py-2">目标</th>
             <th class="px-3 py-2">周期</th>
             <th class="px-3 py-2">下次</th>
             <th class="px-3 py-2">状态</th>
@@ -179,7 +179,7 @@ async function remove(id: number) {
                 "
                 @click="toggleActive(s.id, s.active)"
               >
-                {{ s.active ? 'active' : 'paused' }}
+                {{ s.active ? '运行中' : '已暂停' }}
               </button>
             </td>
             <td class="px-3 py-2 text-right">

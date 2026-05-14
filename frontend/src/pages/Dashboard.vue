@@ -45,7 +45,7 @@ function watchTask(taskId: number | string) {
 <template>
   <section class="space-y-6">
     <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">Dashboard</h1>
+      <h1 class="text-2xl font-bold">概览</h1>
       <button
         class="rounded-md bg-slate-100 px-3 py-1 text-sm hover:bg-slate-200 disabled:opacity-50"
         :disabled="refreshing"
@@ -84,7 +84,7 @@ function watchTask(taskId: number | string) {
         <div class="mb-3 flex items-center justify-between">
           <h2 class="font-semibold">最近任务</h2>
           <span class="text-xs text-slate-400">
-            Socket: {{ progress.connected ? 'connected' : 'idle' }}
+            实时连接：{{ progress.connected ? '已连接' : '空闲' }}
           </span>
         </div>
         <p v-if="tasks.items.length === 0" class="text-sm text-slate-500">
@@ -106,11 +106,11 @@ function watchTask(taskId: number | string) {
                   'bg-rose-100 text-rose-700': t.status === 'failed',
                 }"
               >
-                {{ t.status }}
+                {{ { queued: '排队中', running: '运行中', done: '完成', failed: '失败' }[t.status] ?? t.status }}
               </span>
               <span class="text-slate-600">#{{ t.id }} {{ t.type }}</span>
               <span v-if="t.paper_id" class="text-xs text-slate-400">
-                paper {{ t.paper_id }}
+                论文 {{ t.paper_id }}
               </span>
             </div>
             <button

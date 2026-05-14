@@ -215,6 +215,19 @@ class ForwardTrackCache(Base):
     )
 
 
+class BackwardTrackCache(Base):
+    """后向追踪结果缓存：这篇论文引用了哪些论文（与 ForwardTrackCache 对称）。"""
+
+    __tablename__ = "backward_track_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    doi: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+
+
 Index("ix_tasks_status_type", Task.status, Task.type)
 Index("ix_subscriptions_active_next", Subscription.active, Subscription.next_run_at)
 # /api/papers?status=&source= 常见过滤路径
@@ -232,4 +245,5 @@ __all__ = [
     "Citation",
     "SessionRecord",
     "ForwardTrackCache",
+    "BackwardTrackCache",
 ]

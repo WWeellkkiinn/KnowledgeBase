@@ -16,6 +16,7 @@ from .pdf2md_service import Pdf2MdService
 from .analysis_service import AnalysisService
 from .expand_service import ExpandService
 from .forward_track_service import ForwardTrackService
+from .backward_track_service import BackwardTrackService
 from .journal_service import JournalService
 from .subscription_service import SubscriptionService
 from .citation_service import CitationService
@@ -28,6 +29,7 @@ __all__ = [
     "AnalysisService",
     "ExpandService",
     "ForwardTrackService",
+    "BackwardTrackService",
     "JournalService",
     "SubscriptionService",
     "CitationService",
