@@ -31,11 +31,13 @@ function colorFor(tier: number | null): string {
   return TIER_COLOR[String(tier)] ?? TIER_COLOR.unknown
 }
 
+function nodeSize(c: number): number { return Math.min(20 + c * 2, 60) }
+
 async function render() {
   loading.value = true
   error.value = null
   try {
-    const data: NetworkGraph & { total?: number; truncated?: boolean } =
+    const data: NetworkGraph & { total?: number; truncated?: boolean; nodes: Array<{ id: number; stem: string; title: string | null; quality_tier: number | null; source: string | null; year: number | null; authors_json: string[] | null; citation_count: number }> } =
       await networkApi.get(1000)
     if (disposed) return  // 组件已卸载，丢弃响应
     stats.value = {
@@ -57,10 +59,13 @@ async function render() {
         ...data.nodes.map((n) => ({
           data: {
             id: String(n.id),
-            label: n.title ? n.title.slice(0, 40) : n.stem,
+            label: n.authors_json?.length
+              ? `${n.authors_json[0].trim().split(/\s+/).at(-1)}${n.authors_json.length > 1 ? ' et al.' : ''} · ${n.year ?? '?'}`
+              : `· ${n.year ?? '?'}`,
             tier: n.quality_tier,
             color: colorFor(n.quality_tier),
             source: n.source,
+            size: nodeSize(n.citation_count ?? 0),
           },
         })),
         ...data.edges.map((e) => ({
@@ -83,8 +88,8 @@ async function render() {
             'text-max-width': '120px',
             'text-valign': 'bottom',
             'text-margin-y': 4,
-            width: 24,
-            height: 24,
+            width: 'data(size)',
+            height: 'data(size)',
             'border-width': 1,
             'border-color': '#475569',
           },

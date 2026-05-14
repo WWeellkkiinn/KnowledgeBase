@@ -28,9 +28,6 @@ const btResult = ref<BackwardTrackResult | null>(null)
 const btLoading = ref(false)
 const btError = ref<string | null>(null)
 
-const promoting = ref(false)
-const promoteError = ref<string | null>(null)
-
 async function load() {
   const requestedId = paperId.value  // 捕获当前 id，防止主请求竞态
   loading.value = true
@@ -121,26 +118,6 @@ async function runBackwardTrack(refresh = false) {
   }
 }
 
-async function promoteToCore() {
-  if (!detail.value || promoting.value) return
-  const requestedId = paperId.value
-  promoting.value = true
-  promoteError.value = null
-  try {
-    const updated = await papersApi.promote(requestedId)
-    if (paperId.value !== requestedId) return
-    detail.value = { ...detail.value, paper: updated }
-    if (updated.doi) {
-      if (tab.value === 'refs' && !btResult.value && !btLoading.value) runBackwardTrack(false)
-      else if (tab.value === 'cited' && !ftResult.value && !ftLoading.value) runForwardTrack(false)
-    }
-  } catch (e: unknown) {
-    if (paperId.value === requestedId)
-      promoteError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    if (paperId.value === requestedId) promoting.value = false
-  }
-}
 
 const tierLabel = computed(() => {
   const t = detail.value?.paper.journal?.quality_tier
@@ -153,6 +130,9 @@ const authorList = computed(() => {
   const names = (raw as string[]).slice(0, 5)
   return raw.length > 5 ? names.join(', ') + ' 等' : names.join(', ')
 })
+
+const refCount = computed(() => btResult.value?.references_count ?? detail.value?.edges_out.length ?? 0)
+const citedCount = computed(() => ftResult.value?.citing_count ?? detail.value?.edges_in.length ?? 0)
 </script>
 
 <template>
@@ -173,7 +153,7 @@ const authorList = computed(() => {
           {{ detail.paper.title || detail.paper.stem }}
         </h1>
 
-        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm items-baseline">
           <template v-if="authorList">
             <dt class="text-slate-400 whitespace-nowrap">作者</dt>
             <dd class="text-slate-700">{{ authorList }}</dd>
@@ -181,7 +161,16 @@ const authorList = computed(() => {
           <dt class="text-slate-400">年份</dt>
           <dd class="text-slate-700">{{ detail.paper.year ?? '—' }}</dd>
           <dt class="text-slate-400">DOI</dt>
-          <dd class="text-slate-700 font-mono text-xs">{{ detail.paper.doi || '—' }}</dd>
+          <dd class="text-slate-700 text-sm flex items-baseline gap-2">
+            <span class="font-mono">{{ detail.paper.doi || '—' }}</span>
+            <a
+              v-if="detail.paper.doi"
+              :href="papersApi.citationBibUrl(detail.paper.id)"
+              class="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-50"
+            >
+              下载 BibTeX
+            </a>
+          </dd>
           <dt class="text-slate-400">期刊</dt>
           <dd class="text-slate-700 flex items-center gap-2">
             <span>{{ detail.paper.journal?.name || '—' }}</span>
@@ -206,26 +195,6 @@ const authorList = computed(() => {
           <p class="text-sm text-slate-600 leading-relaxed">{{ detail.paper.abstract }}</p>
         </div>
 
-        <!-- 操作按钮 -->
-        <div class="flex gap-2 text-sm">
-          <template v-if="!detail.paper.is_core">
-            <button
-              class="rounded border border-blue-300 px-3 py-1 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-              :disabled="promoting"
-              @click="promoteToCore"
-            >
-              {{ promoting ? '加入中…' : '加入核心库' }}
-            </button>
-            <span v-if="promoteError" class="text-xs text-rose-500">{{ promoteError }}</span>
-          </template>
-          <a
-            v-if="detail.paper.doi"
-            :href="papersApi.citationBibUrl(detail.paper.id)"
-            class="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50"
-          >
-            下载 BibTeX
-          </a>
-        </div>
       </header>
 
       <!-- ── 内容分析 ── -->
@@ -253,7 +222,7 @@ const authorList = computed(() => {
               :class="tab === 'refs' ? 'border-blue-600 text-blue-600 font-semibold' : 'border-transparent text-slate-600 hover:text-slate-900'"
               @click="tab = 'refs'"
             >
-              参考文献
+              引用 ({{ refCount }})
             </button>
           </li>
           <li>
@@ -262,16 +231,46 @@ const authorList = computed(() => {
               :class="tab === 'cited' ? 'border-blue-600 text-blue-600 font-semibold' : 'border-transparent text-slate-600 hover:text-slate-900'"
               @click="tab = 'cited'"
             >
-              被引用
+              被引用 ({{ citedCount }})
             </button>
           </li>
         </ul>
       </nav>
 
-      <!-- ── 参考文献 Tab ── -->
+      <!-- ── 引用 Tab ── -->
       <div v-if="tab === 'refs'" class="space-y-4">
-        <!-- 已入库的引用边 -->
-        <div v-if="detail.edges_out.length > 0">
+        <p v-if="!detail.paper.doi" class="text-xs text-amber-600">缺少 DOI，无法查询 API，仅显示已入库引用</p>
+        <p v-else-if="btLoading" class="text-xs text-slate-400">查询中…</p>
+        <p v-if="btError" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
+          {{ btError }}
+        </p>
+
+        <div v-if="btResult">
+          <div class="mb-2 text-sm text-slate-500">
+            {{ btResult.references_count }} 篇引用
+            <span v-if="btResult.cached" class="ml-2 text-xs">(来自缓存)</span>
+          </div>
+          <ul class="divide-y divide-slate-100">
+            <li
+              v-for="(r, i) in btResult.referenced_papers"
+              :key="r.doi || i"
+              class="py-3 text-sm"
+            >
+              <div class="font-medium text-slate-700">{{ r.title || '(无标题)' }}</div>
+              <div class="mt-0.5 text-xs text-slate-500">
+                {{ r.authors }} · {{ r.year ?? '?' }}
+                <span class="ml-2 rounded bg-slate-100 px-1 text-slate-500">{{ r.source }}</span>
+                <span v-if="r.doi" class="ml-2 font-mono">{{ r.doi }}</span>
+              </div>
+              <details v-if="r.abstract" class="mt-1">
+                <summary class="cursor-pointer text-xs text-blue-600 hover:underline">摘要</summary>
+                <p class="mt-1 text-xs text-slate-600 leading-relaxed">{{ r.abstract }}</p>
+              </details>
+            </li>
+          </ul>
+        </div>
+
+        <div v-else-if="detail.edges_out.length > 0">
           <p class="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">已入库的引用</p>
           <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
             <li v-for="e in detail.edges_out" :key="e.id" class="px-3 py-2 text-sm flex items-center gap-2">
@@ -286,40 +285,6 @@ const authorList = computed(() => {
               </RouterLink>
             </li>
           </ul>
-        </div>
-
-        <!-- API 查询结果 -->
-        <div class="space-y-3">
-          <p v-if="!detail.paper.doi" class="text-xs text-amber-600">缺少 DOI，无法查询 API，仅显示已入库引用</p>
-          <p v-else-if="btLoading" class="text-xs text-slate-400">查询中…</p>
-          <p v-if="btError" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
-            {{ btError }}
-          </p>
-
-          <div v-if="btResult">
-            <div class="mb-2 text-sm text-slate-500">
-              {{ btResult.references_count }} 篇参考文献
-              <span v-if="btResult.cached" class="ml-2 text-xs">(来自缓存)</span>
-            </div>
-            <ul class="divide-y divide-slate-100">
-              <li
-                v-for="(r, i) in btResult.referenced_papers"
-                :key="r.doi || i"
-                class="py-3 text-sm"
-              >
-                <div class="font-medium text-slate-700">{{ r.title || '(无标题)' }}</div>
-                <div class="mt-0.5 text-xs text-slate-500">
-                  {{ r.authors }} · {{ r.year ?? '?' }}
-                  <span class="ml-2 rounded bg-slate-100 px-1 text-slate-500">{{ r.source }}</span>
-                  <span v-if="r.doi" class="ml-2 font-mono">{{ r.doi }}</span>
-                </div>
-                <details v-if="r.abstract" class="mt-1">
-                  <summary class="cursor-pointer text-xs text-blue-600 hover:underline">摘要</summary>
-                  <p class="mt-1 text-xs text-slate-600 leading-relaxed">{{ r.abstract }}</p>
-                </details>
-              </li>
-            </ul>
-          </div>
         </div>
       </div>
 
@@ -339,7 +304,7 @@ const authorList = computed(() => {
 
         <div v-if="ftResult">
           <div class="mb-2 flex items-center gap-3 text-sm text-slate-500">
-            <span>{{ ftResult.citing_count }} 篇引用</span>
+            <span>{{ ftResult.citing_count }} 篇被引用</span>
             <span v-if="ftResult.cached" class="text-xs">(来自缓存)</span>
             <button
               v-if="detail.paper.doi"

@@ -87,6 +87,8 @@ class _BaseTrackService:
                         "authors": it.authors,
                         "abstract": it.abstract,
                         "source": it.source,
+                        "venue_name": it.venue_name,
+                        "venue_issn": it.venue_issn,
                     }
                     for it in items
                 ],

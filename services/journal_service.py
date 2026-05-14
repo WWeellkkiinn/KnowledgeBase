@@ -177,15 +177,13 @@ class JournalService:
 
     @staticmethod
     def lookup_by_name(session: Session, name: str) -> Optional[models.Journal]:
-        """名字精确匹配（归一化后）。返回第一个命中。"""
+        """名字精确匹配（归一化后）。只加载 id+name 列，减少内存占用。"""
         n = _normalize_name(name)
         if not n:
             return None
-        # SQLite 无函数索引；这里逐行比较代价小（journals 表预期 <1k 行）
-        rows = session.execute(select(models.Journal)).scalars().all()
-        for j in rows:
-            if _normalize_name(j.name) == n:
-                return j
+        for jid, jname in session.execute(select(models.Journal.id, models.Journal.name)).all():
+            if _normalize_name(jname) == n:
+                return session.get(models.Journal, jid)
         return None
 
     # ─── OpenAlex 兜底 ──────────────────────────────────────────────
@@ -199,8 +197,8 @@ class JournalService:
 
         DOI 走 ForwardTrackService 同款字符集校验，防 URL 路径注入。
         """
-        from .forward_track_service import _normalize_doi
-        doi = _normalize_doi(doi or "")
+        from .reference_fetcher import normalize_doi
+        doi = normalize_doi(doi or "")
         if not doi:
             return None
         mailto = _openalex_mailto()
@@ -273,17 +271,16 @@ class JournalService:
                 source_dataset=meta.get("source_dataset", "openalex"),
                 refreshed_at=_utcnow(),
             )
-            session.add(journal)
-            # 并发 attach 同 ISSN 时，flush 触发 UNIQUE 冲突 → 回滚到 savepoint 后重读
+            # 用 savepoint 隔离冲突，避免回滚外层事务
             try:
-                session.flush()
+                with session.begin_nested():
+                    session.add(journal)
+                    session.flush()
             except IntegrityError:
-                session.rollback()
                 journal = session.execute(
                     select(models.Journal).where(models.Journal.issn == surrogate)
                 ).scalar_one_or_none()
                 if journal is None:
-                    # 罕见：约束冲突但读不回来；让上层 retry
                     raise
         else:
             # 已存在：仅在原值为空时填补，避免 OpenAlex 覆盖 manual seed 的 tier
@@ -297,3 +294,38 @@ class JournalService:
         paper.journal_id = journal.id
         session.flush()
         return journal
+
+    # ─── 批量补全 ────────────────────────────────────────────────────
+
+    def backfill_journals(self, session: Session) -> dict:
+        """对所有核心论文中有 DOI 但未关联期刊的，调用 OpenAlex 补全。
+
+        逐篇同步请求，每篇间隔 1 秒（避免触发 OpenAlex polite pool 限速）。
+        返回 {success, failed}。
+        """
+        import time as _time
+        papers = session.execute(
+            select(models.Paper)
+            .where(models.Paper.doi.isnot(None))
+            .where(models.Paper.doi != "")
+            .where(models.Paper.journal_id.is_(None))
+            .where(models.Paper.is_core.is_(True))
+        ).scalars().all()
+
+        success = failed = 0
+        for paper in papers:
+            try:
+                journal = self.attach_to_paper(session, paper)
+                if journal:
+                    session.commit()
+                    success += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                session.rollback()
+                _log.warning("[journal] backfill failed doi=%s err=%s", paper.doi, exc)
+                failed += 1
+            _time.sleep(1)
+
+        _log.info("[journal] backfill done: success=%d failed=%d", success, failed)
+        return {"success": success, "failed": failed}

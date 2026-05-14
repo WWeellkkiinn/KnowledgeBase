@@ -34,7 +34,13 @@ def upsert_paper(
     authors: Optional[str],
     source: str,
 ) -> Optional[models.Paper]:
-    """按 DOI 查找或创建 stub Paper。DOI 为空时返回 None（无法去重，不入库）。"""
+    """按 DOI 查找或创建 stub Paper。DOI 为空时尝试按标题查询，仍空则返回 None。"""
+    if not doi and title:
+        try:
+            from services.doi_resolver import resolve_doi
+            doi = resolve_doi(title) or ""
+        except Exception as exc:
+            _log.debug("[graph_writer] doi_resolver failed title=%r err=%s", title[:60], exc)
     if not doi:
         return None
 
@@ -81,6 +87,30 @@ def _edge_exists(session: Session, from_id: int, to_id: int, direction: str) -> 
         .where(models.Edge.direction == direction)
         .limit(1)
     ).first() is not None
+
+
+_VENUE_NAME_MAX = 512
+_VENUE_ISSN_MAX = 16
+
+
+def _attach_journal_if_any(session: Session, paper, item: dict) -> None:
+    """若 item 带有 venue 信息且 paper 尚未关联期刊，顺手写入期刊。"""
+    if paper.journal_id is not None:
+        return
+    venue_name = (item.get("venue_name") or "").strip()[:_VENUE_NAME_MAX]
+    venue_issn = (item.get("venue_issn") or "").strip()[:_VENUE_ISSN_MAX]
+    if not venue_name and not venue_issn:
+        return
+    try:
+        from services.journal_service import JournalService
+        meta = {
+            "name": venue_name,
+            "issn": venue_issn,
+            "source_dataset": "openalex",
+        }
+        JournalService().attach_to_paper(session, paper, meta=meta)
+    except Exception as exc:
+        _log.warning("[graph_writer] journal attach failed paper_id=%s err=%s", paper.id, exc)
 
 
 def write_tracking_results(
@@ -140,6 +170,8 @@ def write_tracking_results(
 
         if paper is None or paper.id is None:
             continue
+
+        _attach_journal_if_any(session, paper, item)
 
         to_id = paper.id
         if to_id in existing_to_ids:

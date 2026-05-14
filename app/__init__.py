@@ -68,8 +68,33 @@ def create_app(config: dict | None = None) -> Flask:
     if app.config.get("KB_ENABLE_SCHEDULER"):
         from services.subscription_service import start_scheduler
         start_scheduler()
+        _start_journal_backfill()
 
     return app
+
+
+def _start_journal_backfill() -> None:
+    """启动后台线程，对核心论文中有 DOI 但无期刊的条目调 OpenAlex 补全。"""
+    import threading as _threading
+
+    def _run() -> None:
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        try:
+            from services.journal_service import JournalService
+            svc = JournalService()
+            session = SessionLocal()
+            try:
+                svc.bootstrap_from_seed(session)
+                session.commit()  # seed 独立提交，与 backfill 事务隔离
+                result = svc.backfill_journals(session)
+                _log.info("journal backfill: %s", result)
+            finally:
+                session.close()
+        except Exception:
+            _log.exception("journal backfill thread failed")
+
+    _threading.Thread(target=_run, daemon=True, name="journal-backfill").start()
 
 
 __all__ = ["create_app", "socketio"]

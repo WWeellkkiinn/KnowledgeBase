@@ -12,13 +12,17 @@ const hasMore = ref(false)
 const tier = ref<'core' | 'stub'>('core')
 const offset = ref(0)
 const pageSize = 50
+const selectedIds = ref<Set<number>>(new Set())
+const batchLoading = ref(false)
+const selectedCount = computed(() => selectedIds.value.size)
+const pageIds = computed(() => items.value.map((p) => p.id))
+const allPageSelected = computed(() => pageIds.value.length > 0 && pageIds.value.every((id) => selectedIds.value.has(id)))
 
 async function fetchPage() {
   const requestedTier = tier.value
   const requestedOffset = offset.value
   loading.value = true
   error.value = null
-  items.value = []
   try {
     const resp = await papersApi.list({
       limit: pageSize + 1,
@@ -39,7 +43,13 @@ onMounted(fetchPage)
 
 watch(tier, () => {
   offset.value = 0
+  clearSelection()
   fetchPage()
+})
+
+watch(items, () => {
+  const pageSet = new Set(pageIds.value)
+  selectedIds.value = new Set([...selectedIds.value].filter((id) => pageSet.has(id)))
 })
 
 const canPrev = computed(() => offset.value > 0)
@@ -52,6 +62,52 @@ function nextPage() {
 function prevPage() {
   offset.value = Math.max(0, offset.value - pageSize)
   fetchPage()
+}
+
+function toggleOne(id: number) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+
+function togglePage() {
+  selectedIds.value = allPageSelected.value ? new Set() : new Set(pageIds.value)
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
+async function moveSelected(isCore: boolean) {
+  if (selectedIds.value.size === 0) return
+  batchLoading.value = true
+  error.value = null
+  try {
+    await papersApi.moveBatch(Array.from(selectedIds.value), isCore)
+    clearSelection()
+    await fetchPage()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+async function deleteSelected() {
+  if (selectedIds.value.size === 0) return
+  if (!confirm(`确认删除选中的 ${selectedIds.value.size} 篇论文？此操作不可撤销，关联的引用记录也会一并删除。`)) return
+  batchLoading.value = true
+  error.value = null
+  try {
+    await papersApi.deleteBatch(Array.from(selectedIds.value))
+    clearSelection()
+    await fetchPage()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    batchLoading.value = false
+  }
 }
 
 const TIER_COLOR: Record<string, string> = {
@@ -93,13 +149,46 @@ function tierClass(tier: number | null | undefined) {
       {{ error }}
     </p>
 
-    <div v-if="loading" class="text-sm text-slate-500">加载中…</div>
+    <div v-if="loading && items.length === 0" class="text-sm text-slate-500">加载中…</div>
     <p v-else-if="items.length === 0" class="text-sm text-slate-500">暂无论文。</p>
 
     <div v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <div v-if="selectedCount > 0" class="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+        <span class="text-slate-600">已选 {{ selectedCount }} 篇</span>
+        <div class="flex gap-2">
+          <button
+            class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
+            :disabled="batchLoading"
+            @click="moveSelected(true)"
+          >
+            移至核心库
+          </button>
+          <button
+            class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
+            :disabled="batchLoading"
+            @click="moveSelected(false)"
+          >
+            移至探索库
+          </button>
+          <button
+            class="rounded border border-rose-300 px-3 py-1 text-rose-600 disabled:opacity-50"
+            :disabled="batchLoading"
+            @click="deleteSelected"
+          >
+            删除
+          </button>
+        </div>
+      </div>
       <table class="w-full text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500">
           <tr>
+            <th class="px-3 py-2 w-10">
+              <input
+                type="checkbox"
+                :checked="allPageSelected"
+                @change="togglePage"
+              />
+            </th>
             <th class="px-3 py-2">标题</th>
             <th class="px-3 py-2 w-48">作者</th>
             <th class="px-3 py-2 w-16">年份</th>
@@ -108,6 +197,13 @@ function tierClass(tier: number | null | undefined) {
         </thead>
         <tbody class="divide-y divide-slate-100">
           <tr v-for="p in items" :key="p.id" class="hover:bg-slate-50">
+            <td class="px-3 py-2">
+              <input
+                type="checkbox"
+                :checked="selectedIds.has(p.id)"
+                @change="toggleOne(p.id)"
+              />
+            </td>
             <td class="px-3 py-2 max-w-xs">
               <RouterLink
                 :to="`/papers/${p.id}`"

@@ -50,6 +50,8 @@ class ReferenceItem:
     authors: str
     abstract: str
     source: str  # "ss" | "openalex" | "both"
+    venue_name: str = ""
+    venue_issn: str = ""
 
 
 # ─── DOI 工具 ────────────────────────────────────────────────────────────────
@@ -145,6 +147,14 @@ def _ss_item(data: dict, source: str) -> ReferenceItem:
     authors = ", ".join(
         (a.get("name") or "") for a in (data.get("authors") or [])[:3]
     )
+    venue = data.get("publicationVenue") or data.get("journal") or {}
+    issn_raw = venue.get("issn")
+    if isinstance(issn_raw, list):
+        venue_issn = issn_raw[0] if issn_raw else ""
+    elif isinstance(issn_raw, str):
+        venue_issn = issn_raw
+    else:
+        venue_issn = ""
     return ReferenceItem(
         doi=normalize_doi(ext.get("DOI", "") or ""),
         title=(data.get("title") or "").strip(),
@@ -152,10 +162,14 @@ def _ss_item(data: dict, source: str) -> ReferenceItem:
         authors=authors,
         abstract=(data.get("abstract") or "").strip(),
         source=source,
+        venue_name=(venue.get("name") or "").strip(),
+        venue_issn=venue_issn,
     )
 
 
 def _oa_item(w: dict) -> ReferenceItem:
+    src = ((w.get("primary_location") or {}).get("source")) or {}
+    issns = src.get("issn") or []
     return ReferenceItem(
         doi=normalize_doi((w.get("doi") or "")),
         title=(w.get("title") or "").strip(),
@@ -166,11 +180,13 @@ def _oa_item(w: dict) -> ReferenceItem:
         ),
         abstract=_reconstruct_abstract(w.get("abstract_inverted_index")),
         source="openalex",
+        venue_name=(src.get("display_name") or "").strip(),
+        venue_issn=(src.get("issn_l") or (issns[0] if issns else "")),
     )
 
 
-_SS_FIELDS = "title,year,authors,externalIds,abstract"
-_OA_SELECT = "title,doi,publication_year,authorships,abstract_inverted_index"
+_SS_FIELDS = "title,year,authors,externalIds,abstract,journal,publicationVenue"
+_OA_SELECT = "title,doi,publication_year,authorships,abstract_inverted_index,primary_location"
 
 
 # ─── 前向抓取：谁引用了这篇 ─────────────────────────────────────────────────
@@ -308,6 +324,10 @@ def merge_dedup(*lists: Iterable[ReferenceItem]) -> list[ReferenceItem]:
             existing.year = new.year
         if not existing.abstract and new.abstract:
             existing.abstract = new.abstract
+        if not existing.venue_name and new.venue_name:
+            existing.venue_name = new.venue_name
+        if not existing.venue_issn and new.venue_issn:
+            existing.venue_issn = new.venue_issn
         if existing.source != new.source:
             existing.source = "both"
 

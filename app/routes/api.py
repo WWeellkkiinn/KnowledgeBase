@@ -6,7 +6,7 @@ import re
 from pathlib import Path as _Path
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
 from database import models
 
@@ -569,9 +569,8 @@ def create_review():
 def get_network():
     """返回 Cytoscape 渲染所需的 {nodes, edges, total}。
 
-    - nodes：携带 quality_tier（用于前端按 Tier 着色），N 大时不取 journal 详情
-    - edges：用 Python 端 paper_id_set 过滤（避免 SQLite 999 参数上限）
-    - total：库内 paper 总数，供前端判断是否截断
+    只渲染核心论文（is_core=True）节点，节点携带 authors_json + citation_count。
+    edges 只保留两端均为核心论文的边。
     """
     try:
         limit = max(1, min(int(request.args.get("limit", 1000)), 2000))
@@ -580,16 +579,18 @@ def get_network():
 
     total = g.db.execute(
         select(func.count()).select_from(models.Paper)
+        .where(models.Paper.is_core.is_(True))
     ).scalar_one()
 
     papers = g.db.execute(
-        select(models.Paper).order_by(models.Paper.id.asc()).limit(limit)
+        select(models.Paper)
+        .where(models.Paper.is_core.is_(True))
+        .order_by(models.Paper.id.asc()).limit(limit)
     ).scalars().all()
     paper_id_set: set[int] = {p.id for p in papers}
 
     journal_ids = [pid for pid in {p.journal_id for p in papers} if pid is not None]
     journal_tier: dict[int, int | None] = {}
-    # SQLite 单语句最多 999 参数；超过时拆批查询避免崩溃。
     _CHUNK = 800
     for i in range(0, len(journal_ids), _CHUNK):
         batch = journal_ids[i:i + _CHUNK]
@@ -601,13 +602,27 @@ def get_network():
         ).all():
             journal_tier[j.id] = j.quality_tier
 
-    # Edge 全表扫一次然后 Python 过滤——比把 paper_id_set 塞进 in_ 安全
-    # （n=2000 时双 in_ 会超 SQLite 999 参数上限）。
-    edges_iter = g.db.execute(select(models.Edge)).scalars()
+    # 被引量：分批查询避免超 SQLite 999 参数上限
+    citation_counts: dict[int, int] = {}
+    if paper_id_set:
+        id_list = list(paper_id_set)
+        for i in range(0, len(id_list), _CHUNK):
+            batch = id_list[i:i + _CHUNK]
+            for row in g.db.execute(
+                select(models.Edge.from_paper_id, func.count().label("cnt"))
+                .where(models.Edge.from_paper_id.in_(batch))
+                .where(models.Edge.direction == "forward")
+                .group_by(models.Edge.from_paper_id)
+            ).all():
+                citation_counts[row.from_paper_id] = row.cnt
+
+    # 只取需要的列，避免全量 ORM 对象进内存；Python 层过滤规避 in_() 参数上限
     edges_out: list[dict] = []
-    for e in edges_iter:
-        if e.from_paper_id in paper_id_set and e.to_paper_id in paper_id_set:
-            edges_out.append({"id": e.id, "from": e.from_paper_id, "to": e.to_paper_id})
+    for row in g.db.execute(
+        select(models.Edge.id, models.Edge.from_paper_id, models.Edge.to_paper_id)
+    ):
+        if row.from_paper_id in paper_id_set and row.to_paper_id in paper_id_set:
+            edges_out.append({"id": row.id, "from": row.from_paper_id, "to": row.to_paper_id})
 
     return jsonify({
         "nodes": [
@@ -616,12 +631,11 @@ def get_network():
                 "stem": p.stem,
                 "title": p.title,
                 "year": p.year,
+                "authors_json": p.authors_json,
                 "status": p.status,
                 "source": p.source,
-                "quality_tier": (
-                    journal_tier.get(p.journal_id)
-                    if p.journal_id is not None else None
-                ),
+                "quality_tier": journal_tier.get(p.journal_id) if p.journal_id is not None else None,
+                "citation_count": citation_counts.get(p.id, 0),
             }
             for p in papers
         ],
@@ -716,3 +730,74 @@ def get_failures():
         by_category[cat] = by_category.get(cat, 0) + 1
 
     return jsonify({"total": len(items), "by_category": by_category, "items": items})
+
+
+# ─── 批量操作 ─────────────────────────────────────────────────────────
+
+
+def _parse_paper_ids(raw_ids: list) -> list[int]:
+    """验证并去重 ids：正整数，排除 bool，上限 200。"""
+    seen: set[int] = set()
+    result: list[int] = []
+    for x in raw_ids[:200]:
+        if isinstance(x, bool) or not isinstance(x, int) or x <= 0:
+            raise ValueError(f"invalid id: {x!r}")
+        if x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
+
+
+@bp.delete("/papers/batch")
+def delete_papers_batch():
+    """批量删除论文，级联删除关联的 edges 和 citations。body: {"ids": [int]}"""
+    if request.content_length is not None and request.content_length > 16 * 1024:
+        return jsonify({"error": "request body too large"}), 413
+    body = request.get_json(silent=True) or {}
+    raw_ids = body.get("ids", [])
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"error": "ids required"}), 400
+    try:
+        ids = _parse_paper_ids(raw_ids)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        g.db.execute(delete(models.Edge).where(
+            (models.Edge.from_paper_id.in_(ids)) | (models.Edge.to_paper_id.in_(ids))
+        ))
+        g.db.execute(delete(models.Citation).where(models.Citation.paper_id.in_(ids)))
+        result = g.db.execute(delete(models.Paper).where(models.Paper.id.in_(ids)))
+        g.db.commit()
+        return jsonify({"deleted": result.rowcount})
+    except Exception:
+        g.db.rollback()
+        _log.exception("delete_papers_batch failed")
+        return jsonify({"error": "delete failed"}), 502
+
+
+@bp.patch("/papers/batch/tier")
+def move_papers_batch():
+    """批量移动论文层级。body: {"ids": [int], "is_core": bool}"""
+    if request.content_length is not None and request.content_length > 16 * 1024:
+        return jsonify({"error": "request body too large"}), 413
+    body = request.get_json(silent=True) or {}
+    raw_ids = body.get("ids", [])
+    is_core = body.get("is_core")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"error": "ids required"}), 400
+    if not isinstance(is_core, bool):
+        return jsonify({"error": "is_core must be bool"}), 400
+    try:
+        ids = _parse_paper_ids(raw_ids)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        result = g.db.execute(
+            update(models.Paper).where(models.Paper.id.in_(ids)).values(is_core=is_core)
+        )
+        g.db.commit()
+        return jsonify({"updated": result.rowcount})
+    except Exception:
+        g.db.rollback()
+        _log.exception("move_papers_batch failed")
+        return jsonify({"error": "move failed"}), 502
