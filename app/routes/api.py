@@ -599,6 +599,7 @@ def get_network():
         .order_by(models.Paper.id.asc()).limit(limit)
     ).scalars().all()
     paper_id_set: set[int] = {p.id for p in papers}
+    paper_year: dict[int, int | None] = {p.id: p.year for p in papers}
 
     journal_ids = [pid for pid in {p.journal_id for p in papers} if pid is not None]
     journal_tier: dict[int, int | None] = {}
@@ -627,13 +628,38 @@ def get_network():
             ).all():
                 citation_counts[row.from_paper_id] = row.cnt
 
-    # 只取需要的列，避免全量 ORM 对象进内存；Python 层过滤规避 in_() 参数上限
+    # 边方向语义：
+    #   backward: from_paper_id 引用 to_paper_id（from 是引用者），图方向 from→to
+    #   forward:  to_paper_id 引用 from_paper_id（to 是引用者），图方向 to→from（需反转）
+    # seen_pairs 在规范化后去重，消除 backward+forward 表示同一引用关系的重复边
+    # WHERE 子句预过滤：只取至少一端在核心论文集内的边，避免全表扫描（21 个 id 远低于 SQLite 999 参数上限）
+    id_list = list(paper_id_set)
     edges_out: list[dict] = []
+    seen_pairs: set[tuple[int, int]] = set()
     for row in g.db.execute(
-        select(models.Edge.id, models.Edge.from_paper_id, models.Edge.to_paper_id)
+        select(models.Edge.id, models.Edge.from_paper_id, models.Edge.to_paper_id, models.Edge.direction)
+        .where(
+            (models.Edge.from_paper_id.in_(id_list)) | (models.Edge.to_paper_id.in_(id_list))
+        )
     ):
-        if row.from_paper_id in paper_id_set and row.to_paper_id in paper_id_set:
-            edges_out.append({"id": row.id, "from": row.from_paper_id, "to": row.to_paper_id})
+        f, t = row.from_paper_id, row.to_paper_id
+        if row.direction == "forward":
+            f, t = t, f  # forward 边：引用者是 to，规范化为 citing→cited
+        elif row.direction != "backward":
+            continue  # 跳过未知 direction 值，避免脏数据污染图
+        if f == t:  # 跳过自环
+            continue
+        if f not in paper_id_set or t not in paper_id_set:
+            continue
+        # 年份过滤：引用者年份早于被引者则为时序不可能的边（forthcoming 误判），跳过
+        # 任一端 year=NULL 时跳过过滤，保留该边
+        fy, ty = paper_year.get(f), paper_year.get(t)
+        if fy is not None and ty is not None and fy < ty:
+            continue
+        if (f, t) in seen_pairs:
+            continue
+        seen_pairs.add((f, t))
+        edges_out.append({"id": row.id, "from": f, "to": t})
 
     return jsonify({
         "nodes": [

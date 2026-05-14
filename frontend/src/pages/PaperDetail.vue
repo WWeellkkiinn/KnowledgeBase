@@ -162,27 +162,27 @@ const citedCount = computed(() => {
           {{ detail.paper.title || detail.paper.stem }}
         </h1>
 
-        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm items-start">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
           <template v-if="authorList">
-            <dt class="text-slate-400 whitespace-nowrap">作者</dt>
+            <dt class="text-slate-400 self-start">作者</dt>
             <dd class="text-slate-700">{{ authorList }}</dd>
           </template>
-          <dt class="text-slate-400">年份</dt>
+          <dt class="text-slate-400 self-center">年份</dt>
           <dd class="text-slate-700">{{ detail.paper.year ?? '—' }}</dd>
-          <dt class="text-slate-400">DOI</dt>
-          <dd class="text-slate-700 text-sm flex items-baseline gap-2">
-            <span class="font-mono">{{ detail.paper.doi || '—' }}</span>
+          <dt class="text-slate-400 self-center">DOI</dt>
+          <dd class="text-slate-700 text-sm flex min-w-0 items-center gap-2">
+            <span class="font-mono truncate">{{ detail.paper.doi || '—' }}</span>
             <a
               v-if="detail.paper.doi"
               :href="papersApi.citationBibUrl(detail.paper.id)"
-              class="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-50"
+              class="shrink-0 rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-50"
             >
               下载 BibTeX
             </a>
           </dd>
-          <dt class="text-slate-400">期刊</dt>
-          <dd class="text-slate-700 flex items-center gap-2">
-            <span>{{ detail.paper.journal?.name || '—' }}</span>
+          <dt class="text-slate-400 self-center">期刊</dt>
+          <dd class="text-slate-700 flex min-w-0 items-center gap-2">
+            <span class="truncate">{{ detail.paper.journal?.name || '—' }}</span>
             <span
               v-if="tierLabel"
               class="rounded bg-indigo-100 px-1.5 py-0.5 text-xs text-indigo-700"
