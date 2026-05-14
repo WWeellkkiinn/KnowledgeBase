@@ -14,6 +14,8 @@ export interface Paper {
   id: number
   stem: string
   title: string | null
+  abstract: string | null
+  authors_json: string[] | null
   year: number | null
   doi: string | null
   status: string
@@ -22,6 +24,7 @@ export interface Paper {
   md_path: string | null
   insight_path: string | null
   refs_path: string | null
+  is_core: boolean
   journal_id: number | null
   added_at: string | null
   analyzed_at: string | null

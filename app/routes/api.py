@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path as _Path
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 from sqlalchemy import func, select
@@ -12,6 +13,10 @@ from database import models
 _log = logging.getLogger(__name__)
 
 bp = Blueprint("api", __name__)
+
+# 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
+_BASE_DIR = _Path(__file__).parent.parent.parent.resolve()
+_INSIGHT_MAX_BYTES = 512 * 1024  # 512 KB，防止超大文件打爆内存
 
 # 文件名清洗：仅允许 ASCII 字母数字 + 常见安全字符。剥所有控制字符（含 \r \n）
 # 与引号，防止 Content-Disposition header 注入（HTTP response splitting）。
@@ -47,6 +52,8 @@ def _paper_to_dict(p: models.Paper, *, include_journal: bool = False) -> dict:
         "id": p.id,
         "stem": p.stem,
         "title": p.title,
+        "abstract": p.abstract,
+        "authors_json": p.authors_json,
         "year": p.year,
         "doi": p.doi,
         "status": p.status,
@@ -58,9 +65,9 @@ def _paper_to_dict(p: models.Paper, *, include_journal: bool = False) -> dict:
         "journal_id": p.journal_id,
         "added_at": _iso_utc(p.added_at),
         "analyzed_at": _iso_utc(p.analyzed_at),
+        "is_core": bool(p.is_core),
     }
     if include_journal:
-        # journal 关系按 lazy="select"，详情页才取，列表页不取避免 N+1
         out["journal"] = _journal_to_dict(p.journal) if p.journal else None
     return out
 
@@ -101,13 +108,21 @@ def health():
 def list_papers():
     status = request.args.get("status")
     source = request.args.get("source")
+    tier = request.args.get("tier", "core")
+    if tier not in ("core", "stub", "all"):
+        return jsonify({"error": "tier must be core, stub, or all"}), 400
     try:
         limit = max(1, min(int(request.args.get("limit", 200)), 1000))
         offset = max(int(request.args.get("offset", 0)), 0)
     except ValueError:
         return jsonify({"error": "invalid pagination"}), 400
 
-    stmt = select(models.Paper).order_by(models.Paper.id.asc())
+    from sqlalchemy.orm import joinedload
+    stmt = select(models.Paper).options(joinedload(models.Paper.journal)).order_by(models.Paper.id.asc())
+    if tier == "core":
+        stmt = stmt.where(models.Paper.is_core.is_(True))
+    elif tier == "stub":
+        stmt = stmt.where(models.Paper.is_core.is_(False))
     if status:
         stmt = stmt.where(models.Paper.status == status)
     if source:
@@ -115,7 +130,7 @@ def list_papers():
     stmt = stmt.limit(limit).offset(offset)
 
     rows = g.db.execute(stmt).scalars().all()
-    return jsonify({"items": [_paper_to_dict(p) for p in rows], "limit": limit, "offset": offset})
+    return jsonify({"items": [_paper_to_dict(p, include_journal=True) for p in rows], "limit": limit, "offset": offset})
 
 
 @bp.get("/papers/stats")
@@ -151,6 +166,31 @@ def get_paper(paper_id: int):
         "edges_out": [_edge_to_dict(e) for e in edges_out],
         "edges_in": [_edge_to_dict(e) for e in edges_in],
     })
+
+
+@bp.get("/papers/<int:paper_id>/insight")
+def paper_insight(paper_id: int):
+    p = g.db.get(models.Paper, paper_id)
+    if p is None:
+        return jsonify({"error": "not found"}), 404
+    if not p.insight_path:
+        return jsonify({"content": None})
+    path = (_BASE_DIR / p.insight_path).resolve()
+    # 路径遍历防护：确保解析后路径仍在项目根目录内
+    if not path.is_relative_to(_BASE_DIR):
+        _log.warning("insight path traversal attempt: paper=%d path=%s", paper_id, p.insight_path)
+        return jsonify({"error": "forbidden"}), 403
+    try:
+        if not path.exists():
+            return jsonify({"content": None})
+        if path.stat().st_size > _INSIGHT_MAX_BYTES:
+            _log.warning("insight file too large: paper=%d size=%d", paper_id, path.stat().st_size)
+            return jsonify({"content": None})
+        content = path.read_text("utf-8")
+    except (PermissionError, UnicodeDecodeError, OSError) as exc:
+        _log.warning("insight read failed: paper=%d err=%s", paper_id, exc)
+        return jsonify({"content": None})
+    return jsonify({"content": content})
 
 
 @bp.post("/papers/<int:paper_id>/forward-track")
@@ -223,6 +263,27 @@ def backward_track(paper_id: int):
         g.db.rollback()
         _log.exception("backward-track failed")
         return jsonify({"error": "backward-track failed"}), 502
+
+
+@bp.post("/papers/<int:paper_id>/promote")
+def promote_paper(paper_id: int):
+    """将 stub 论文晋升为核心论文（幂等：已是核心时直接返回）。"""
+    from sqlalchemy.orm import joinedload as _jl
+    p = g.db.execute(
+        select(models.Paper).options(_jl(models.Paper.journal))
+        .where(models.Paper.id == paper_id)
+    ).scalar_one_or_none()
+    if p is None:
+        return jsonify({"error": "not found"}), 404
+    if not p.is_core:
+        p.is_core = True
+        try:
+            g.db.commit()
+        except Exception:
+            g.db.rollback()
+            _log.exception("promote_paper failed paper_id=%d", paper_id)
+            return jsonify({"error": "promote failed"}), 502
+    return jsonify(_paper_to_dict(p, include_journal=True))
 
 
 @bp.get("/tasks")
@@ -573,10 +634,6 @@ def get_network():
 # ─── M4.3 失败诊断面板 ───────────────────────────────────────────────
 
 import os as _os
-from pathlib import Path as _Path
-
-# 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
-_BASE_DIR = _Path(__file__).parent.parent.parent.resolve()
 
 
 def _categorize_reason(reason: str) -> str:

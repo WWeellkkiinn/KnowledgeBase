@@ -58,18 +58,43 @@ python scripts/migrate_to_db.py   # 把现有 papers/ 目录里的论文导入�
 
 ### 3. 启动服务
 
+> **Windows 注意**：`conda activate` 在 Git Bash 中无效，必须用 kb 环境的完整 Python 路径。
+> 以下命令均在 **PowerShell** 中运行。
+
 **终端 1 — Flask 后端：**
-```bash
-conda activate kb
-python scripts/serve.py           # 监听 http://localhost:5000
+```powershell
+cd C:\dev\KnowledgeBase
+<home>\anaconda3\envs\kb\python.exe scripts/serve.py
+# 监听 http://127.0.0.1:5000，调度器自动启动
 ```
 
 **终端 2 — Vite 前端：**
-```bash
-cd frontend && npm run dev         # 监听 http://localhost:5173
+```powershell
+cd C:\dev\KnowledgeBase\frontend
+npm run dev    # 监听 http://localhost:5173
 ```
 
 打开 `http://localhost:5173` 即可使用 Web UI。
+
+#### 重启后端（不重启前端）
+
+```powershell
+# 1. 找到并杀掉占用 5000 端口的进程
+Stop-Process -Id (Get-NetTCPConnection -LocalPort 5000).OwningProcess -Force
+
+# 2. 重新启动（需在新 PowerShell 窗口或等待上条完成）
+cd C:\dev\KnowledgeBase
+<home>\anaconda3\envs\kb\python.exe scripts/serve.py
+```
+
+#### 常见失败原因
+
+| 症状 | 原因 | 解决 |
+|------|------|------|
+| `conda activate` 报错 | Git Bash 不支持 conda activate | 改用 PowerShell |
+| `flask: command not found` | 用了 base conda 而不是 kb 环境 | 用完整路径 `<home>\anaconda3\envs\kb\python.exe` |
+| 500 / 端口已被占用 | 旧进程未退出 | 先 `Stop-Process` 再启动 |
+| 调度器未启动 | 用 `flask run` 而非 `serve.py` | 必须用 `python scripts/serve.py`，它会自动设 `KB_ENABLE_SCHEDULER=1` |
 
 ---
 

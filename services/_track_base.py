@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -18,7 +19,6 @@ from .graph_writer import write_tracking_results
 from .reference_fetcher import normalize_doi
 
 _log = logging.getLogger(__name__)
-_CACHE_TTL = timedelta(days=7)
 
 
 def _utcnow() -> datetime:
@@ -38,6 +38,7 @@ class _BaseTrackService:
     _papers_key: str
     _count_key: str
     _direction: str
+    _cache_ttl: Optional[timedelta] = timedelta(days=7)  # None = 永不过期
 
     def __init__(self, db_session: Optional[Session] = None) -> None:
         self.db_session = db_session
@@ -63,7 +64,7 @@ class _BaseTrackService:
             if not refresh:
                 cached = self._read_cache(session, doi_norm)
                 if cached is not None:
-                    payload = dict(cached.result_json)
+                    payload = copy.copy(cached.result_json)
                     payload["cached"] = True
                     if from_paper_id is not None:
                         write_tracking_results(
@@ -115,7 +116,7 @@ class _BaseTrackService:
         ).scalar_one_or_none()
         if row is None:
             return None
-        if (_utcnow() - row.fetched_at) >= _CACHE_TTL:
+        if self._cache_ttl is not None and (_utcnow() - row.fetched_at) >= self._cache_ttl:
             return None
         return row
 
@@ -139,6 +140,8 @@ class _BaseTrackService:
                     row.result_json = payload
                     row.fetched_at = _utcnow()
                     session.flush()
+                else:
+                    _log.warning("_write_cache: concurrent delete during upsert, cache lost doi=%s", doi_norm)
         else:
             row.result_json = payload
             row.fetched_at = _utcnow()

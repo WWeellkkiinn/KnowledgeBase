@@ -29,7 +29,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -61,7 +61,8 @@ class Paper(Base):
     doi: Mapped[Optional[str]] = mapped_column(String(256), unique=True, nullable=True, index=True)
     arxiv_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
     title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    authors_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    abstract: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    authors_json: Mapped[Optional[list]] = mapped_column(MutableList.as_mutable(JSON), nullable=True)
     year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     journal_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("journals.id", ondelete="SET NULL"), nullable=True
@@ -77,6 +78,9 @@ class Paper(Base):
     source: Mapped[str] = mapped_column(
         String(32), default="ref", server_default=text("'ref'"), nullable=False
     )  # root|ref|forward|subscription
+    is_core: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0"), nullable=False, index=True
+    )
     added_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.current_timestamp(), nullable=False
     )

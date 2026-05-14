@@ -185,9 +185,10 @@ def _ss_cited_by(doi: str, limit: int) -> list[ReferenceItem]:
         if resp is None or resp.status_code != 200:
             _log.warning("[ss] cited_by %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
             return []
+        _data = resp.json().get("data")
         return [
             _ss_item(entry.get("citingPaper") or {}, "ss")
-            for entry in resp.json().get("data", [])
+            for entry in (_data if _data is not None else [])
             if entry.get("citingPaper")
         ]
     except Exception as e:
@@ -233,9 +234,10 @@ def _ss_references(doi: str, limit: int) -> list[ReferenceItem]:
         if resp is None or resp.status_code != 200:
             _log.warning("[ss] references %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
             return []
+        _data = resp.json().get("data")
         return [
             _ss_item(entry.get("citedPaper") or {}, "ss")
-            for entry in resp.json().get("data", [])
+            for entry in (_data if _data is not None else [])
             if entry.get("citedPaper")
         ]
     except Exception as e:

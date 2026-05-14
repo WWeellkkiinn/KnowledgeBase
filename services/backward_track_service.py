@@ -14,6 +14,7 @@ class BackwardTrackService(_BaseTrackService):
     _papers_key = "referenced_papers"
     _count_key = "references_count"
     _direction = "backward"
+    _cache_ttl = None  # 参考文献发表后不变，永不过期
 
     def _fetch(self, doi: str, limit: int) -> list:
         return fetch_references(doi, limit)

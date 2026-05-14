@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -356,6 +357,55 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
 
     sched.add_job(_tick, "interval", seconds=poll_seconds, id="kb-subscriptions-tick",
                   replace_existing=True)
+
+    def _daily_forward_track():
+        """每日凌晨 3 点：依次刷新所有有 DOI 论文的前向追踪缓存，限速 1 req/s。
+        最多运行 20 小时，防止跨越下一次调度窗口。
+        """
+        # 延迟导入避免循环引用（subscription_service 与 forward_track_service 互相依赖）
+        from services.forward_track_service import ForwardTrackService
+
+        _MAX_RUNTIME = 20 * 3600  # 20 小时上限
+
+        session = SessionLocal()
+        try:
+            dois = [
+                row[0] for row in session.execute(
+                    select(models.Paper.doi)
+                    .where(models.Paper.doi.isnot(None))
+                    .where(models.Paper.doi != "")
+                    .where(models.Paper.is_core.is_(True))
+                ).all()
+            ]
+        finally:
+            session.close()
+
+        # 过滤纯空白 DOI
+        dois = [d for d in dois if d.strip()]
+
+        svc = ForwardTrackService()
+        _log.info("daily_forward_track start: %d papers", len(dois))
+        start = _time.monotonic()
+        for i, doi in enumerate(dois):
+            if _time.monotonic() - start > _MAX_RUNTIME:
+                _log.warning("daily_forward_track: max runtime reached, stopped at %d/%d", i, len(dois))
+                break
+            try:
+                svc.track(doi, refresh=True)
+            except Exception as exc:
+                _log.warning("daily_forward_track failed doi=%s err=%s", doi, exc)
+            _time.sleep(1)
+        _log.info("daily_forward_track done")
+
+    sched.add_job(
+        _daily_forward_track,
+        trigger="cron",
+        hour=3, minute=0,
+        id="kb-daily-forward-track",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     sched.start()
     _scheduler = sched
     _log.info("subscription scheduler started (poll %ds)", poll_seconds)

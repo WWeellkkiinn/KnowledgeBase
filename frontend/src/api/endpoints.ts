@@ -21,6 +21,7 @@ export const papersApi = {
   list: (params?: {
     status?: string
     source?: string
+    tier?: 'core' | 'stub' | 'all'
     limit?: number
     offset?: number
   }) =>
@@ -31,6 +32,8 @@ export const papersApi = {
     client.get<{ total: number; analyzed: number }>('/papers/stats').then((r) => r.data),
   get: (id: number) =>
     client.get<PaperDetail>(`/papers/${id}`).then((r) => r.data),
+  getInsight: (id: number) =>
+    client.get<{ content: string | null }>(`/papers/${id}/insight`).then((r) => r.data),
   forwardTrack: (id: number, body?: { refresh?: boolean; limit?: number }) =>
     client
       .post<ForwardTrackResult>(`/papers/${id}/forward-track`, body ?? {})
@@ -39,6 +42,8 @@ export const papersApi = {
     client
       .post<BackwardTrackResult>(`/papers/${id}/backward-track`, body ?? {})
       .then((r) => r.data),
+  promote: (id: number) =>
+    client.post<Paper>(`/papers/${id}/promote`).then((r) => r.data),
   citationBibUrl: (id: number) => `/api/papers/${id}/citations.bib`,
   generateCitation: (id: number) =>
     client.post(`/papers/${id}/citation`, {}).then((r) => r.data),

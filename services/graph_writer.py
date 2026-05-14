@@ -18,6 +18,7 @@ _log = logging.getLogger(__name__)
 
 # stem 长度上限，避免文件系统问题
 _STEM_MAX = 120
+_AUTHORS_MAX = 500
 
 
 def _doi_to_stem(doi: str) -> str:
@@ -54,7 +55,7 @@ def upsert_paper(
         stem=stem,
         doi=doi,
         title=title or None,
-        authors_json={"raw": authors} if authors else None,
+        authors_json=[a for a in authors[:_AUTHORS_MAX].split(", ") if a] if authors else None,
         year=year,
         status="pending",
         source=source,
@@ -121,7 +122,7 @@ def write_tracking_results(
                 stem=_doi_to_stem(doi),
                 doi=doi,
                 title=item.get("title") or None,
-                authors_json={"raw": item.get("authors")} if item.get("authors") else None,
+                authors_json=[a for a in item["authors"][:_AUTHORS_MAX].split(", ") if a] if item.get("authors") else None,
                 year=item.get("year"),
                 status="pending",
                 source=stub_source,
