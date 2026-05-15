@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from datetime import datetime, timezone
-from pathlib import Path as _Path
+from pathlib import Path, Path as _Path
+from typing import Optional
 
 from flask import Blueprint, Response, abort, g, jsonify, request, stream_with_context
 from sqlalchemy import delete, func, select, update
@@ -131,19 +133,214 @@ def list_papers():
         return jsonify({"error": "invalid pagination"}), 400
 
     from sqlalchemy.orm import joinedload
-    stmt = select(models.Paper).options(joinedload(models.Paper.journal)).order_by(models.Paper.id.asc())
+    # 过滤条件抽出，count 与 list 共用同一 where 列表（避免 SELECT 全列再外层 count
+    # 的 subquery 退化 —— DB 可直接走索引）
+    filters = []
     if tier == "core":
-        stmt = stmt.where(models.Paper.is_core.is_(True))
+        filters.append(models.Paper.is_core.is_(True))
     elif tier == "stub":
-        stmt = stmt.where(models.Paper.is_core.is_(False))
+        filters.append(models.Paper.is_core.is_(False))
     if status:
-        stmt = stmt.where(models.Paper.status == status)
+        filters.append(models.Paper.status == status)
     if source:
-        stmt = stmt.where(models.Paper.source == source)
-    stmt = stmt.limit(limit).offset(offset)
+        filters.append(models.Paper.source == source)
 
-    rows = g.db.execute(stmt).scalars().all()
-    return jsonify({"items": [_paper_to_dict(p, include_journal=True) for p in rows], "limit": limit, "offset": offset})
+    # total
+    count_stmt = select(func.count(models.Paper.id))
+    if filters:
+        count_stmt = count_stmt.where(*filters)
+    total = g.db.execute(count_stmt).scalar_one()
+
+    # 列表
+    list_stmt = (
+        select(models.Paper)
+        .options(joinedload(models.Paper.journal))
+        .order_by(models.Paper.id.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if filters:
+        list_stmt = list_stmt.where(*filters)
+    rows = g.db.execute(list_stmt).scalars().all()
+    return jsonify({
+        "items": [_paper_to_dict(p, include_journal=True) for p in rows],
+        "limit": limit,
+        "offset": offset,
+        "total": int(total),
+    })
+
+
+_UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50MB
+_UPLOAD_CHUNK = 1 * 1024 * 1024
+_STEM_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_PAPERS_DIR = (_BASE_DIR / "papers").resolve()
+
+
+def _safe_stem(name: str) -> str:
+    base = (name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if base.lower().endswith(".pdf"):
+        base = base[:-4]
+    cleaned = _STEM_SAFE_RE.sub("_", base).strip("._-")[:120]
+    return cleaned or "upload"
+
+
+@bp.post("/papers/upload")
+@limiter.limit("5 per minute")
+def upload_paper():
+    """上传 PDF 入库。multipart/form-data 字段 file。
+
+    设计要点：
+      - 端点级 Content-Length 早拒绝（不依赖全局 MAX_CONTENT_LENGTH）
+      - 流式 chunked 读：增量 sha1 + 写临时文件，杜绝 50MB 整文件常驻内存
+      - PDF 魔数校验（首 chunk 头 8 字节）
+      - stem = "<base>_<sha1[:8]>"：永远附加 sha1 前缀，消除并发命名竞争
+      - 严格顺序：sha1 dedup → flush+enqueue → rename tmp→target → commit
+        中途异常 finally 清理 tmp 文件、rollback；DB 与磁盘不会半新半旧
+      - 入队后 wake_worker()，worker 立即拾取，无 idle 等待
+    """
+    import hashlib as _hashlib
+    import tempfile as _tempfile
+
+    # 端点级 Content-Length 早拒绝（不依赖全局 MAX_CONTENT_LENGTH）
+    cl = request.content_length
+    if cl is not None and cl > _UPLOAD_MAX_BYTES + 4096:  # 4KB 给 multipart 头留缓冲
+        return jsonify({"error": f"file too large; limit {_UPLOAD_MAX_BYTES} bytes"}), 413
+
+    if "file" not in request.files:
+        return jsonify({"error": "missing file field"}), 400
+    f = request.files["file"]
+    if not f or not f.filename:
+        return jsonify({"error": "empty filename"}), 400
+
+    # 流式读：chunk 增量做 sha1 + 写入临时文件；超限即拒，避免整文件常驻内存
+    sha1_hasher = _hashlib.sha1()
+    size = 0
+    first_chunk: bytes = b""
+    # 临时文件落 papers/.tmp/；与最终目录同卷，rename 才是原子的
+    tmp_dir = _PAPERS_DIR / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = _tempfile.mkstemp(prefix="upload_", suffix=".pdf", dir=str(tmp_dir))
+    tmp_path: Optional[Path] = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            stream = f.stream
+            while True:
+                chunk = stream.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                if not first_chunk:
+                    first_chunk = chunk[:8]
+                size += len(chunk)
+                if size > _UPLOAD_MAX_BYTES:
+                    return jsonify({"error": f"file too large; limit {_UPLOAD_MAX_BYTES} bytes"}), 413
+                sha1_hasher.update(chunk)
+                out.write(chunk)
+        if size == 0:
+            return jsonify({"error": "empty file"}), 400
+        if not first_chunk.startswith(b"%PDF-"):
+            return jsonify({"error": "not a PDF (magic bytes mismatch)"}), 400
+
+        sha1 = sha1_hasher.hexdigest()
+
+        # sha1 去重
+        existing = g.db.execute(
+            select(models.Paper).where(models.Paper.sha1 == sha1)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return jsonify({
+                "paper_id": existing.id,
+                "task_id": None,
+                "deduped": True,
+                "reason": "same sha1",
+            }), 200
+
+        # stem：永远附加 sha1 短前缀，消除并发命名竞争（不同 sha1 永远不撞 stem）
+        base_stem = _safe_stem(f.filename)
+        stem = f"{base_stem}_{sha1[:8]}"
+        # 极端兜底：若 stem 仍占用（不同上传文件碰撞前 8 位 sha1），用更长前缀
+        if g.db.execute(
+            select(models.Paper.id).where(models.Paper.stem == stem)
+        ).scalar_one_or_none() is not None:
+            stem = f"{base_stem}_{sha1[:16]}"
+
+        # 先校验目标路径合法，再 mkdir + rename；杜绝 traversal 副作用
+        target_dir = (_PAPERS_DIR / stem).resolve()
+        try:
+            target_dir.relative_to(_PAPERS_DIR)
+        except ValueError:
+            return jsonify({"error": "path traversal blocked"}), 400
+        target_pdf = target_dir / f"{stem}.pdf"
+        try:
+            target_pdf.resolve().relative_to(_PAPERS_DIR)
+        except ValueError:
+            return jsonify({"error": "path traversal blocked"}), 400
+
+        # 写盘 + DB 入队顺序：先 commit DB，再 rename 临时文件入 papers/<stem>/
+        # —— 一旦中途异常，DB 与磁盘要么都没改，要么都改成；杜绝孤儿文件。
+        paper = models.Paper(
+            stem=stem,
+            title=None,
+            sha1=sha1,
+            pdf_path=f"papers/{stem}/{stem}.pdf",
+            status="uploading",
+            source="upload",
+            is_core=True,
+        )
+        g.db.add(paper)
+        g.db.flush()
+
+        from services.task_queue import TaskQueue
+        from services.upload_worker import UPLOAD_TASK_TYPE, wake_worker
+
+        tq = TaskQueue(g.db)
+        task = tq.enqueue(
+            type=UPLOAD_TASK_TYPE,
+            paper_id=paper.id,
+            payload={"paper_id": paper.id, "stem": stem, "sha1": sha1},
+            max_attempts=2,
+        )
+
+        # 入队成功（DB flush）后才落盘到最终位置
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(str(tmp_path), str(target_pdf))
+        except OSError as e:
+            # rename 失败：回滚事务 → 文件 + DB 同时不变
+            g.db.rollback()
+            return jsonify({"error": f"file move failed: {e}"}), 500
+        tmp_path = None  # 标记已迁移，finally 跳过 unlink
+
+        # commit 失败时已落盘的 target_pdf 是孤儿（DB 已 rollback 但磁盘有文件），需删
+        try:
+            g.db.commit()
+        except Exception:
+            g.db.rollback()
+            try:
+                if target_pdf.exists():
+                    target_pdf.unlink()
+                # 若 target_dir 为空目录，一并删
+                try:
+                    target_dir.rmdir()
+                except OSError:
+                    pass
+            except OSError:
+                _log.exception("post-rollback cleanup failed: %s", target_pdf)
+            raise
+        wake_worker()
+    finally:
+        # 若中途未成功 commit / 未 rename，残留 tmp 文件必须删
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                _log.exception("cleanup tmp upload failed: %s", tmp_path)
+
+    return jsonify({
+        "paper_id": paper.id,
+        "task_id": task.id,
+        "deduped": False,
+        "stem": stem,
+    }), 201
 
 
 @bp.get("/papers/stats")
@@ -206,13 +403,84 @@ def paper_insight(paper_id: int):
     return jsonify({"content": content})
 
 
-@bp.post("/papers/<int:paper_id>/forward-track")
-@limiter.limit("10 per minute")
-def forward_track(paper_id: int):
-    """触发前向追踪。可选 body：`{"refresh": true, "limit": 100}`。
+_TRACK_DEFAULT_LIMIT = 100
+_TRACK_MAX_LIMIT = 500
+# 全局并发 track 任务上限：防止用户连续点不同 paper 把 SS/OA 配额吃完
+# （queued + running 总和；超过后新请求返回 503 让用户等等）
+_TRACK_MAX_INFLIGHT = 20
+# 串行化 enqueue：把"查 pending + enqueue"放进同一进程锁，杜绝并发重复入队
+_track_enqueue_lock = threading.Lock()
 
-    依赖论文有 DOI；无 DOI 返回 422。命中缓存（7 天内）则返回 `cached: true`，
-    传 `refresh=true` 可强制重查。
+
+def _paginate_track_result(result: dict, papers_key: str, offset: int, limit: int) -> dict:
+    """对 cache 中完整结果列表做分页切片。
+
+    实现要点：
+      - 直接读取原列表的引用 + 切片，避免 list(...) 全量拷贝（6MB 数据下浪费 CPU）
+      - 切片本身是浅拷贝（Python list slicing），新 dict 顶层也浅拷贝
+      - 不要 mutate 原 result（cache 行）；调用方传入的 result 已经是 dict()  shallow copy
+    """
+    full = result.get(papers_key) or []
+    total_len = len(full)
+    sliced = full[offset: offset + limit]
+    paginated = dict(result)
+    paginated[papers_key] = sliced
+    paginated["offset"] = offset
+    paginated["limit"] = limit
+    paginated["has_more"] = (offset + len(sliced)) < total_len
+    return paginated
+
+
+def _parse_track_body() -> tuple[bool, int, int, Optional[int]]:
+    """解析 track endpoint 的 body：refresh / offset / limit / fetch_limit。
+
+    fetch_limit = body['limit'] 时仅作 worker 拉取阶段的总上限（默认 None=拉全量），
+    页面分页用的 limit = body['page_limit'] 默认 100。
+
+    返回 (refresh, page_limit, offset, fetch_limit)；非法值抛 ValueError。
+    """
+    body = request.get_json(silent=True) or {}
+    refresh = bool(body.get("refresh", False))
+
+    raw_page_limit = body.get("page_limit", _TRACK_DEFAULT_LIMIT)
+    try:
+        page_limit = max(1, min(int(raw_page_limit), _TRACK_MAX_LIMIT))
+    except (TypeError, ValueError):
+        raise ValueError("invalid page_limit")
+
+    raw_offset = body.get("offset", 0)
+    try:
+        offset = max(0, int(raw_offset))
+    except (TypeError, ValueError):
+        raise ValueError("invalid offset")
+
+    raw_fetch_limit = body.get("limit")
+    if raw_fetch_limit is None:
+        fetch_limit = None
+    else:
+        try:
+            n = int(raw_fetch_limit)
+        except (TypeError, ValueError):
+            raise ValueError("invalid limit")
+        # 0 视为"不限"（拉全量）；负数与超大值拒绝
+        if n == 0:
+            fetch_limit = None
+        elif n < 0:
+            raise ValueError("invalid limit")
+        else:
+            fetch_limit = min(n, 10000)
+
+    return refresh, page_limit, offset, fetch_limit
+
+
+def _track_endpoint(paper_id: int, direction: str):
+    """通用 track endpoint。direction: 'forward' | 'backward'。
+
+    设计：
+      - cache 命中 + !refresh → 200 + 分页切片（毫秒）
+      - cache miss / refresh → enqueue task，返回 202 + {task_id, status: 'queued'}
+        前端订阅 socket.io /progress/{task_id}，收到 done 事件后重发本 endpoint
+        即可命中刚写入的 cache。
     """
     if request.content_length is not None and request.content_length > 1024:
         return jsonify({"error": "request body too large"}), 413
@@ -223,72 +491,122 @@ def forward_track(paper_id: int):
     if not p.doi:
         return jsonify({"error": "paper has no DOI"}), 422
 
-    body = request.get_json(silent=True) or {}
-    refresh = bool(body.get("refresh", False))
-    raw_limit = body.get("limit")
-    if raw_limit is None:
-        limit = None
-    else:
-        try:
-            limit = max(1, min(int(raw_limit), 10000))
-        except (TypeError, ValueError):
-            return jsonify({"error": "invalid limit"}), 400
-
-    from services import ForwardTrackService
     try:
-        result = ForwardTrackService(db_session=g.db).track(
-            p.doi, refresh=refresh, limit=limit, from_paper_id=paper_id
-        )
-        g.db.commit()
-        return jsonify(result)
+        refresh, page_limit, offset, fetch_limit = _parse_track_body()
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    except Exception:
-        g.db.rollback()
-        _log.exception("forward-track failed")
-        return jsonify({"error": "forward-track failed"}), 502
+
+    if direction == "forward":
+        from services.forward_track_service import ForwardTrackService
+        svc = ForwardTrackService(db_session=g.db)
+        papers_key = "citing_papers"
+        task_type = "forward_track"
+    else:
+        from services.backward_track_service import BackwardTrackService
+        svc = BackwardTrackService(db_session=g.db)
+        papers_key = "referenced_papers"
+        task_type = "backward_track"
+
+    # 快路径：cache 命中且未强制刷新
+    if not refresh:
+        from services.reference_fetcher import normalize_doi
+        doi_norm = normalize_doi(p.doi)
+        if doi_norm:
+            cached = svc._read_cache(g.db, doi_norm)
+            if cached is not None:
+                payload = dict(cached.result_json)
+                payload["cached"] = True
+                return jsonify(_paginate_track_result(payload, papers_key, offset, page_limit))
+
+    # 慢路径：把"查 pending + 检查并发上限 + enqueue"放进进程锁，
+    # 避免两个并发请求同时通过 pending check 重复入队。
+    from sqlalchemy import select as _select
+    from services.task_queue import TaskQueue
+    from services.upload_worker import (
+        BACKWARD_TRACK_TYPE, FORWARD_TRACK_TYPE, wake_worker,
+    )
+
+    with _track_enqueue_lock:
+        existing_task = g.db.execute(
+            _select(models.Task).where(
+                models.Task.type == task_type,
+                models.Task.paper_id == paper_id,
+                models.Task.status.in_(("queued", "running")),
+            ).order_by(models.Task.id.desc()).limit(1)
+        ).scalar_one_or_none()
+
+        if existing_task is not None:
+            # refresh=True 的请求落到已存在的非 refresh 任务上：升级 payload.refresh
+            # 让 worker 真的去刷新（payload_json 是 MutableJSON，flush 即落库）
+            if refresh:
+                payload = dict(existing_task.payload_json or {})
+                if not payload.get("refresh"):
+                    payload["refresh"] = True
+                    existing_task.payload_json = payload
+                    g.db.flush()
+                    g.db.commit()
+            return jsonify({
+                "task_id": existing_task.id,
+                "status": existing_task.status,
+                "message": f"{direction}-track 已在队列中"
+                           + ("，已升级为强制刷新" if refresh else ""),
+            }), 202
+
+        # 全局并发 track 任务上限保护：超过即拒绝，让用户等队列消化
+        inflight = g.db.execute(
+            _select(func.count(models.Task.id)).where(
+                models.Task.type.in_((FORWARD_TRACK_TYPE, BACKWARD_TRACK_TYPE)),
+                models.Task.status.in_(("queued", "running")),
+            )
+        ).scalar_one()
+        if int(inflight) >= _TRACK_MAX_INFLIGHT:
+            return jsonify({
+                "error": "track queue full",
+                "inflight": int(inflight),
+                "limit": _TRACK_MAX_INFLIGHT,
+                "message": "后台 track 任务队列已满，请稍后再试",
+            }), 503
+
+        tq = TaskQueue(g.db)
+        task = tq.enqueue(
+            type=task_type,
+            paper_id=paper_id,
+            payload={"paper_id": paper_id, "refresh": refresh, "limit": fetch_limit},
+            max_attempts=2,
+        )
+        g.db.commit()
+    wake_worker()
+    return jsonify({
+        "task_id": task.id,
+        "status": "queued",
+        "message": f"{direction}-track 已入队，请稍候",
+    }), 202
+
+
+@bp.post("/papers/<int:paper_id>/forward-track")
+@limiter.limit("10 per minute")
+def forward_track(paper_id: int):
+    """触发前向追踪。
+
+    body 字段：
+      - refresh (bool, default false)：强制刷新 cache
+      - page_limit (int, default 100, max 500)：本次响应返回多少条
+      - offset (int, default 0)：翻页起点
+      - limit (int, optional)：worker 拉取阶段的总上限（不传则拉全量）
+
+    返回：
+      - 200 + 分页数据（cache 命中）
+      - 202 + {task_id, status} （cache miss / refresh，已入队后台 worker）
+      - 422 论文无 DOI
+    """
+    return _track_endpoint(paper_id, "forward")
 
 
 @bp.post("/papers/<int:paper_id>/backward-track")
 @limiter.limit("10 per minute")
 def backward_track(paper_id: int):
-    """触发后向追踪：查这篇论文引用了哪些论文。可选 body：`{"refresh": true, "limit": 100}`。
-
-    依赖论文有 DOI；无 DOI 返回 422。7 天缓存，`refresh=true` 强制重查。
-    """
-    if request.content_length is not None and request.content_length > 1024:
-        return jsonify({"error": "request body too large"}), 413
-
-    p = g.db.get(models.Paper, paper_id)
-    if p is None:
-        return jsonify({"error": "not found"}), 404
-    if not p.doi:
-        return jsonify({"error": "paper has no DOI"}), 422
-
-    body = request.get_json(silent=True) or {}
-    refresh = bool(body.get("refresh", False))
-    raw_limit = body.get("limit")
-    if raw_limit is None:
-        limit = None
-    else:
-        try:
-            limit = max(1, min(int(raw_limit), 10000))
-        except (TypeError, ValueError):
-            return jsonify({"error": "invalid limit"}), 400
-
-    from services import BackwardTrackService
-    try:
-        result = BackwardTrackService(db_session=g.db).track(
-            p.doi, refresh=refresh, limit=limit, from_paper_id=paper_id
-        )
-        g.db.commit()
-        return jsonify(result)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception:
-        g.db.rollback()
-        _log.exception("backward-track failed")
-        return jsonify({"error": "backward-track failed"}), 502
+    """触发后向追踪。body / 返回语义同 forward-track，但 papers_key=referenced_papers。"""
+    return _track_endpoint(paper_id, "backward")
 
 
 @bp.post("/papers/<int:paper_id>/promote")

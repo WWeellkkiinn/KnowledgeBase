@@ -232,8 +232,14 @@ class SubscriptionService:
             if isinstance(v, (list, dict)) and len(str(v)) > 4096:
                 raise ValueError(f"target nested value too large for key {k!r}")
         if type == "paper_citations":
-            if not target.get("doi"):
+            doi = target.get("doi")
+            if not doi:
                 raise ValueError("paper_citations target requires 'doi'")
+            # DOI 字符集白名单：防止 `?#/../` 等改写下游 SS/OA URL 路径
+            # 复用 reference_fetcher.normalize_doi（同样规则），拒绝非法 DOI
+            from services.reference_fetcher import normalize_doi as _ndoi
+            if not _ndoi(doi):
+                raise ValueError("paper_citations target.doi has invalid format")
         elif type == "author_works":
             if not target.get("author_id"):
                 raise ValueError("author_works target requires 'author_id'")
@@ -468,50 +474,138 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     sched.add_job(_tick, "interval", seconds=poll_seconds, id="kb-subscriptions-tick",
                   replace_existing=True)
 
-    def _daily_forward_track():
-        """每日凌晨 3 点：依次刷新所有有 DOI 论文的前向追踪缓存，限速 1 req/s。
-        最多运行 20 小时，防止跨越下一次调度窗口。
-        """
-        # 延迟导入避免循环引用（subscription_service 与 forward_track_service 互相依赖）
-        from services.forward_track_service import ForwardTrackService
+    def _daily_track_refresh():
+        """每日凌晨 2 点：扫描核心库论文，按 cache 新鲜度决定是否入队。
 
-        _MAX_RUNTIME = 20 * 3600  # 20 小时上限
+        策略（避免每天扫 SS/OA 浪费配额）：
+          - backward（参考文献，发表后不变）：仅当 cache 缺失才入队
+          - forward（被引用，持续变化）：cache 缺失 或 fetched_at > 7 天才入队
+          - 已有 pending 任务的论文跳过
+
+        实现要点：
+          - **LEFT JOIN 单查询**取(paper_id, doi, bw_fetched_at, fw_fetched_at)，
+            不再把整张 cache 表 dict 化（核心库上千时省 RAM 几十 MB）
+          - 分批 commit（每 N 条），中途异常仍保留已入队的进度
+          - 异常分支也调 wake_worker，让 worker 至少消费已落库部分
+        """
+        from sqlalchemy import outerjoin
+        from services.task_queue import TaskQueue
+        from services.upload_worker import (
+            BACKWARD_TRACK_TYPE, FORWARD_TRACK_TYPE, wake_worker,
+        )
+        from services.reference_fetcher import normalize_doi as _ndoi
+
+        _FORWARD_REFRESH_AGE = timedelta(days=7)
+        _COMMIT_BATCH = 50  # 每入队 50 条 commit 一次，防中途失败回滚损失大量进度
+        forward_threshold = _utcnow() - _FORWARD_REFRESH_AGE
 
         session = SessionLocal()
+        enq_fwd = 0
+        enq_bw = 0
+        skipped_fresh = 0
+        skipped_pending = 0
+        any_enqueued = False
         try:
-            dois = [
-                row[0] for row in session.execute(
-                    select(models.Paper.doi)
-                    .where(models.Paper.doi.isnot(None))
-                    .where(models.Paper.doi != "")
-                    .where(models.Paper.is_core.is_(True))
-                ).all()
-            ]
+            # LEFT JOIN 一把取齐：核心论文 × backward cache × forward cache
+            # SQLite 不强求 JOIN 顺序，这里两次 OUTERJOIN ON paper.doi(lower)=cache.doi
+            from sqlalchemy import func as _func
+            doi_lower = _func.lower(_func.trim(models.Paper.doi))
+            j = outerjoin(
+                outerjoin(
+                    models.Paper, models.BackwardTrackCache,
+                    doi_lower == models.BackwardTrackCache.doi,
+                ),
+                models.ForwardTrackCache,
+                doi_lower == models.ForwardTrackCache.doi,
+            )
+            rows = session.execute(
+                select(
+                    models.Paper.id,
+                    models.Paper.doi,
+                    models.BackwardTrackCache.fetched_at.label("bw_fetched"),
+                    models.ForwardTrackCache.fetched_at.label("fw_fetched"),
+                )
+                .select_from(j)
+                .where(models.Paper.doi.isnot(None))
+                .where(models.Paper.doi != "")
+                .where(models.Paper.is_core.is_(True))
+            ).all()
+
+            # 一次性查 pending 任务集，避免 N 次往返
+            pending_rows = session.execute(
+                select(models.Task.paper_id, models.Task.type).where(
+                    models.Task.type.in_((FORWARD_TRACK_TYPE, BACKWARD_TRACK_TYPE)),
+                    models.Task.status.in_(("queued", "running")),
+                )
+            ).all()
+            pending = {(pid, t) for pid, t in pending_rows}
+
+            tq = TaskQueue(session)
+            uncommitted = 0
+            seen_papers = set()  # 防 LEFT JOIN 产生的笛卡儿重复行
+            for paper_id, doi, bw_fetched, fw_fetched in rows:
+                if paper_id in seen_papers:
+                    continue
+                seen_papers.add(paper_id)
+                if not _ndoi((doi or "").strip()):
+                    continue
+
+                # backward：cache 缺失才入队（参考文献静态）
+                if (paper_id, BACKWARD_TRACK_TYPE) in pending:
+                    skipped_pending += 1
+                elif bw_fetched is None:
+                    tq.enqueue(
+                        type=BACKWARD_TRACK_TYPE,
+                        paper_id=paper_id,
+                        payload={"paper_id": paper_id, "refresh": True},
+                        max_attempts=2,
+                    )
+                    enq_bw += 1
+                    uncommitted += 1
+
+                # forward：cache 缺失 或 > 7 天才入队
+                if (paper_id, FORWARD_TRACK_TYPE) in pending:
+                    skipped_pending += 1
+                elif fw_fetched is None or fw_fetched < forward_threshold:
+                    tq.enqueue(
+                        type=FORWARD_TRACK_TYPE,
+                        paper_id=paper_id,
+                        payload={"paper_id": paper_id, "refresh": True},
+                        max_attempts=2,
+                    )
+                    enq_fwd += 1
+                    uncommitted += 1
+                else:
+                    skipped_fresh += 1
+
+                # 分批 commit：中途异常不会丢全部进度
+                if uncommitted >= _COMMIT_BATCH:
+                    session.commit()
+                    any_enqueued = True
+                    uncommitted = 0
+
+            if uncommitted > 0:
+                session.commit()
+                any_enqueued = True
+            _log.info(
+                "daily_track_refresh: %d core papers; enqueued forward=%d backward=%d; "
+                "skipped fresh=%d pending=%d",
+                len(seen_papers), enq_fwd, enq_bw, skipped_fresh, skipped_pending,
+            )
+        except Exception:
+            session.rollback()
+            _log.exception("daily_track_refresh failed (partial progress kept by batch commits)")
         finally:
             session.close()
-
-        # 过滤纯空白 DOI
-        dois = [d for d in dois if d.strip()]
-
-        svc = ForwardTrackService()
-        _log.info("daily_forward_track start: %d papers", len(dois))
-        start = _time.monotonic()
-        for i, doi in enumerate(dois):
-            if _time.monotonic() - start > _MAX_RUNTIME:
-                _log.warning("daily_forward_track: max runtime reached, stopped at %d/%d", i, len(dois))
-                break
-            try:
-                svc.track(doi, refresh=True)
-            except Exception as exc:
-                _log.warning("daily_forward_track failed doi=%s err=%s", doi, exc)
-            _time.sleep(1)
-        _log.info("daily_forward_track done")
+            # 即使异常分支也唤醒 worker：先前 batch 已 commit 的任务等待被消费
+            if any_enqueued:
+                wake_worker()
 
     sched.add_job(
-        _daily_forward_track,
+        _daily_track_refresh,
         trigger="cron",
-        hour=3, minute=0,
-        id="kb-daily-forward-track",
+        hour=2, minute=0,
+        id="kb-daily-track-refresh",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -550,7 +644,7 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     sched.add_job(
         _daily_digest,
         trigger="cron",
-        hour=0, minute=0,
+        hour=2, minute=0,
         id="kb-daily-digest",
         replace_existing=True,
         misfire_grace_time=3600,

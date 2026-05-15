@@ -61,8 +61,17 @@ class TaskQueue:
 
     # ─── 出队 ────────────────────────────────────────────────────────
 
-    def fetch_next(self, type: Optional[str] = None) -> Optional[models.Task]:
-        """取一个待执行任务并标记 running。FIFO（按 id）。"""
+    def fetch_next(
+        self,
+        type: Optional[str] = None,
+        types: Optional[list[str]] = None,
+    ) -> Optional[models.Task]:
+        """取一个待执行任务并标记 running。FIFO（按 id 升序）。
+
+        type：精确匹配单一类型
+        types：匹配集合中任意类型（与 type IN (...) 等价）；同时传则取 type 单值
+        FIFO 全局公平：按 id 升序，所有 type 共享同一顺序，不会出现某 type 饥饿
+        """
         stmt = (
             select(models.Task)
             .where(models.Task.status == "queued")
@@ -71,6 +80,8 @@ class TaskQueue:
         )
         if type:
             stmt = stmt.where(models.Task.type == type)
+        elif types:
+            stmt = stmt.where(models.Task.type.in_(tuple(types)))
         task = self.session.execute(stmt).scalar_one_or_none()
         if task is None:
             return None

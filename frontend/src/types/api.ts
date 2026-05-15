@@ -77,6 +77,10 @@ export interface ForwardTrackResult {
   citing_papers: ReferenceEntry[]
   cached: boolean
   fetched_at: string
+  // 分页字段（仅在切片返回时存在）
+  offset?: number
+  limit?: number
+  has_more?: boolean
 }
 
 export interface BackwardTrackResult {
@@ -85,6 +89,22 @@ export interface BackwardTrackResult {
   referenced_papers: ReferenceEntry[]
   cached: boolean
   fetched_at: string
+  offset?: number
+  limit?: number
+  has_more?: boolean
+}
+
+// 202 异步响应：cache miss 时端点返回入队后的 task 信息
+export interface TrackTaskAccepted {
+  task_id: number
+  status: 'queued' | 'running'
+  message: string
+}
+
+export type TrackResponse<T> = T | TrackTaskAccepted
+
+export function isTrackAccepted(r: unknown): r is TrackTaskAccepted {
+  return typeof r === 'object' && r !== null && 'task_id' in r && (r as TrackTaskAccepted).task_id != null
 }
 
 export interface Task {

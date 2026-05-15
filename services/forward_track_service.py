@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Optional
 
@@ -55,16 +56,20 @@ class ForwardTrackService(_BaseTrackService):
     _direction = "forward"
 
     def _fetch(self, doi: str, limit: Optional[int]) -> list[ReferenceItem]:
+        # SS + OpenAlex 并行；两者总耗时取 max 而非 sum
         ss_raw: list[dict] = []
         oa_raw: list[dict] = []
-        try:
-            ss_raw = self._fetch_ss(doi, limit)
-        except Exception as exc:
-            _log.warning("ForwardTrackService _fetch_ss failed doi=%s: %s", doi, exc)
-        try:
-            oa_raw = self._fetch_openalex(doi, limit)
-        except Exception as exc:
-            _log.warning("ForwardTrackService _fetch_openalex failed doi=%s: %s", doi, exc)
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_ss = ex.submit(self._fetch_ss, doi, limit)
+            f_oa = ex.submit(self._fetch_openalex, doi, limit)
+            try:
+                ss_raw = f_ss.result()
+            except Exception as exc:
+                _log.warning("ForwardTrackService _fetch_ss failed doi=%s: %s", doi, exc)
+            try:
+                oa_raw = f_oa.result()
+            except Exception as exc:
+                _log.warning("ForwardTrackService _fetch_openalex failed doi=%s: %s", doi, exc)
         return merge_dedup(
             [_dict_to_item(d) for d in ss_raw],
             [_dict_to_item(d) for d in oa_raw],
@@ -75,9 +80,3 @@ class ForwardTrackService(_BaseTrackService):
 
     def _fetch_openalex(self, doi: str, limit: Optional[int]) -> list[dict]:
         return [_item_to_dict(r) for r in _oa_cited_by(doi, limit)]
-
-    @staticmethod
-    def _merge(*lists: list[dict]) -> list[dict]:
-        """向后兼容 shim：接受 dict 列表，返回 dict 列表。"""
-        items_per_src = [[_dict_to_item(d) for d in lst] for lst in lists]
-        return [_item_to_dict(r) for r in merge_dedup(*items_per_src)]

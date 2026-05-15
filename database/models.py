@@ -69,6 +69,7 @@ class Paper(Base):
     )
     pdf_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     md_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    sha1: Mapped[Optional[str]] = mapped_column(String(40), unique=True, nullable=True, index=True)
     insight_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     refs_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(

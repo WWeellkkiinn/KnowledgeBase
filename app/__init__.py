@@ -13,6 +13,7 @@ import sys
 import threading
 
 from flask import Flask, Response, abort, g, request
+from flask_compress import Compress
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO
@@ -76,20 +77,24 @@ def create_app(config: dict | None = None) -> Flask:
     app.config["KB_ENABLE_SCHEDULER"] = (
         os.environ.get("KB_ENABLE_SCHEDULER") == "1"
     )
-    # 公网部署时单请求体上限，防止大包打爆内存（默认 256KB，收紧 DoS 面）。
-    # 备注：digest/reviews 等大 JSON 端点若超限，应在该端点用
-    # request.get_data(parse_form_data=False) 单独豁免（不在本次实现），
-    # 或通过 KB_MAX_CONTENT_LENGTH 环境变量整体放宽。非数字值时回退默认。
-    _default_max = 256 * 1024
-    _raw_max = os.environ.get("KB_MAX_CONTENT_LENGTH", str(_default_max))
+    # MAX_CONTENT_LENGTH 设为最大需求（默认 60MB，覆盖 50MB 上传 + multipart 头）。
+    # 单独的"非上传路径仍按 256KB 限"策略由 before_request `_limit_non_upload_body` 实现，
+    # 把 DoS 面收回到 256KB —— 仅 /papers/upload 享受 60MB 配额。
+    _upload_cap = 60 * 1024 * 1024
+    _raw_max = os.environ.get("KB_MAX_CONTENT_LENGTH", str(_upload_cap))
     try:
         app.config["MAX_CONTENT_LENGTH"] = int(_raw_max)
     except (TypeError, ValueError):
         logging.getLogger(__name__).warning(
-            "invalid KB_MAX_CONTENT_LENGTH=%r, fallback to 256KB", _raw_max
+            "invalid KB_MAX_CONTENT_LENGTH=%r, fallback to %d bytes",
+            _raw_max, _upload_cap,
         )
-        app.config["MAX_CONTENT_LENGTH"] = _default_max
+        app.config["MAX_CONTENT_LENGTH"] = _upload_cap
     app.config.update(config or {})
+
+    # 非上传路径的请求体上限：DoS 面收紧到 256KB。
+    _NON_UPLOAD_BODY_LIMIT = 256 * 1024
+    _UPLOAD_PATH = "/api/papers/upload"
 
     # 多 worker 守卫：flask-limiter memory:// 与 _digest_lock(threading.Lock) 均假定
     # 单 worker，gunicorn/uwsgi 多 worker 下计数与锁会失效。
@@ -140,7 +145,39 @@ def create_app(config: dict | None = None) -> Flask:
 
     # limiter 必须在 before_request 鉴权之前 init，确保 401 路径也计入默认限流，
     # 防止攻击者无限重试爆破 Bearer token。
+    # gzip / brotli 压缩：默认对 JSON 等可压缩 MIME 启用。
+    # MIN_SIZE 1024：小响应（health/stats 等几百字节 JSON）跳过压缩省 CPU
+    # LEVEL 4：比默认 6 快 ~30%，压缩率仅差 1-2%，对中等大小 JSON 性价比更高
+    app.config.setdefault("COMPRESS_MIN_SIZE", 1024)
+    app.config.setdefault("COMPRESS_LEVEL", 4)
+    app.config.setdefault("COMPRESS_MIMETYPES", [
+        "application/json",
+        "application/javascript",
+        "text/html",
+        "text/css",
+        "text/plain",
+        "text/javascript",
+        "text/xml",
+        "image/svg+xml",
+    ])
+    Compress(app)
+
     limiter.init_app(app)
+
+    @app.before_request
+    def _limit_non_upload_body():
+        """非上传路径按 256KB 早拒绝，不让 60MB 大包侵蚀 JSON 端点。
+
+        仅在 Content-Length 已知时拦；chunked transfer 走默认 MAX_CONTENT_LENGTH。
+        """
+        if request.path == _UPLOAD_PATH:
+            return
+        cl = request.content_length
+        if cl is not None and cl > _NON_UPLOAD_BODY_LIMIT:
+            return Response(
+                '{"error":"request body too large for this endpoint"}',
+                status=413, mimetype="application/json",
+            )
 
     @app.before_request
     def _require_bearer_token():
@@ -253,6 +290,22 @@ def create_app(config: dict | None = None) -> Flask:
         from services.subscription_service import start_scheduler
         start_scheduler()
         _start_journal_backfill()
+
+    # 上传后台 worker：单进程单线程消费 tasks.type="upload_pipeline"。
+    # 多 worker 进程下 fetch_next 无 SELECT FOR UPDATE 会重复领取同一任务，
+    # 因此当 KB_ALLOW_MULTI_WORKER=1 时直接不启动 worker（必须有人显式跑独立 worker 进程）。
+    # 测试场景：KB_DISABLE_UPLOAD_WORKER=1 跳过（避免 fixture 残留线程）。
+    if (
+        os.environ.get("KB_DISABLE_UPLOAD_WORKER") != "1"
+        and os.environ.get("KB_ALLOW_MULTI_WORKER") != "1"
+    ):
+        from services.upload_worker import start_worker as _start_upload_worker
+        _start_upload_worker()
+    elif os.environ.get("KB_ALLOW_MULTI_WORKER") == "1":
+        logging.getLogger(__name__).warning(
+            "KB_ALLOW_MULTI_WORKER=1 → upload-worker NOT started in this process; "
+            "run a single dedicated worker process for type=upload_pipeline tasks."
+        )
 
     return app
 
