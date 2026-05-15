@@ -406,6 +406,46 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         misfire_grace_time=3600,
     )
 
+    def _daily_ai_batch():
+        from services.ai_service import run_batch_analysis
+        session = SessionLocal()
+        try:
+            result = run_batch_analysis(session)
+            _log.info("daily_ai_batch done: %s", result)
+        except Exception:
+            _log.exception("daily_ai_batch failed")
+        finally:
+            session.close()
+
+    sched.add_job(
+        _daily_ai_batch,
+        trigger="cron",
+        hour=3, minute=30,
+        id="kb-daily-ai-batch",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    def _daily_digest():
+        from services.digest_service import send_digest
+        session = SessionLocal()
+        try:
+            result = send_digest(session)
+            _log.info("daily_digest done: %s", result)
+        except Exception:
+            _log.exception("daily_digest failed")
+        finally:
+            session.close()
+
+    sched.add_job(
+        _daily_digest,
+        trigger="cron",
+        hour=0, minute=0,
+        id="kb-daily-digest",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     sched.start()
     _scheduler = sched
     _log.info("subscription scheduler started (poll %ds)", poll_seconds)

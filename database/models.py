@@ -85,6 +85,9 @@ class Paper(Base):
         DateTime, server_default=func.current_timestamp(), nullable=False
     )
     analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    tags: Mapped[Optional[list]] = mapped_column(MutableList.as_mutable(JSON), nullable=True)
+    ai_summary: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
+    ai_analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # lazy="select"（默认）—— 列表场景不强制 JOIN，详情场景按需访问
     journal: Mapped[Optional[Journal]] = relationship(Journal, lazy="select")

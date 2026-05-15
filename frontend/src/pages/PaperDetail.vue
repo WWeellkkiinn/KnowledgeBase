@@ -9,8 +9,32 @@ const router = useRouter()
 defineProps<{ id: string }>()
 const paperId = computed(() => Number(route.params.id))
 
+// 上一页 URL：每次路由变化时刷新（含 RouterLink 进入新论文详情时）
+const backHref = ref<string | null>(
+  typeof window !== 'undefined' ? (window.history.state?.back ?? null) : null
+)
+
+function refreshBackHref() {
+  if (typeof window !== 'undefined') {
+    backHref.value = window.history.state?.back ?? null
+  }
+}
+
+const backLabel = computed(() => {
+  const b = backHref.value
+  if (!b) return '← 返回论文库'
+  if (b.startsWith('/papers/')) return '← 返回上一篇'
+  if (b.startsWith('/papers')) return '← 返回论文库'
+  if (b.startsWith('/network')) return '← 返回图谱'
+  if (b === '/' || b.startsWith('/?')) return '← 返回主页'
+  if (b.startsWith('/review')) return '← 返回审阅'
+  if (b.startsWith('/subscriptions')) return '← 返回订阅'
+  if (b.startsWith('/failures')) return '← 返回失败列表'
+  return '← 返回上一页'
+})
+
 function goBack() {
-  if (window.history.state?.back) router.back()
+  if (backHref.value) router.back()
   else router.push('/papers')
 }
 
@@ -80,8 +104,14 @@ async function load() {
   }
 }
 
-onMounted(load)
-watch(() => route.params.id, load)
+onMounted(() => {
+  refreshBackHref()
+  load()
+})
+watch(() => route.params.id, () => {
+  refreshBackHref()
+  load()
+})
 
 watch(tab, (newTab) => {
   if (!detail.value?.paper.is_core || !detail.value?.paper.doi) return
@@ -142,12 +172,40 @@ const citedCount = computed(() => {
   if (!detail.value?.paper.is_core) return 0
   return detail.value?.edges_in.length ?? 0
 })
+
+const aiSectionOpen = ref(true)
+const aiAnalyzing = ref(false)
+const aiAnalyzeError = ref<string | null>(null)
+
+async function runAiAnalyze() {
+  if (!detail.value) return
+  const requestedId = detail.value.paper.id
+  aiAnalyzing.value = true
+  aiAnalyzeError.value = null
+  try {
+    const updated = await papersApi.aiAnalyze(requestedId)
+    // 用户已切到其他论文 → 丢弃结果，避免污染新 detail
+    if (!detail.value || detail.value.paper.id !== requestedId) return
+    detail.value.paper.tags = updated.tags
+    detail.value.paper.ai_summary = updated.ai_summary
+    detail.value.paper.ai_analyzed_at = updated.ai_analyzed_at
+    aiSectionOpen.value = true
+  } catch (e: unknown) {
+    if (detail.value && detail.value.paper.id === requestedId) {
+      aiAnalyzeError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (detail.value && detail.value.paper.id === requestedId) {
+      aiAnalyzing.value = false
+    }
+  }
+}
 </script>
 
 <template>
   <section class="space-y-5">
     <button @click="goBack" class="text-sm text-blue-600 hover:underline">
-      ← 返回论文库
+      {{ backLabel }}
     </button>
 
     <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
@@ -204,6 +262,15 @@ const citedCount = computed(() => {
           <p class="text-sm text-slate-600 leading-relaxed">{{ detail.paper.abstract }}</p>
         </div>
 
+        <!-- Tags（header 区快速预览） -->
+        <div v-if="detail.paper.tags?.length" class="flex flex-wrap gap-1.5">
+          <span
+            v-for="tag in detail.paper.tags"
+            :key="tag"
+            class="rounded-full bg-blue-100 px-2.5 py-0.5 text-xs text-blue-700"
+          >{{ tag }}</span>
+        </div>
+
       </header>
 
       <!-- ── 内容分析 ── -->
@@ -219,6 +286,67 @@ const citedCount = computed(() => {
             class="whitespace-pre-wrap text-xs text-slate-600 leading-relaxed font-sans"
           >{{ insightContent }}</pre>
           <p v-else class="text-xs text-slate-400">文件不存在或无内容。</p>
+        </div>
+      </div>
+
+      <!-- ── AI 精炼 ── -->
+      <div class="rounded-lg border border-slate-200 bg-slate-50">
+        <div class="border-b border-slate-200 px-4 py-2 flex items-center justify-between">
+          <button
+            class="flex items-center gap-1 text-sm font-semibold text-slate-700"
+            @click="aiSectionOpen = !aiSectionOpen"
+          >
+            AI 精炼
+            <span class="text-xs font-normal text-slate-400">{{ aiSectionOpen ? '▲' : '▼' }}</span>
+          </button>
+          <button
+            v-if="detail.paper.abstract && !detail.paper.ai_analyzed_at"
+            class="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            :disabled="aiAnalyzing"
+            @click="runAiAnalyze"
+          >
+            {{ aiAnalyzing ? '分析中…' : '立即分析' }}
+          </button>
+          <button
+            v-else-if="detail.paper.abstract && detail.paper.ai_analyzed_at"
+            class="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+            :disabled="aiAnalyzing"
+            @click="runAiAnalyze"
+          >
+            {{ aiAnalyzing ? '分析中…' : '重新分析' }}
+          </button>
+        </div>
+        <div v-if="aiSectionOpen" class="px-4 py-3 space-y-3 text-sm">
+          <p v-if="aiAnalyzeError" class="text-xs text-rose-500">{{ aiAnalyzeError }}</p>
+          <template v-if="detail.paper.ai_summary || detail.paper.tags?.length">
+            <!-- Tags -->
+            <div v-if="detail.paper.tags?.length" class="flex flex-wrap gap-1.5">
+              <span
+                v-for="tag in detail.paper.tags"
+                :key="tag"
+                class="rounded-full bg-blue-100 px-2.5 py-0.5 text-xs text-blue-700"
+              >{{ tag }}</span>
+            </div>
+            <template v-if="detail.paper.ai_summary">
+              <div v-if="detail.paper.ai_summary.research_question" class="space-y-1">
+                <p class="text-sm font-semibold text-slate-900">研究问题</p>
+                <p class="text-slate-700 leading-relaxed">{{ detail.paper.ai_summary.research_question }}</p>
+              </div>
+              <div v-if="detail.paper.ai_summary.methodology" class="space-y-1">
+                <p class="text-sm font-semibold text-slate-900">方法</p>
+                <p class="text-slate-700 leading-relaxed">{{ detail.paper.ai_summary.methodology }}</p>
+              </div>
+              <div v-if="detail.paper.ai_summary.key_findings?.length" class="space-y-1">
+                <p class="text-sm font-semibold text-slate-900">关键发现</p>
+                <ul class="list-disc list-inside text-slate-700 leading-relaxed space-y-0.5">
+                  <li v-for="(f, i) in detail.paper.ai_summary.key_findings" :key="i">{{ f }}</li>
+                </ul>
+              </div>
+            </template>
+          </template>
+          <p v-else class="text-xs text-slate-400">
+            {{ detail.paper.abstract ? '点击"立即分析"生成 AI 精炼摘要。' : '无摘要，无法进行 AI 分析。' }}
+          </p>
         </div>
       </div>
 

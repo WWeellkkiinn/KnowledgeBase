@@ -2,17 +2,48 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import threading
+from datetime import datetime, timezone
 from pathlib import Path as _Path
 
-from flask import Blueprint, Response, g, jsonify, request, stream_with_context
+from flask import Blueprint, Response, abort, g, jsonify, request, stream_with_context
 from sqlalchemy import delete, func, select, update
 
 from database import models
 
+
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _require_token(scope: str = "write") -> None:
+    """检查 X-KB-Token header（仅当对应 KB_API_TOKEN_* 环境变量配置时启用）。
+
+    scope=write：优先读 KB_API_TOKEN_WRITE，未设时 fallback KB_API_TOKEN（统一令牌），
+                  仍未设则放行（本地开发默认）。
+    """
+    expected = (
+        os.environ.get(f"KB_API_TOKEN_{scope.upper()}")
+        or os.environ.get("KB_API_TOKEN")
+    )
+    if not expected:
+        return  # 未配置 = 本地开发模式，不强制
+    provided = request.headers.get("X-KB-Token") or request.args.get("token") or ""
+    if provided != expected:
+        abort(401, description="invalid or missing API token")
+
 _log = logging.getLogger(__name__)
 
 bp = Blueprint("api", __name__)
+
+
+@bp.before_request
+def _gate_writes() -> None:
+    """全局写操作鉴权：所有 POST/PUT/PATCH/DELETE 都需要 token（若已配置）。"""
+    if request.method in _WRITE_METHODS:
+        _require_token("write")
+
 
 # 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
 _BASE_DIR = _Path(__file__).parent.parent.parent.resolve()
@@ -66,6 +97,9 @@ def _paper_to_dict(p: models.Paper, *, include_journal: bool = False) -> dict:
         "added_at": _iso_utc(p.added_at),
         "analyzed_at": _iso_utc(p.analyzed_at),
         "is_core": bool(p.is_core),
+        "tags": p.tags,
+        "ai_summary": p.ai_summary,
+        "ai_analyzed_at": _iso_utc(p.ai_analyzed_at),
     }
     if include_journal:
         out["journal"] = _journal_to_dict(p.journal) if p.journal else None
@@ -294,6 +328,35 @@ def promote_paper(paper_id: int):
             g.db.rollback()
             _log.exception("promote_paper failed paper_id=%d", paper_id)
             return jsonify({"error": "promote failed"}), 502
+    return jsonify(_paper_to_dict(p, include_journal=True))
+
+
+@bp.post("/papers/<int:paper_id>/ai-analyze")
+def ai_analyze_paper(paper_id: int):
+    """触发单篇论文的 AI 打标签 + 精炼（F1+F2）。"""
+    p = g.db.get(models.Paper, paper_id)
+    if p is None:
+        return jsonify({"error": "not found"}), 404
+    if not p.abstract:
+        return jsonify({"error": "no abstract"}), 422
+    from services.ai_service import analyze_paper
+    try:
+        result = analyze_paper(p.title or "", p.abstract)
+    except Exception:
+        _log.exception("ai_analyze_paper analysis error paper_id=%d", paper_id)
+        return jsonify({"error": "analysis failed"}), 502
+    if not result:
+        return jsonify({"error": "analysis failed"}), 502
+    tags = result.get("tags")
+    p.tags = tags if isinstance(tags, list) else []
+    p.ai_summary = {k: v for k, v in result.items() if k != "tags"}
+    p.ai_analyzed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        g.db.commit()
+    except Exception:
+        g.db.rollback()
+        _log.exception("ai_analyze_paper commit failed paper_id=%d", paper_id)
+        return jsonify({"error": "db error"}), 502
     return jsonify(_paper_to_dict(p, include_journal=True))
 
 
@@ -838,3 +901,42 @@ def move_papers_batch():
         g.db.rollback()
         _log.exception("move_papers_batch failed")
         return jsonify({"error": "move failed"}), 502
+
+
+@bp.post("/digest/send")
+def send_digest_now():
+    """手动触发邮件日报（F3）。
+    ?all=1    发送全库（有摘要的）论文，否则仅过去 24h
+    ?core=1   仅扫核心库论文
+    ?test=1   快速测试：跳过 AI 直接拼前 5 篇核心论文发邮件，~5 秒（同步）
+    ?async=1  在后台线程异步执行，立即返回 {accepted: true}
+    """
+    from services.digest_service import send_digest
+
+    test_mode = request.args.get("test") == "1"
+    if test_mode:
+        kwargs = dict(hours_back=0, core_only=True, skip_ai=True, limit=5)
+    else:
+        kwargs = dict(
+            hours_back=0 if request.args.get("all") == "1" else 24,
+            core_only=request.args.get("core") == "1",
+        )
+
+    if request.args.get("async") == "1" and not test_mode:
+        def _bg():
+            from database import SessionLocal
+            session = SessionLocal()
+            try:
+                send_digest(session, **kwargs)
+            except Exception:
+                _log.exception("async send_digest failed")
+            finally:
+                session.close()
+        threading.Thread(target=_bg, name="digest-async", daemon=True).start()
+        return jsonify({"accepted": True})
+
+    try:
+        return jsonify(send_digest(g.db, **kwargs))
+    except Exception as exc:
+        _log.exception("send_digest_now failed: %s", type(exc).__name__)
+        return jsonify({"error": "digest failed"}), 502

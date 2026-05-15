@@ -29,6 +29,21 @@ export interface Paper {
   added_at: string | null
   analyzed_at: string | null
   journal?: Journal | null
+  tags: string[] | null
+  ai_summary: AiSummary | null
+  ai_analyzed_at: string | null
+}
+
+export interface AiSummary {
+  research_question: string | null
+  methodology: string | null
+  key_findings: string[]
+}
+
+export interface DigestResult {
+  sent: boolean
+  paper_count?: number
+  reason?: string
 }
 
 export interface Edge {

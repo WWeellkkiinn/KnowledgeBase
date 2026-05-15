@@ -1,224 +1,118 @@
-# KnowledgeBase UI/功能修复计划
+# 核心功能规划
 
-## 问题清单
+## F1 — AI 论文打标签
 
-| # | 问题 | 分类 | 主要文件 |
-|---|------|------|---------|
-| 1 | 核心库/探索库切换时出现"加载中"闪烁 | UI体验 | Papers.vue |
-| 2 | 参考/被引中"已入库"和"API结果"分两块，改为合并一行+标签 | UI体验 | PaperDetail.vue |
-| 3 | 导入时自动根据标题查询 DOI；批量补全现有无 DOI 论文 | 新功能 | doi_resolver.py (新), api.py |
-| 4 | 引用图节点显示作者+年份，不是论文名称 | 引用图 | Network.vue |
-| 5 | Tab 标题旁括号内显示数量（引用 N / 被引用 N） | UI体验 | PaperDetail.vue |
-| 6 | 统一术语：全部"参考文献"改为"引用" | UI文本 | PaperDetail.vue |
-| 7 | 引用图节点大小按被引用量决定 | 引用图 | Network.vue |
-| 8 | 论文库支持多选，批量删除/移动到核心库/探索库 | 新功能 | Papers.vue, api.py |
-| 9 | BibTeX 下载按钮移到 DOI 后面 | UI布局 | PaperDetail.vue |
-| 10 | DOI 字体与年份统一；dl 网格对齐修复 | UI样式 | PaperDetail.vue |
-| 11 | 引用图只展示核心论文节点 | 引用图 | Network.vue |
-| 12 | 核心论文节点大小由被引用量决定（与 #7 合并，等价） | 引用图 | Network.vue |
-| 13 | 期刊无法识别（journals 表为空，无论文关联到期刊） | 数据 | journal_service.py, api.py |
+**目标**：调用 GPU 服务器上的 Ollama，对论文标题 + 摘要进行分析，自动生成语义标签。
 
----
+### 标签策略：积累型开放词表
 
-## 根因分析
+- 维护 `services/tags_vocab.json`（初始为空，逐步积累）
+- 每次 AI 分析论文时：
+  1. 携带**当前词表**进 Prompt，要求优先从词表中选 3–5 个最匹配的标签
+  2. 若词表无法覆盖，AI 可生成新标签，新标签**自动追加**进词表（供后续论文复用）
+- 词表随项目积累自然扩展；语义重复由 Prompt 约束（"避免生成与词表中已有标签含义相同的新标签"）
 
-### Issue 13 — 期刊识别失效
-- `journals` 表当前 **0 条记录**，`papers.journal_id` 全部为 NULL
-- `database/seed/journals.json` 存有 30 条手动期刊，**从未被加载进 DB**
-- `journal_service.attach_to_paper()` 存在，但 journals 表空所以永远匹配不到
-- 修复路径：
-  1. 启动时自动 seed 30 条手动期刊
-  2. 在论文导入/分析完成后调用 `attach_to_paper()`（传入从分析结果里提取的期刊名）
-  3. 扩展：调用 CrossRef API 按期刊名查询 ISSN + 元数据，覆盖 seed 没有的期刊
+### 实现要点
 
-### Issue 3 — DOI 查询
-- LDR 通过 Semantic Scholar `paper/search` + OpenAlex `works?search=` 按标题查 DOI
-- KnowledgeBase 没有类似服务，导入时 DOI 字段空着
-- 修复路径：
-  1. 新建 `services/doi_resolver.py`，调用 SS + CrossRef（双源，按置信度取最高分）
-  2. 在 `graph_writer.upsert_paper()` 前调用，补全 stub paper 的 DOI
-  3. 提供脚本一次性补全现有无 DOI 论文
+| 项 | 细节 |
+|----|------|
+| Ollama 端点 | `http://<ollama-host>:13812` |
+| 模型 | `qwen3.6-27b`（`/no_think` 前缀开启思维链，tag 生成不需要，直接用默认） |
+| 触发时机 | 论文入库时自动触发；批量补跑接口供已有论文使用 |
+| 存储 | `papers` 表新增 `tags` JSON 字段；词表存 `services/tags_vocab.json` |
+| UI | 论文卡片 + 详情页显示标签 chip；支持按标签筛选 |
 
 ---
 
-## 文件归属
+## F2 — AI 论文精炼
 
-| 文件 | 涉及 Issue |
-|------|-----------|
-| `frontend/src/pages/Network.vue` | 4, 7+12, 11 |
-| `frontend/src/pages/PaperDetail.vue` | 2, 5, 6, 9, 10 |
-| `frontend/src/pages/Papers.vue` | 1, 8（前端） |
-| `frontend/src/api/endpoints.ts` | 8（批量接口调用） |
-| `frontend/src/types/api.ts` | 8（批量参数类型） |
-| `app/routes/api.py` | 8（批量端点）, 13（期刊attach触发） |
-| `services/journal_service.py` | 13（seed加载 + attach修复） |
-| `services/doi_resolver.py`（新建） | 3 |
-| `services/graph_writer.py` | 3（upsert时调用doi_resolver） |
+**目标**：对每篇论文提取结构化研究摘要，供快速阅读和比较。
 
----
+### 提取字段
 
-## 并行策略
+| 字段 | 说明 |
+|------|------|
+| `research_question` | 核心研究问题（1–2 句） |
+| `methodology` | 研究方法（数据来源、模型、实验设计） |
+| `key_findings` | 主要结论（2–3 条） |
 
-由于 `PaperDetail.vue` 和 `api.py` 各自涉及多个 issue，合并处理：
+### 实现要点
 
-### 轮次 1（可完全并行，无文件冲突）
-
-**Agent A — Network 图改造**（Issue 4, 7+12, 11）
-- 只修改 `Network.vue`
-- 节点 label 改为 `作者缩写 · 年份`
-- 节点 size 按被引用量（forward-track 数量）缩放
-- 只渲染 `is_core=true` 的节点（后端 API 已支持 `?tier=core`）
-
-**Agent B — 期刊识别修复**（Issue 13）
-- 只修改 `journal_service.py`
-- 启动时 seed 30 条手动期刊（若表空则导入）
-- 修复 `attach_to_paper()` 调用链（在 api.py 论文入库时触发）
-- 对现有 21 篇核心论文跑一次补全
-
-### 轮次 2（轮次1完成后，各 Agent 改不同文件）
-
-**Agent C — PaperDetail 全改**（Issue 2, 5, 6, 9, 10）
-- 合并"已入库"标签到 API 结果列（同 DOI 命中 → 加"已入库 →"链接）
-- API 结果未到前显示已入库行 + loading 提示；按年份倒序
-- Tab 标题加括号数量：`引用 (N)` / `被引用 (N)`
-- "参考文献"全改为"引用"
-- BibTeX 按钮移到 DOI 行后
-- DOI 字体 `text-sm`（与其他字段一致），`dl` 网格加 `items-baseline`
-
-**Agent D — Papers 列表改造**（Issue 1, 8）
-- 切换 tab 时保留旧数据不清空（方案 A），等新数据返回后替换
-- 加 checkbox 多选列，顶部出现批量操作栏（删除/移入核心库/移入探索库）
-- 后端新增：`DELETE /api/papers/batch`（接收 id 列表）、`PATCH /api/papers/batch/tier`（接收 id+tier）
-
-### 轮次 3（独立，不阻塞前两轮）
-
-**Agent E — DOI 查询服务**（Issue 3）
-- 新建 `services/doi_resolver.py`
-  - 调用 SS `paper/search?query=<title>&fields=externalIds`
-  - 调用 CrossRef `api.crossref.org/works?query.title=<title>&rows=3`
-  - 双源结果按标题相似度取最高置信度返回 DOI
-- 修改 `graph_writer.upsert_paper()` —— DOI 为空时调用 resolver 尝试补全
-- 提供脚本 `scripts/fill_missing_dois.py`，一次性跑完现有无 DOI 论文
+- 与 F1 **合并为单次 Ollama 调用**，Prompt 同时返回标签 + 精炼（JSON 格式），减少请求次数
+- 结果存入 `papers` 表新增的 `ai_summary` JSON 字段
+- 详情页新增"AI 精炼"折叠区，展示三项内容
+- 无摘要的论文（stub）跳过，不触发
 
 ---
 
-## 具体实现方案
+## F3 — 邮件推送
 
-### Issue 1 — 切换无闪烁
+**目标**：每天凌晨自动抓取新论文，筛选 ABM 相关内容，发送日报到 `<DIGEST_RECIPIENT>`；同时提供手动触发按钮。
 
-```typescript
-// Papers.vue fetchPage 改动：去掉 items.value = [] 的清空
-// 等新数据到了再赋值，旧数据在此期间保持显示
-async function fetchPage() {
-  const requestedTier = tier.value
-  const requestedOffset = offset.value
-  loading.value = true
-  error.value = null
-  // 不清空 items，保留旧数据避免闪烁
-  try {
-    const resp = await papersApi.list(...)
-    if (tier.value !== requestedTier || offset.value !== requestedOffset) return
-    hasMore.value = resp.items.length > pageSize
-    items.value = resp.items.slice(0, pageSize)  // 数据到了才替换
-  } ...
-}
+### 流程
+
+```
+定时任务（每日 00:00，APScheduler）
+  → 查询过去 24h 新增论文（created_at > now-24h）
+  → 对每篇论文：调用 Ollama 判断与 ABM 领域的相关性（0–1 分）
+  → 相关性 ≥ 0.6 的论文入选，同时触发 F1+F2 分析（若尚未分析）
+  → 组装 HTML 邮件 → 发送至 <DIGEST_RECIPIENT>
+  → 无入选论文时跳过（不发空邮件）
 ```
 
-### Issue 2 — 参考/被引合并
+### 相关性判断 Prompt（领域定义）
 
-- 已入库边 (`detail.edges_out`) 按 DOI 建 Map
-- API 结果到来后按 DOI 查 Map，命中则在该行末尾加 `<RouterLink>已入库 →</RouterLink>`
-- API 结果未返回前：先渲染已入库边（无 DOI 则仅显示标题），加 loading spinner
-- 排序：有年份的按年份倒序，无年份的排最后
+> "Agent-Based Modeling (ABM), complex adaptive systems, social simulation, computational social science. Papers on multi-agent systems, emergent behavior, network dynamics, policy simulation using ABM methods."
 
-### Issue 8 — 多选批量操作
+### 邮件内容结构
 
-后端新增：
-```python
-@bp.delete("/papers/batch")
-def delete_papers_batch():
-    ids = request.json.get("ids", [])
-    # 级联删除 edges，再删除 paper
-    ...
+```
+主题：[KnowledgeBase] 今日论文日报 · 2026-05-14（共 N 篇）
 
-@bp.patch("/papers/batch/tier")
-def move_papers_batch():
-    ids = request.json.get("ids", [])
-    is_core = request.json.get("is_core")  # True=核心库, False=探索库
-    ...
+今日推荐（按相关性排序）
+─────────────────────────────────
+标题：...
+研究问题：...
+研究方法：...
+主要结论：...
+标签：#ABM #social-simulation
+相关性：0.85
+─────────────────────────────────
+...
 ```
 
-前端：
-- 表格第一列加 checkbox，header checkbox 全选/取消
-- 有选中项时顶部出现操作栏：`已选 N 篇 [删除] [移入核心库] [移入探索库]`
-- 操作后刷新列表
+### 实现要点
 
-### Issue 13 — 期刊识别
-
-```python
-# journal_service.py 新增
-def seed_if_empty(session):
-    """若 journals 表为空，从 seed/journals.json 导入"""
-    count = session.execute(select(func.count()).select_from(Journal)).scalar()
-    if count == 0:
-        with open(SEED_PATH) as f:
-            data = json.load(f)
-        for item in data:
-            session.add(Journal(**item))
-        session.commit()
-
-def attach_by_name(session, paper, journal_name: str):
-    """按期刊名关联，命中 seed 则直接关联；否则调用 CrossRef 查元数据"""
-    ...
-```
-
-在 `scripts/serve.py` 启动时调用 `seed_if_empty()`。
-在 api.py 的 `analyze` / `import` 入口完成后调用 `attach_by_name()`。
-
-### Issue 3 — DOI 查询
-
-```python
-# services/doi_resolver.py
-def resolve_doi(title: str) -> Optional[str]:
-    """按标题查询 DOI，SS 优先，CrossRef 备用"""
-    # 1. Semantic Scholar
-    resp = requests.get(
-        "https://api.semanticscholar.org/graph/v1/paper/search",
-        params={"query": title, "fields": "externalIds,title", "limit": 3},
-        timeout=10
-    )
-    for paper in resp.json().get("data", []):
-        if _title_similarity(paper.get("title",""), title) > 0.85:
-            doi = (paper.get("externalIds") or {}).get("DOI")
-            if doi: return doi
-
-    # 2. CrossRef fallback
-    resp = requests.get(
-        "https://api.crossref.org/works",
-        params={"query.title": title, "rows": 3, "select": "DOI,title"},
-        timeout=10
-    )
-    for item in resp.json().get("message", {}).get("items", []):
-        if _title_similarity(item.get("title",[""])[0], title) > 0.85:
-            return item.get("DOI")
-    return None
-```
+| 项 | 细节 |
+|----|------|
+| 定时任务 | 复用已有 APScheduler（`services/subscription_service.py`），新增 digest job |
+| 手动触发 | 新增 `POST /api/digest/send` 接口；前端 Dashboard 增加"发送今日日报"按钮 |
+| 邮件发送 | Python `smtplib`，163 SMTP（`smtp.163.com:465`，SSL） |
+| SMTP 认证 | 授权码读自 `.env`（`EMAIL_AUTH_CODE=...`），**⚠️ 需用户提供授权码** |
+| 收件人 | `<DIGEST_RECIPIENT>`（写死在配置里，不做多收件人） |
 
 ---
 
-## 验收标准
+## 待处理
 
-| Issue | 验收条件 |
-|-------|---------|
-| 1 | 切换核心库/探索库时，旧数据保持显示，新数据到来后平滑替换，无空白闪烁 |
-| 2 | 引用/被引 tab 只有一个列表；已入库论文末尾显示"已入库 →"链接；按年份倒序 |
-| 3 | 新导入无 DOI 论文后，页面显示 DOI 已自动填入；`fill_missing_dois.py` 运行后现有无 DOI 论文减少 |
-| 4 | 引用图节点显示 `Smith et al. · 2023` 而非论文标题 |
-| 5 | 引用 tab 显示 `引用 (42)` 被引用 tab 显示 `被引用 (7)` |
-| 6 | 全站"参考文献"改为"引用"，无遗漏 |
-| 7+12 | 引用图节点大小与被引用量成正比；被引 0 篇的节点最小，被引最多的节点最大 |
-| 8 | 可多选删除/移入核心库/探索库；操作后列表刷新；删除同时清理 edges |
-| 9 | BibTeX 按钮紧跟 DOI 行右侧 |
-| 10 | DOI 字体 `text-sm`，与年份一致；`dt/dd` 在同一基线对齐 |
-| 11 | 引用图只显示 `is_core=true` 的论文节点和它们之间的边 |
-| 13 | 21 篇核心论文至少有部分论文成功关联到期刊，期刊详情页不再全显示"—" |
+- [ ] **163 邮箱 SMTP 授权码**：在 163 邮箱「设置 → POP3/SMTP/IMAP」生成授权码，告知后写入 `.env`
+
+---
+
+## 实现顺序
+
+```
+1. F1+F2：ai_service.py（单次调用，返回 tags + summary JSON）
+           → DB 迁移（新增 tags / ai_summary 字段）
+           → 入库 hook（论文新增时自动触发）
+           → 批量补跑接口 POST /api/papers/ai-analyze-batch
+
+2. F3：    digest_service.py（相关性过滤 + 邮件组装）
+           → APScheduler job（每日 00:00）
+           → POST /api/digest/send 手动触发接口
+           → 前端 Dashboard 按钮
+
+3. UI：    标签 chip（论文卡片 + 详情页 + 筛选）
+           + 详情页"AI 精炼"折叠区
+           + Dashboard"发送日报"按钮
+```

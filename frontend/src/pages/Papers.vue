@@ -51,17 +51,37 @@ async function fetchPage() {
 
 onMounted(fetchPage)
 
+let _syncingFromRoute = false
 watch(tier, () => {
+  if (_syncingFromRoute) return  // 浏览器前进/后退时由 route.query watch 接管，不重置 offset
   offset.value = 0
   clearSelection()
   fetchPage()
 })
 
-let _routeWatchReady = false
 watch([tier, offset], () => {
-  if (!_routeWatchReady) { _routeWatchReady = true; return }
-  router.replace({ query: { tier: tier.value, page: currentPage.value } })
+  const desired = { tier: tier.value, page: String(currentPage.value) }
+  const cur = route.query
+  if (cur.tier === desired.tier && String(cur.page ?? '') === desired.page) return
+  router.replace({ query: desired })
 }, { flush: 'post' })
+
+// 浏览器前进/后退：route.query 变化时把 tier/offset 同步回 ref
+watch(() => route.query, (q) => {
+  const newTier = q.tier === 'stub' ? 'stub' : 'core'
+  const newPage = Number(q.page) || 1
+  const newOffset = newPage > 1 ? (newPage - 1) * pageSize : 0
+  if (newTier === tier.value && newOffset === offset.value) return
+  _syncingFromRoute = true
+  try {
+    tier.value = newTier
+    offset.value = newOffset
+    clearSelection()
+    fetchPage()
+  } finally {
+    _syncingFromRoute = false
+  }
+})
 
 watch(items, () => {
   const pageSet = new Set(pageIds.value)
@@ -132,13 +152,14 @@ async function deleteSelected() {
   }
 }
 
-const TIER_COLOR: Record<string, string> = {
-  '1': 'bg-amber-100 text-amber-700',
-  '2': 'bg-slate-100 text-slate-600',
-  '3': 'bg-orange-100 text-orange-700',
+const TIER_COLOR: Record<number, string> = {
+  1: 'bg-amber-100 text-amber-700',
+  2: 'bg-slate-100 text-slate-600',
+  3: 'bg-orange-100 text-orange-700',
 }
 function tierClass(tier: number | null | undefined) {
-  return tier ? (TIER_COLOR[String(tier)] ?? 'bg-slate-100 text-slate-500') : 'bg-slate-100 text-slate-400'
+  if (tier == null) return 'bg-slate-100 text-slate-400'
+  return TIER_COLOR[tier] ?? 'bg-slate-100 text-slate-500'
 }
 </script>
 
@@ -235,6 +256,7 @@ function tierClass(tier: number | null | undefined) {
               />
             </th>
             <th class="px-3 py-2">标题</th>
+            <th class="px-3 py-2 w-48">标签</th>
             <th class="px-3 py-2 w-48">作者</th>
             <th class="px-3 py-2 w-16">年份</th>
             <th class="px-3 py-2 w-56">期刊</th>
@@ -256,6 +278,17 @@ function tierClass(tier: number | null | undefined) {
               >
                 {{ p.title || p.stem }}
               </RouterLink>
+            </td>
+            <td class="px-3 py-2">
+              <div v-if="p.tags?.length" class="flex flex-wrap gap-1">
+                <span
+                  v-for="tag in p.tags.slice(0, 3)"
+                  :key="tag"
+                  class="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-600"
+                >{{ tag }}</span>
+                <span v-if="p.tags.length > 3" class="text-xs text-slate-400">+{{ p.tags.length - 3 }}</span>
+              </div>
+              <span v-else class="text-slate-300">—</span>
             </td>
             <td class="px-3 py-2 text-xs text-slate-500">
               <span v-if="Array.isArray(p.authors_json) && p.authors_json.length">

@@ -1,6 +1,7 @@
 import client from './client'
 import type {
   BackwardTrackResult,
+  DigestResult,
   FailuresResponse,
   ForwardTrackResult,
   InboxItem,
@@ -51,6 +52,12 @@ export const papersApi = {
   citationBibUrl: (id: number) => `/api/papers/${id}/citations.bib`,
   generateCitation: (id: number) =>
     client.post(`/papers/${id}/citation`, {}).then((r) => r.data),
+  aiAnalyze: (id: number) =>
+    client.post<Paper>(`/papers/${id}/ai-analyze`).then((r) => r.data),
+}
+
+export const digestApi = {
+  send: () => client.post<DigestResult>('/digest/send').then((r) => r.data),
 }
 
 export const tasksApi = {

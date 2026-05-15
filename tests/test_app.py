@@ -21,7 +21,7 @@ def app_client(tmp_path: Path, monkeypatch):
 
     # 种数据
     with SL() as s:
-        p = models.Paper(stem="seed_2024", title="Seed", source="root", status="analyzed")
+        p = models.Paper(stem="seed_2024", title="Seed", source="root", status="analyzed", is_core=True)
         s.add(p); s.flush()
         s.add(models.Task(type="analyze", paper_id=p.id))
         s.commit()
