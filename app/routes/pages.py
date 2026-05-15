@@ -8,6 +8,8 @@ from pathlib import Path
 
 from flask import Blueprint, abort, make_response, send_from_directory
 
+from app import limiter
+
 bp = Blueprint("pages", __name__)
 
 # frontend/dist 绝对路径：app/routes/pages.py → app/routes → app → 项目根 → frontend/dist
@@ -16,8 +18,12 @@ _DIST_RESOLVED = _DIST_DIR.resolve()
 
 
 @bp.get("/health")
+@limiter.exempt
 def health():
-    """无鉴权健康检查端点，给 cpolar 隧道/监控用。"""
+    """无鉴权健康检查端点，给 cpolar 隧道/监控用。
+
+    豁免限流：监控通常以秒级频率轮询，不能算进默认 120/min 配额。
+    """
     return {"ok": True}
 
 
