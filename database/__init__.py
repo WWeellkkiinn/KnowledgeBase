@@ -49,22 +49,25 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False
 
 def enable_sqlite_foreign_keys(target: Engine) -> None:
     """对 SQLite engine 注册 PRAGMA：FK + busy_timeout（每连接）。
-    WAL 是数据库级持久设置，只需一次性 raw_connection 完成，避免每次 connect 都触发
-    journal_mode 切换的文件锁开销。其他方言无效。
+    WAL 是数据库级持久设置，用独立 sqlite3 连接一次性完成 —— 不经过 SQLAlchemy
+    连接池，避免该连接被归还池后跳过 connect 监听器（导致 FK/busy_timeout 未生效）。
+    其他方言无效。
     """
     if target.dialect.name != "sqlite":
         return
 
-    # 一次性设置 WAL（数据库级持久）
+    # 一次性设置 WAL（数据库级持久），用独立 sqlite3 连接，不污染 SQLAlchemy 池
     try:
-        raw = target.raw_connection()
-        try:
-            cur = raw.cursor()
-            cur.execute("PRAGMA journal_mode=WAL")
-            cur.close()
-            raw.commit()
-        finally:
-            raw.close()
+        db_path = target.url.database
+        # 仅对落盘 SQLite 文件设置；":memory:" / 空路径跳过
+        if db_path and db_path != ":memory:":
+            import sqlite3
+            _raw = sqlite3.connect(db_path, timeout=30)
+            try:
+                _raw.execute("PRAGMA journal_mode=WAL")
+                _raw.commit()
+            finally:
+                _raw.close()
     except Exception:
         # WAL 设置失败不致命（如只读 / 内存库），继续按默认 journal 模式工作
         pass

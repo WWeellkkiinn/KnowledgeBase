@@ -13,6 +13,13 @@
 
 $ErrorActionPreference = 'Stop'
 
+# PowerShell 5.1 在 Ctrl+C 时直接终止脚本，不执行 try/finally → 子进程残留。
+# PS7+ 才能可靠运行清理逻辑。检测 + 拒绝跑在 5.x。
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Error "需要 PowerShell 7+（当前 $($PSVersionTable.PSVersion)）；PS5.1 下 Ctrl+C 不触发 finally，子进程会残留。安装：winget install Microsoft.PowerShell，然后用 pwsh 启动本脚本。"
+    exit 1
+}
+
 # ---------- 0. 路径与外部依赖检查 ----------
 
 . (Join-Path $PSScriptRoot 'scripts\Load-DotEnv.ps1')
@@ -120,7 +127,8 @@ try {
     # cpolar 公网域名会随服务端调度变化（.cpolar.cn / .cpolar.top / .cpolar.io 等），
     # 用宽松正则匹配多种顶级域，避免脚本因后缀变更误报失败
     $urlRegex = 'https://[a-zA-Z0-9.-]+\.cpolar\.[a-z]+'
-    for ($i = 0; $i -lt 30; $i++) {
+    # cpolar 首次连接控制服务器可能慢，90 秒足够即使弱网也能拿到 URL
+    for ($i = 0; $i -lt 90; $i++) {
         Start-Sleep -Seconds 1
         if ($script:cpolarProc.HasExited) {
             throw "cpolar 进程已退出。日志：$cpolarLog / $cpolarLog.err"

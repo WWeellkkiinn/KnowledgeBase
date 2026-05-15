@@ -74,22 +74,66 @@ def create_app(config: dict | None = None) -> Flask:
     app.config["KB_ENABLE_SCHEDULER"] = (
         os.environ.get("KB_ENABLE_SCHEDULER") == "1"
     )
-    # 公网部署时单请求体上限，防止大包打爆内存（默认 256KB；上传走专门端点另议）。
+    # 公网部署时单请求体上限，防止大包打爆内存（默认 1MB；上传走专门端点另议）。
+    # /digest/send /reviews 等端点 JSON 体可能超过 256KB，1MB 既挡超大上传又容纳合理配置。
     # 非数字值时回退默认，避免启动崩溃。
-    _raw_max = os.environ.get("KB_MAX_CONTENT_LENGTH", str(256 * 1024))
+    _default_max = 1024 * 1024
+    _raw_max = os.environ.get("KB_MAX_CONTENT_LENGTH", str(_default_max))
     try:
         app.config["MAX_CONTENT_LENGTH"] = int(_raw_max)
     except (TypeError, ValueError):
         logging.getLogger(__name__).warning(
-            "invalid KB_MAX_CONTENT_LENGTH=%r, fallback to 256KB", _raw_max
+            "invalid KB_MAX_CONTENT_LENGTH=%r, fallback to 1MB", _raw_max
         )
-        app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
+        app.config["MAX_CONTENT_LENGTH"] = _default_max
     app.config.update(config or {})
+
+    # 多 worker 守卫：flask-limiter memory:// 与 _digest_lock(threading.Lock) 均假定
+    # 单 worker，gunicorn/uwsgi 多 worker 下计数与锁会失效。检测到时除非显式
+    # 允许（KB_ALLOW_MULTI_WORKER=1）否则拒绝启动。socketio.run(dev/start_prod.ps1)
+    # 不会设置这些 env，不触发。
+    if os.environ.get("KB_ALLOW_MULTI_WORKER") != "1":
+        _server_software = os.environ.get("SERVER_SOFTWARE", "").lower()
+        _gunicorn_args = os.environ.get("GUNICORN_CMD_ARGS", "")
+        if (
+            "gunicorn" in _server_software
+            or "uwsgi" in _server_software
+            or _gunicorn_args
+        ):
+            raise RuntimeError(
+                "Detected gunicorn/uwsgi multi-worker env but rate limiter uses "
+                "memory:// and locks are in-process; set KB_ALLOW_MULTI_WORKER=1 "
+                "to override after switching to a shared storage backend."
+            )
+        else:
+            logging.getLogger(__name__).warning(
+                "single-worker assumption: memory:// limiter & threading locks; "
+                "do NOT run under gunicorn/uwsgi multi-worker without KB_ALLOW_MULTI_WORKER=1"
+            )
 
     # 公网通过 cpolar 隧道转发到 127.0.0.1，真实客户端 IP 在 X-Forwarded-For。
     # 仅当显式启用时挂 ProxyFix，避免本地 dev 信任任意 header 导致 IP 伪造。
     if os.environ.get("KB_TRUST_PROXY") == "1":
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+    # XFF 透传一次性 sentinel：首请求时把 X-Forwarded-For / Remote-IP 写入日志，
+    # 运维可据此确认 cpolar 是否透传真实客户端 IP。仅记一次，避免日志刷屏。
+    # Flask 生产模式默认 logger level=WARNING，需显式抬到 INFO 才能看到 sentinel。
+    if app.logger.level == 0 or app.logger.level > logging.INFO:
+        app.logger.setLevel(logging.INFO)
+    app.config.setdefault("_XFF_LOGGED", False)
+
+    @app.before_request
+    def _log_xff_once():
+        if app.config.get("_XFF_LOGGED"):
+            return
+        app.config["_XFF_LOGGED"] = True
+        xff = request.headers.get("X-Forwarded-For", "<absent>")
+        remote = request.remote_addr or "<unknown>"
+        app.logger.info(
+            "XFF sentinel: X-Forwarded-For=%s, Remote-IP=%s, trust_proxy=%s",
+            xff, remote, os.environ.get("KB_TRUST_PROXY") == "1",
+        )
 
     # limiter 必须在 before_request 鉴权之前 init，确保 401 路径也计入默认限流，
     # 防止攻击者无限重试爆破 Bearer token。
@@ -125,20 +169,22 @@ def create_app(config: dict | None = None) -> Flask:
         style-src 必须含 'unsafe-inline'（Vite 打包后 CSS 含 inline style）；
         script-src 不放 'unsafe-inline'，避免 XSS 注入脚本执行。
         """
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("X-Frame-Options", "DENY")
-        resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        resp.headers.setdefault(
-            "Content-Security-Policy",
-            (
-                "default-src 'self'; "
-                "img-src 'self' data: https:; "
-                "style-src 'self' 'unsafe-inline'; "
-                "script-src 'self'; "
-                "connect-src 'self' ws: wss:; "
-                "frame-ancestors 'none'; "
-                "base-uri 'self'"
-            ),
+        # 强制最严格全局策略：直接赋值而非 setdefault，避免上游/蓝图设置后被弱化。
+        # 业务路由若确需覆盖某 header，应在 make_response 后显式设置并自负安全责任。
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # CSP 收紧：
+        # - img-src 去掉 https:，防止 XSS 通过 <img src=https://attacker/?token=...> 外发
+        # - connect-src 去掉 ws:/wss:，Socket.IO 同源即可，不需要外站 ws
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'"
         )
         return resp
 

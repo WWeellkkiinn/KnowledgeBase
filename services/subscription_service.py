@@ -342,6 +342,47 @@ class SubscriptionService:
 # ─── APScheduler 集成 ──────────────────────────────────────────────
 
 
+def clamp_overdue_subs(session: Session) -> int:
+    """Boot 时把"短周期 + next_run_at 已过期"的订阅 next_run_at 推到 now+6h。
+
+    场景：进程长时间停机后启动，DB 里现有 next_run_at <= now 的短周期订阅
+    （间隔 < 6h）会被 run_due 瞬时全部触发，打爆外部 API。该函数在 scheduler
+    boot 时执行一次，对齐 parse_simple_interval 里的 min_interval 策略。
+
+    返回被 clamp 的订阅数。
+    """
+    min_interval = timedelta(hours=6)
+    now = _utcnow()
+    floor = now + min_interval
+    overdue = list(session.execute(
+        select(models.Subscription).where(
+            models.Subscription.active.is_(True),
+            models.Subscription.next_run_at.isnot(None),
+            models.Subscription.next_run_at <= now,
+        )
+    ).scalars().all())
+    n = 0
+    for sub in overdue:
+        # 仅当订阅本身是短周期时 clamp（与 _clamp 保持一致）
+        interval = parse_simple_interval(sub.cron_expr or "")
+        if interval < min_interval:
+            _log.warning(
+                "[boot clamp] subscription %d cron_expr=%r next_run_at=%s overdue, "
+                "delayed to %s (cron_expr preserved)",
+                sub.id, sub.cron_expr, sub.next_run_at, floor,
+            )
+            sub.next_run_at = floor
+            n += 1
+    if n:
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+            _log.exception("[boot clamp] commit failed")
+            return 0
+    return n
+
+
 _scheduler = None  # 全局单例（每进程一份）
 
 
@@ -358,6 +399,17 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     except ImportError as e:
         _log.warning("APScheduler not installed; subscription scheduler disabled (%s)", e)
         return None
+
+    # Boot 时对短周期 overdue 订阅做一次 clamp，避免瞬时全触发
+    _boot_session = SessionLocal()
+    try:
+        clamped = clamp_overdue_subs(_boot_session)
+        if clamped:
+            _log.info("[scheduler boot] clamped %d overdue short-interval subscriptions", clamped)
+    except Exception:
+        _log.exception("[scheduler boot] clamp_overdue_subs failed (non-fatal)")
+    finally:
+        _boot_session.close()
 
     sched = BackgroundScheduler(
         timezone="UTC",

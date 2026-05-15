@@ -324,9 +324,11 @@ def ai_analyze_paper(paper_id: int):
     if not p.abstract:
         return jsonify({"error": "no abstract"}), 422
     refresh = bool((request.get_json(silent=True) or {}).get("refresh", False))
-    # 幂等守卫：仅当上次分析成功（ai_summary 非空）时跳过；失败路径会写 ai_analyzed_at
-    # 但不写 ai_summary（见 services/ai_service.py:run_batch_analysis 失败分支），允许重试
-    if p.ai_analyzed_at is not None and p.ai_summary and not refresh:
+    # 幂等守卫：仅当上次分析"完整成功"（ai_summary + tags 都非空）时跳过。
+    # 失败路径会写 ai_analyzed_at 但不写 ai_summary；部分失败可能 summary 写了
+    # 而 tags 仍为空/None（batch 路径下 new_tags==[] 不会覆盖原值，但首次分析为
+    # None），此时也应允许重试，避免永久缓存"缺 tags"的不完整结果。
+    if p.ai_analyzed_at is not None and p.ai_summary and p.tags and not refresh:
         return jsonify(_paper_to_dict(p, include_journal=True))
     from services.ai_service import analyze_paper
     try:

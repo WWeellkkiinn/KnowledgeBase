@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, AxiosError } from 'axios'
+import { resetSocket } from './socket'
 
 export const TOKEN_KEY = 'KB_API_TOKEN'
 export const API_BASE_URL = '/api'
@@ -77,7 +78,11 @@ client.interceptors.response.use(
       && !redirecting
     ) {
       redirecting = true
+      // 5 秒后允许下一波 401 触发跳转；防止跳转被浏览器/router 拦截后永久卡死
+      setTimeout(() => { redirecting = false }, 5000)
       clearToken()
+      // 断开旧 socket，避免登录后 /progress 仍用过期 token
+      resetSocket()
       const current = window.location.pathname + window.location.search
       const back = isSafeBackPath(current) ? encodeURIComponent(current) : '/'
       window.location.href = `/login?back=${back}`

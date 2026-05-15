@@ -76,7 +76,8 @@ function Assert-EnvRequired {
             if ($v -eq $p) { throw "$k 仍为占位符 '$p'，请用真实值替换" }
         }
         if (($k -in $SecretKeys) -and ($v.Length -lt 24)) {
-            Write-Warning "$k 长度仅 $($v.Length) 字符，建议至少 24 字节随机；生成：python -c ""import secrets; print(secrets.token_urlsafe(32))"""
+            # 公网部署密钥强度过低，直接 fail-fast；避免弱 token 启动后被暴力穷举
+            throw "$k 长度仅 $($v.Length) 字符 < 24；公网部署必须用强随机密钥。生成：python -c ""import secrets; print(secrets.token_urlsafe(32))"""
         }
     }
 }

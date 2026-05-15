@@ -34,6 +34,10 @@ _subs_lock = threading.Lock()
 _authed_sids: set[str] = set()
 _authed_lock = threading.Lock()
 
+# sid -> 已订阅 task_id 集合：dirty disconnect 时按此释放 refcount + bus listener，
+# 防止内存泄漏。读写共用 _authed_lock（订阅频率低、临界区短，复用免引入新锁）。
+_sid_subs: dict[str, set[str]] = {}
+
 
 def _is_authed(sid: str | None) -> bool:
     if not sid:
@@ -50,6 +54,34 @@ def _mark_authed(sid: str) -> None:
 def _drop_authed(sid: str) -> None:
     with _authed_lock:
         _authed_sids.discard(sid)
+
+
+def _track_sid_sub(sid: str, task_id: str) -> bool:
+    """记录 sid 订阅了 task_id；返回 True 表示是新增（需调用方 _ensure_listener）。"""
+    with _authed_lock:
+        subs = _sid_subs.setdefault(sid, set())
+        if task_id in subs:
+            return False
+        subs.add(task_id)
+        return True
+
+
+def _untrack_sid_sub(sid: str, task_id: str) -> bool:
+    """移除 sid 对 task_id 的订阅；返回 True 表示确实移除（需调用方 _release_listener）。"""
+    with _authed_lock:
+        subs = _sid_subs.get(sid)
+        if not subs or task_id not in subs:
+            return False
+        subs.discard(task_id)
+        if not subs:
+            _sid_subs.pop(sid, None)
+        return True
+
+
+def _pop_sid_subs(sid: str) -> set[str]:
+    """disconnect 时取出该 sid 的全部订阅，调用方负责逐个 _release_listener。"""
+    with _authed_lock:
+        return _sid_subs.pop(sid, set())
 
 
 def _valid_task_id(value: str | None) -> str | None:
@@ -131,7 +163,10 @@ def _on_subscribe(data):
     # 回放缓冲
     for ev in get_bus().replay(task_id):
         emit("event", ev)
-    _ensure_listener(task_id)
+    # 仅当该 sid 首次订阅此 task_id 时才 +1 refcount，避免同 sid 重复 subscribe
+    # 把 refcount 抬高、disconnect 释放不全。
+    if _track_sid_sub(request.sid, task_id):
+        _ensure_listener(task_id)
 
 
 @socketio.on("unsubscribe", namespace=NAMESPACE)
@@ -142,14 +177,17 @@ def _on_unsubscribe(data):
     if not task_id:
         return
     leave_room(task_id)
-    _release_listener(task_id)
+    # 仅当该 sid 确有该订阅时才 -1，防止误调 unsubscribe 把别人的 refcount 减掉。
+    if _untrack_sid_sub(request.sid, task_id):
+        _release_listener(task_id)
 
 
 @socketio.on("disconnect", namespace=NAMESPACE)
 def _on_disconnect():
-    # flask-socketio 会自动 leave 该 sid 的所有 room，但 bus listener 是
-    # session-level 的，需要根据 sid 在哪些 room 释放。当前简化处理：
-    # 单用户 dev 环境下，依赖客户端显式发 unsubscribe；如果 dirty disconnect
-    # 没发 unsubscribe，listener 会等到下一次同 task_id 的 subscribe 重算 refcount。
-    # 长期对策：维护 sid → task_ids 映射，断线时按映射释放。M2+ 再补。
-    _drop_authed(request.sid)
+    # dirty disconnect 也要释放该 sid 通过 subscribe 增加过的 refcount，
+    # 否则 bus listener 与 _subs 条目会永久残留 → 内存泄漏。
+    sid = request.sid
+    pending = _pop_sid_subs(sid)
+    for task_id in pending:
+        _release_listener(task_id)
+    _drop_authed(sid)
