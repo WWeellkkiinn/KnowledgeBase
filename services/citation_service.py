@@ -328,7 +328,7 @@ class CitationService:
             return None
 
     def _fetch_openalex(self, doi: str) -> Optional[dict]:
-        from .forward_track_service import _normalize_doi
+        from .reference_fetcher import normalize_doi as _normalize_doi
         doi = _normalize_doi(doi or "")
         if not doi:
             return None

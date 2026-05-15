@@ -6,6 +6,7 @@ import { useTasksStore } from '@/stores/tasks'
 import { usePapersStore } from '@/stores/papers'
 import { useSubscriptionsStore } from '@/stores/subscriptions'
 import { useProgressStore } from '@/stores/progress'
+import { digestApi } from '@/api/endpoints'
 
 const tasks = useTasksStore()
 const papers = usePapersStore()
@@ -40,19 +41,47 @@ function watchTask(taskId: number | string) {
   progress.subscribe(tid)
   watched.value.add(tid)
 }
+
+const digestSending = ref(false)
+const digestMsg = ref('')
+
+async function sendDigest() {
+  digestSending.value = true
+  digestMsg.value = ''
+  try {
+    const r = await digestApi.send()
+    digestMsg.value = r.sent
+      ? `已发送，共 ${r.paper_count} 篇`
+      : `未发送：${r.reason ?? '无相关论文'}`
+  } catch (e: unknown) {
+    digestMsg.value = e instanceof Error ? e.message : '发送失败'
+  } finally {
+    digestSending.value = false
+  }
+}
 </script>
 
 <template>
   <section class="space-y-6">
     <div class="flex items-center justify-between">
       <h1 class="text-2xl font-bold">概览</h1>
-      <button
-        class="rounded-md bg-slate-100 px-3 py-1 text-sm hover:bg-slate-200 disabled:opacity-50"
-        :disabled="refreshing"
-        @click="refresh"
-      >
-        {{ refreshing ? '刷新中…' : '刷新' }}
-      </button>
+      <div class="flex items-center gap-2">
+        <span v-if="digestMsg" class="text-xs text-slate-500">{{ digestMsg }}</span>
+        <button
+          class="rounded-md bg-blue-50 px-3 py-1 text-sm text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+          :disabled="digestSending"
+          @click="sendDigest"
+        >
+          {{ digestSending ? '发送中…' : '发送今日日报' }}
+        </button>
+        <button
+          class="rounded-md bg-slate-100 px-3 py-1 text-sm hover:bg-slate-200 disabled:opacity-50"
+          :disabled="refreshing"
+          @click="refresh"
+        >
+          {{ refreshing ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
     </div>
 
     <div class="grid grid-cols-2 gap-4 md:grid-cols-4">

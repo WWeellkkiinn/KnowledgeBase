@@ -38,7 +38,9 @@ class _BaseTrackService:
     _papers_key: str
     _count_key: str
     _direction: str
-    _cache_ttl: Optional[timedelta] = timedelta(days=7)  # None = 永不过期
+    # 8 天而非 7 天：凌晨 2 点 scheduler 会主动刷新所有核心论文 cache，
+    # 留 1 天缓冲，避免"凌晨 2 点之前刚 expire → 用户进页面触发 60s 现场拉"。
+    _cache_ttl: Optional[timedelta] = timedelta(days=8)  # None = 永不过期
 
     def __init__(self, db_session: Optional[Session] = None) -> None:
         self.db_session = db_session
@@ -66,13 +68,10 @@ class _BaseTrackService:
                 if cached is not None:
                     payload = copy.copy(cached.result_json)
                     payload["cached"] = True
-                    if from_paper_id is not None:
-                        write_tracking_results(
-                            session, from_paper_id,
-                            payload[self._papers_key], self._direction,
-                        )
-                        if owns_session:
-                            session.commit()
+                    # cache 命中分支**不再**重写图边：write_tracking_results 只在
+                    # 真实拉取新数据时调一次（缓存第一次写入时已写过）；
+                    # 用户每次访问详情页都会触发 cache 命中，重复写边浪费 IO 且若
+                    # graph_writer 实现不严会产生重复边。
                     return payload
 
             items = self._fetch(doi_norm, limit)
@@ -127,11 +126,14 @@ class _BaseTrackService:
             select(self._cache_model).where(self._cache_model.doi == doi_norm)
         ).scalar_one_or_none()
         if row is None:
-            session.add(self._cache_model(
-                doi=doi_norm, result_json=payload, fetched_at=_utcnow(),
-            ))
+            # 把 add + flush 都包进 begin_nested savepoint：之前在 savepoint 外
+            # session.add 时若自动 flush（比如 autoflush on read），IntegrityError
+            # 会逃出 savepoint 让外层事务进入失败态，无法走 UPDATE 兜底。
             try:
                 with session.begin_nested():
+                    session.add(self._cache_model(
+                        doi=doi_norm, result_json=payload, fetched_at=_utcnow(),
+                    ))
                     session.flush()
             except IntegrityError:
                 # 并发竞态：另一个请求已插入同一 DOI，改为 UPDATE

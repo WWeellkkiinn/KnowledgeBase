@@ -10,13 +10,23 @@
 
 | 页面 | 功能 |
 |------|------|
-| **概览** | 论文总数、运行任务、活跃订阅、未读 Inbox，一览全库状态 |
-| **论文库** | 核心库 / 探索库双层级列表；分页（URL 参数持久化，详情页返回自动定位）；批量移库 / 删除；全选 / 半选 checkbox |
-| **论文详情** | 结构化元数据（作者 / 年份 / DOI / 期刊 Tier）、摘要、内容分析；核心论文自动预加载引用与被引数据；引用/被引列表三行格式（标题 / 作者年份 / 期刊DOI）；BibTeX 下载 |
-| **引用图** | Cytoscape 引用网络图，**仅显示核心库论文**；节点大小按被引量相对缩放；节点按期刊 Tier 着色（金/银/铜）；边自动去重并修正方向（forward/backward 归一化），过滤时序不可能的边；点击节点跳详情 |
-| **综述** | 勾选若干篇论文 + 输入关注维度，一键生成流式综述（调 Ollama） |
-| **订阅** | 创建订阅（论文被引 / 作者新作 / 话题搜索），定时自动检查 |
-| **失败诊断** | 所有下载失败的引用汇总，按付费墙 / 非PDF / 超时等分类，方便批量处理 |
+| **概览 / Dashboard** | 论文总数、**运行中/队列/失败任务计数**（含 upload + track 任务）、活跃订阅、未读 Inbox |
+| **论文库** | 核心 / 探索库双层级；**Google 风格分页**（固定 9 槽位，输入页码跳转）；**右上角"上传 PDF"按钮**（多论文同时上传，后台 worker 异步处理）；批量移库 / 删除 |
+| **论文详情** | 结构化元数据；内容精炼（AI 提取的研究问题 / 方法 / 关键发现）；引用/被引列表（cache 命中秒回，cache miss 时显示"后台处理中"提示框可关闭页面）；**加载更多分页**；BibTeX 下载 |
+| **引用图** | Cytoscape 网络图，仅显示核心库；节点按期刊 Tier 着色；点击跳详情 |
+| **综述** | 勾选若干篇 + 关注维度 → 流式综述（调 Ollama） |
+| **订阅** | 论文被引 / 作者新作 / 话题搜索三类订阅，定时跑 |
+| **失败诊断** | 下载失败的引用汇总 |
+
+### PDF 上传管线（Web UI 一键）
+
+论文库右上角"上传 PDF"按钮：
+1. 流式上传到 `papers/<stem>_<sha1[:8]>/<stem>_<sha1[:8]>.pdf`，sha1 + DOI 双重去重
+2. 后端入队 `upload_pipeline` 任务，立即返回 task_id
+3. 后台 worker 串行跑：**MinerU 云 API** PDF→Markdown → 抽 Title → DOI 反查 → Crossref 元数据 → Journal Tier → 引用抽取
+4. Dashboard 实时显示任务进度，详情页自动刷新
+
+无需 CLI 介入。原 `scripts/run_analysis_ui.py` 也保留可用。
 
 ### CLI（分析新论文，写入数据库）
 
@@ -37,7 +47,9 @@
 
 - Python 3.12（conda 环境）
 - Node.js 18+
-- 远程服务器上 Ollama（`:13812`）和 MinerU（`:8000`）已启动
+- Ollama 推理服务（默认 `<ollama-host>:13812`；用于 AI 精炼 / 综述）
+- **MinerU 云 API**：默认走 [mineru.net](https://mineru.net) 公网，需注册账号拿 Bearer token
+  填到 `.env` 的 `KB_MINERU_API_KEY`；也可改 `KB_PDF2MD_PROVIDER=local` 走局域网 MinerU
 
 ### 1. 安装依赖
 
@@ -135,26 +147,40 @@ python scripts/run_analysis_ui.py papers/my_paper/my_paper.md --focus "研究方
 
 ## 引用追踪（Web UI）
 
-论文分析入库后，在论文详情页可以通过 API 查询引用关系，**结果自动写入 papers + edges 表，引用图即时更新**。
+进入核心论文详情页，前向（被引用）+ 后向（参考文献）**自动触发**；流程是**异步**的：
 
-### 核心库论文（自动触发）
+```
+浏览器 → POST /papers/N/forward-track
+                    │
+            cache 命中？
+              ├─ 是 → 200 + 分页数据（毫秒，gzip 后通常 <100KB）
+              └─ 否 → 202 + {task_id}  ← 用户看到"后台处理中"
+                       │
+                       └─ worker 异步跑 SS + OpenAlex（30-90s）
+                          → 写 cache → 推 socket done 事件
+                          → 前端自动重发 → 命中 cache 拿到富数据
+```
 
-打开**核心库**中任意有 DOI 的论文详情页，后向追踪（参考文献）和前向追踪（被引用）**同时自动触发**，无需切换 Tab 等待。
+**优势：** 首次冷查询不阻塞用户，刷新页面 / 切走 / 关闭都不影响后台任务；Dashboard 实时显示进度。
 
-### 探索库论文（不追踪被引量）
+### 缓存 + 凌晨自动刷新
 
-探索库论文仅展示已入库的引用关系，被引量显示 0。如需统计，先将论文移至核心库。
+- **后向**（参考文献，发表后不变）：永久缓存
+- **前向**（被引用，会变化）：8 天 TTL
+- **每日凌晨 2:00 cron**：扫描核心库，cache 缺失 / forward > 7 天的论文自动入队刷新。stub 库不刷。
+- **同篇仅刷一次**：cron 跳过已有 pending 任务的论文
+- 全局并发 track 任务上限 20，超过返回 503 让用户稍后再试
 
-### 数据来源（三源并行）
-
-每次追踪同时查询三个来源并去重合并：
+### 数据来源
 
 | 方向 | 来源 |
 |------|------|
-| 后向（参考文献） | Semantic Scholar + OpenAlex + Crossref |
-| 前向（被引用） | Semantic Scholar + OpenAlex |
+| 后向 | Semantic Scholar + OpenAlex + Crossref（三源并行去重） |
+| 前向 | Semantic Scholar + OpenAlex（双源并行） |
 
-7 天内同一 DOI 命中缓存，不重复请求。没有 DOI 的论文无法触发。
+### 探索库
+
+探索库论文仅展示已入库引用关系，被引量不统计。如需，先移至核心库。
 
 ### 全量批量抓取
 
@@ -315,12 +341,13 @@ KnowledgeBase/
 
 | 层 | 技术 |
 |----|------|
-| 后端 | Flask 3 + Flask-SocketIO + SQLAlchemy 2 + APScheduler |
-| 数据库 | SQLite（`kb.db`） |
+| 后端 | Flask 3 + Flask-SocketIO + SQLAlchemy 2 + APScheduler + **flask-limiter** + **flask-compress (gzip/brotli)** |
+| 任务队列 | 自研 TaskQueue（`tasks` 表）+ 单 worker 线程 daemon；FIFO 全局公平 |
+| 数据库 | SQLite（`kb.db`），WAL 模式 |
 | 前端 | Vue 3.5 + Vite 5 + Tailwind CSS 3 + Pinia + Cytoscape.js |
-| 引用 API | Semantic Scholar + OpenAlex + Crossref（三源并行，ThreadPoolExecutor） |
-| LLM | Ollama（`http://<ollama-host>:13812`，模型 `qwen3.6-27b`） |
-| PDF 转换 | MinerU API（`http://<ollama-host>:8000`） |
+| 引用 API | Semantic Scholar + OpenAlex + Crossref（service 层 ThreadPoolExecutor 并行）|
+| LLM | Ollama（`http://<ollama-host>:13812`，模型 `qwen3.6-27b`）|
+| PDF 转换 | **MinerU 云 API**（`mineru.net`，默认）；可切 `local` 走自托管 |
 | HTTP 客户端 | httpx |
 
 ---
@@ -362,10 +389,136 @@ docker run -d --name mineru-api-kb \
 
 ---
 
+## 公网部署（cpolar 内网穿透）
+
+把本地服务暴露到公网给小规模用户访问。架构：**前端打包 → Flask 同源托管 → cpolar 反向暴露**，无需公网 IP / 端口转发 / 域名。
+
+> 国内网络下 Tailscale / Cloudflare Tunnel 经常无法连接其控制面与中继，本节默认走 cpolar；如海外网络可参考末尾"备选：Tailscale Funnel"。
+
+### 1. 安全前提
+
+公网部署后所有请求（包括 Socket.IO）都必须带 `Authorization: Bearer <token>`，缺/错一律 401。`/`、`/assets/*`、`/login`、`/health`、`/favicon*` 是白名单（要让前端 SPA 能加载）。
+
+| 环境变量 | 必填 | 说明 |
+|----------|------|------|
+| `KB_API_TOKEN` | ✅ | 访问令牌；用户在登录页输入此值 |
+| `KB_SECRET_KEY` | ✅ | Flask session / Socket.IO 签名密钥 |
+| `KB_TRUST_PROXY` | ✅ | 公网部署设 `1`，启用 ProxyFix；**仅当 Flask 绑 127.0.0.1 + cpolar 单跳时安全** |
+| `KB_MINERU_API_KEY` | 上传时必填 | MinerU 云 Bearer token（注册 [mineru.net](https://mineru.net) 获取） |
+| `KB_PDF2MD_PROVIDER` | 否 | `mineru-cloud`（默认）/ `local` |
+| `KB_MINERU_API_URL` | 否 | 默认 `https://mineru.net` |
+| `KB_MINERU_ALLOWED_HOSTS` | 否 | 预签名 URL host 白名单；默认含 mineru.net + cdn-mineru.openxlab.org.cn + MinerU 官方 OSS bucket |
+| `KB_MAX_CONTENT_LENGTH` | 否 | 全局请求体上限，默认 60MB（覆盖 50MB 上传 + multipart 头）。**非上传路径** 通过 before_request 单独限到 256KB，DoS 面已收紧 |
+| `KB_ENABLE_SCHEDULER` | 否 | `serve.py` 入口自动设 `1` |
+| `KB_DISABLE_UPLOAD_WORKER` | 否 | 测试用；置 1 跳过后台 worker 线程 |
+| `KB_ALLOW_MULTI_WORKER` | 否 | 仅当切换到多 Flask 进程部署时设；自动禁用进程内 worker（须独立跑 worker 进程） |
+
+生成两个 token：
+
+```powershell
+python -c "import secrets; print('KB_API_TOKEN=' + secrets.token_urlsafe(32))"
+python -c "import secrets; print('KB_SECRET_KEY=' + secrets.token_urlsafe(32))"
+```
+
+两者职责分离：
+
+- `KB_API_TOKEN` — 用户的"门票"，在 `/login` 页输入它；泄露则换值重启 Flask 即可吊销
+- `KB_SECRET_KEY` — 服务器内部用（Flask session / Socket.IO polling 签名），永不出现在前端
+
+### 2. 速率限制（`flask-limiter`）
+
+按客户端 IP 配额，防 token 泄露后的重放：
+
+| 端点 | 配额 |
+|------|------|
+| 全局默认 | 120 / min |
+| `POST /api/papers/<id>/forward-track` | 10 / min（同时全局 in-flight ≤ 20） |
+| `POST /api/papers/<id>/backward-track` | 10 / min（同时全局 in-flight ≤ 20） |
+| `POST /api/papers/<id>/ai-analyze` | 5 / min |
+| `POST /api/papers/upload` | 5 / min（最大 50 MB / 文件） |
+| `POST /api/reviews` | 3 / hour |
+| `POST /api/digest/send` | 2 / hour |
+
+`ai-analyze` 现已幂等：已分析过的论文除非 body 传 `{"refresh": true}` 否则直接返回缓存结果。订阅最小触发间隔强制 6 小时（保留 cron 表达式原值，仅在实际间隔 <6h 时把 next_run clamp 到 6h 并 warning），避免 `every 1m` 把后台打满。
+
+> ⚠️ **单 worker 部署限定**：当前 `flask-limiter` 用 `memory://` 存储，限速状态进程内独占；
+> 重启后清零，多 worker 部署各自计数。`start_public.ps1` 走 socketio.run 单进程模式，符合假设。
+> 若日后切 gunicorn / uwsgi 多 worker，必须改用 `redis://` 后端，否则限速等同失效。
+>
+> ⚠️ **ProxyFix x_for 跳数**：当前代码 `x_for=1`，假设 cpolar → Flask 是单跳。
+> 若 cpolar 链路上还有 CDN/反代，攻击者可伪造 `X-Forwarded-For` 绕过 IP 限速。
+> 验证方法：登录后 `curl -H "X-Forwarded-For: 1.2.3.4" -H "Authorization: Bearer <token>" <公网URL>/api/papers?limit=1`，
+> 然后查 `flask_public.log`，看到 `Remote IP` 是 `1.2.3.4` 说明 cpolar 透传可信；若仍是真实 IP 则 cpolar 未透传，需把 `x_for` 调为 0。
+
+### 3. 一次性准备
+
+```powershell
+# 安装依赖
+<home>\anaconda3\envs\kb\python.exe -m pip install -r requirements.txt
+
+# 生成 token 模板
+Copy-Item .env.example .env
+notepad .env   # 填入 KB_API_TOKEN、KB_SECRET_KEY；确认 KB_TRUST_PROXY=1（公网部署必须）
+
+# 注册 cpolar 账号：https://www.cpolar.com/
+# 下载 Windows 客户端：https://dashboard.cpolar.com/get-started
+# 拿到 authtoken：https://dashboard.cpolar.com/auth
+cpolar authtoken <你的authtoken>
+```
+
+> `.env` 含明文 token，**绝不提交**；`start_prod.ps1` / `start_public.ps1` / `.env.example` 是模板，可提交。换 token 直接编辑 `.env` 重启即可吊销旧值。
+
+### 4. 启动方式
+
+#### 仅本地（不暴露公网）
+
+```powershell
+cd frontend; npm run build; cd ..   # 仅第一次或前端有改动时
+.\start_prod.ps1
+```
+
+打开 `http://127.0.0.1:5000` 跳 `/login`，粘贴 `KB_API_TOKEN` 即可。
+
+#### 一键公网（推荐）
+
+```powershell
+cd frontend; npm run build; cd ..   # 仅第一次或前端有改动时
+.\start_public.ps1
+```
+
+脚本会：
+1. 新窗口启动 Flask（沿用 `start_prod.ps1`）
+2. 启动 cpolar 隧道
+3. 自动探测 cpolar dashboard 端口并在当前窗口打印形如 `https://xxxxxxxx.r3.cpolar.cn` 的公网 URL
+4. Ctrl+C 退出时一并关闭 Flask 与 cpolar
+
+> 免费版 cpolar 每次启动 URL 随机变化（要固定子域名需升级套餐）。
+>
+> ⚠️ **隐私边界**：cpolar 是公网 TLS 终止方，理论上可见明文请求/响应内容。本项目的 Bearer 鉴权 + 速率限制能挡住未授权访问，但**无法防止中继方观察流量**。仅适合非敏感场景（文献元数据、个人知识库）；如要传输敏感内容，请改用自控隧道（frp/nps + 自有 VPS）、企业 VPN 或局域网访问。
+
+### 5. 开发与生产并存
+
+公网走打包产物（`frontend/dist/`），日常开发仍可用 Vite dev server（`localhost:5173`）+ Flask（`localhost:5000`）。`KB_API_TOKEN` 未设置时后端进入 dev mode 全放行，前端 axios 也不会注入 token，体验和原来一致。
+
+### 6. 备选：Tailscale Funnel（需海外网络）
+
+如你的网络可稳定访问 `controlplane.tailscale.com` 与 Tailscale DERP（国内一般不可用），可改走 Tailscale Funnel，免去第三方中继：
+
+```powershell
+.\start_prod.ps1            # 起 Flask
+tailscale funnel 5000       # 拿到 https://xxx.tail-xxxxx.ts.net
+tailscale funnel --https=443 off   # 关闭
+```
+
+国内尝试过的失败现象：客户端持续 bootstrap DERP 全部 `context deadline exceeded`，无法注册到 controlplane。Cloudflare Tunnel 同样不稳定。
+
+---
+
 ## 已知限制
 
 | 项目 | 说明 |
 |------|------|
 | PDF 下载成功率 | 受 OA 覆盖率限制，付费墙期刊无法自动下载；失败条目进失败诊断页面 |
-| 新论文分析 | 目前只能通过 CLI 触发，Web UI 没有"上传并分析"入口 |
-| 引用追踪 API 限速 | Semantic Scholar 100 次/5分钟；OpenAlex 无强制限制但建议保留 mailto |
+| 引用追踪 API 限速 | Semantic Scholar 1 req/s（worker 内强制 0.8s 间隔）；OpenAlex 无强制限制但带 mailto |
+| MinerU 云配额 | 注册账号每日有额度上限；CD 大量批量上传前查看 mineru.net 控制台 |
+| 单 worker 假设 | TaskQueue.fetch_next 无 SELECT FOR UPDATE，进程内只能 1 个 worker 线程；多 Flask worker 须独立跑 worker 进程（自动守卫拒启） |

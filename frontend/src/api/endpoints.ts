@@ -1,6 +1,7 @@
-import client from './client'
+import client, { API_BASE_URL } from './client'
 import type {
   BackwardTrackResult,
+  DigestResult,
   FailuresResponse,
   ForwardTrackResult,
   InboxItem,
@@ -10,6 +11,7 @@ import type {
   PaperDetail,
   Subscription,
   Task,
+  TrackResponse,
 } from '@/types/api'
 
 export const networkApi = {
@@ -26,7 +28,7 @@ export const papersApi = {
     offset?: number
   }) =>
     client
-      .get<ListResponse<Paper> & { limit: number; offset: number }>('/papers', { params })
+      .get<ListResponse<Paper> & { limit: number; offset: number; total: number }>('/papers', { params })
       .then((r) => r.data),
   stats: () =>
     client.get<{ total: number; analyzed: number }>('/papers/stats').then((r) => r.data),
@@ -34,13 +36,13 @@ export const papersApi = {
     client.get<PaperDetail>(`/papers/${id}`).then((r) => r.data),
   getInsight: (id: number) =>
     client.get<{ content: string | null }>(`/papers/${id}/insight`).then((r) => r.data),
-  forwardTrack: (id: number, body?: { refresh?: boolean; limit?: number }) =>
+  forwardTrack: (id: number, body?: { refresh?: boolean; page_limit?: number; offset?: number; limit?: number }) =>
     client
-      .post<ForwardTrackResult>(`/papers/${id}/forward-track`, body ?? {})
+      .post<TrackResponse<ForwardTrackResult>>(`/papers/${id}/forward-track`, body ?? {})
       .then((r) => r.data),
-  backwardTrack: (id: number, body?: { refresh?: boolean; limit?: number }) =>
+  backwardTrack: (id: number, body?: { refresh?: boolean; page_limit?: number; offset?: number; limit?: number }) =>
     client
-      .post<BackwardTrackResult>(`/papers/${id}/backward-track`, body ?? {})
+      .post<TrackResponse<BackwardTrackResult>>(`/papers/${id}/backward-track`, body ?? {})
       .then((r) => r.data),
   promote: (id: number) =>
     client.post<Paper>(`/papers/${id}/promote`).then((r) => r.data),
@@ -48,9 +50,29 @@ export const papersApi = {
     client.delete<{ deleted: number }>('/papers/batch', { data: { ids } }).then((r) => r.data),
   moveBatch: (ids: number[], is_core: boolean) =>
     client.patch<{ updated: number }>('/papers/batch/tier', { ids, is_core }).then((r) => r.data),
-  citationBibUrl: (id: number) => `/api/papers/${id}/citations.bib`,
+  // 走 client.baseURL（默认 /api），反代/路径前缀变化时跟 axios 一致
+  citationBibUrl: (id: number) => `${API_BASE_URL}/papers/${id}/citations.bib`,
   generateCitation: (id: number) =>
     client.post(`/papers/${id}/citation`, {}).then((r) => r.data),
+  aiAnalyze: (id: number) =>
+    client.post<Paper>(`/papers/${id}/ai-analyze`).then((r) => r.data),
+  upload: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    // 不显式设 Content-Type：axios 会自动写入带 boundary 的 multipart 头
+    // 大 PDF + 慢网络可能需要超过默认 30s；放宽到 5 分钟
+    return client
+      .post<{ paper_id: number; task_id: number | null; deduped: boolean; stem?: string; reason?: string }>(
+        '/papers/upload',
+        form,
+        { timeout: 5 * 60 * 1000 },
+      )
+      .then((r) => r.data)
+  },
+}
+
+export const digestApi = {
+  send: () => client.post<DigestResult>('/digest/send').then((r) => r.data),
 }
 
 export const tasksApi = {

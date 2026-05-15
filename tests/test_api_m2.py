@@ -20,7 +20,7 @@ def client(tmp_path: Path, monkeypatch):
 
     with SL() as s:
         p = models.Paper(stem="seed", title="A Study", year=2020,
-                         doi="10.1/x", status="analyzed", source="root",
+                         doi="10.1/x", status="analyzed", source="root", is_core=True,
                          authors_json=[{"family": "Smith", "given": "J"}])
         s.add(p); s.commit()
 

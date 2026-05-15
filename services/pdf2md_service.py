@@ -1,31 +1,65 @@
 """Pdf2MdService —— PDF → Markdown 转换。
 
-底层调用 scripts/pdf2md.py（subprocess，stdout 末尾输出 JSON）。
-stdout 末尾允许有非 JSON 噪声（如日志、警告），扫描从后往前找首条可解析 JSON。
+provider 切换（环境变量 KB_PDF2MD_PROVIDER）：
+  - "mineru-cloud"（默认）：调 services.pdf2md_cloud，走 mineru.net 公网 API
+  - "local"：保留旧路径，subprocess 调 scripts/pdf2md.py（局域网 MinerU）
+
+云端方案支持 `on_progress(step, msg)` 回调以推送 socket 进度。
 """
 from __future__ import annotations
 
 import json
+import logging
+import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from typing import Callable, Optional
 
 from ._paths import ROOT
 
 _PDF2MD = ROOT / "scripts" / "pdf2md.py"
+_log = logging.getLogger(__name__)
 
 
 class Pdf2MdService:
     def __init__(self, db_session=None) -> None:
         self.db_session = db_session
 
-    def convert(self, pdf_path: Path, output_dir: Path | None = None,
-                timeout: float | None = 600.0) -> dict:
-        """Run pdf2md.py and return parsed JSON dict.
+    def convert(
+        self,
+        pdf_path: Path,
+        output_dir: Path | None = None,
+        timeout: float | None = 600.0,
+        *,
+        on_progress: Optional[Callable[[str, str], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> dict:
+        """PDF → Markdown，返回 {"md_path", "sections"} 或 {"error"}。
 
-        Returns: {"md_path": str, "sections": [...]} on success;
-                 {"error": str} on failure (含 timeout)。
+        output_dir 必填：云端 / 本地两路实现都按 stem 分目录写盘；
+        若为 None 调用方不同 PDF 会互相覆盖 md，故 fail-fast。
         """
+        provider = (os.environ.get("KB_PDF2MD_PROVIDER") or "mineru-cloud").strip().lower()
+        if output_dir is None:
+            return {"error": "output_dir is required (per-paper dir to avoid md collisions)"}
+
+        if provider == "mineru-cloud":
+            from .pdf2md_cloud import convert as _cloud_convert
+            return _cloud_convert(
+                pdf_path, Path(output_dir),
+                on_progress=on_progress,
+                timeout=timeout or 600.0,
+                stop_event=stop_event,
+            )
+
+        # 回退：subprocess 调本地 pdf2md.py
+        if on_progress is not None:
+            try:
+                on_progress("pdf2md.subprocess", "调用本地 MinerU…")
+            except Exception:
+                pass
         cmd = [sys.executable, str(_PDF2MD), str(pdf_path)]
         if output_dir is not None:
             cmd += ["--output-dir", str(output_dir)]
@@ -39,8 +73,6 @@ class Pdf2MdService:
         if proc.returncode != 0:
             return {"error": proc.stderr.strip() or f"exit {proc.returncode}"}
 
-        # 从后往前找首条可解析 JSON。pdf2md 在 stdout 末尾输出结果，但允许
-        # 同 stream 上有非 JSON 噪声（如 logging.warning 错落到 stdout）。
         lines = proc.stdout.strip().splitlines()
         for line in reversed(lines):
             line = line.strip()

@@ -29,6 +29,21 @@ export interface Paper {
   added_at: string | null
   analyzed_at: string | null
   journal?: Journal | null
+  tags: string[] | null
+  ai_summary: AiSummary | null
+  ai_analyzed_at: string | null
+}
+
+export interface AiSummary {
+  research_question: string | null
+  methodology: string | null
+  key_findings: string[]
+}
+
+export interface DigestResult {
+  sent: boolean
+  paper_count?: number
+  reason?: string
 }
 
 export interface Edge {
@@ -62,6 +77,10 @@ export interface ForwardTrackResult {
   citing_papers: ReferenceEntry[]
   cached: boolean
   fetched_at: string
+  // 分页字段（仅在切片返回时存在）
+  offset?: number
+  limit?: number
+  has_more?: boolean
 }
 
 export interface BackwardTrackResult {
@@ -70,6 +89,22 @@ export interface BackwardTrackResult {
   referenced_papers: ReferenceEntry[]
   cached: boolean
   fetched_at: string
+  offset?: number
+  limit?: number
+  has_more?: boolean
+}
+
+// 202 异步响应：cache miss 时端点返回入队后的 task 信息
+export interface TrackTaskAccepted {
+  task_id: number
+  status: 'queued' | 'running'
+  message: string
+}
+
+export type TrackResponse<T> = T | TrackTaskAccepted
+
+export function isTrackAccepted(r: unknown): r is TrackTaskAccepted {
+  return typeof r === 'object' && r !== null && 'task_id' in r && (r as TrackTaskAccepted).task_id != null
 }
 
 export interface Task {

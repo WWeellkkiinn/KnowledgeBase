@@ -9,6 +9,7 @@ SQLite 默认不执行外键约束；本模块在每次 connect 上注册 `PRAGM
 from __future__ import annotations
 
 import os
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -22,6 +23,10 @@ DEFAULT_DB_PATH = ROOT / "kb.db"
 
 
 def _db_url() -> str:
+    # 优先 KB_DB_URL（任意方言）；否则回退 KB_DB_PATH（SQLite 路径）
+    url = os.environ.get("KB_DB_URL")
+    if url:
+        return url
     raw = os.environ.get("KB_DB_PATH")
     path = Path(raw).expanduser().resolve() if raw else DEFAULT_DB_PATH
     return f"sqlite:///{path.as_posix()}"
@@ -31,19 +36,56 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(_db_url(), future=True, echo=False)
+_DB_URL = _db_url()
+# connect_args 仅 SQLite 接受 timeout；PG/MySQL 会报 TypeError
+_is_sqlite = _DB_URL.startswith("sqlite")
+_engine_kwargs: dict = {"future": True, "echo": False}
+if _is_sqlite:
+    # 连接级超时：等锁最多 30s，避免公网请求和 APScheduler 并发时立刻报错
+    _engine_kwargs["connect_args"] = {"timeout": 30}
+
+engine = create_engine(_DB_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, future=True)
 
 
 def enable_sqlite_foreign_keys(target: Engine) -> None:
-    """对 SQLite engine 注册 PRAGMA foreign_keys=ON。对其他方言无效。"""
+    """对 SQLite engine 注册 PRAGMA：FK + busy_timeout（每连接）。
+    WAL 是数据库级持久设置，用独立 sqlite3 连接一次性完成 —— 不经过 SQLAlchemy
+    连接池，避免该连接被归还池后跳过 connect 监听器（导致 FK/busy_timeout 未生效）。
+    其他方言无效。
+    """
     if target.dialect.name != "sqlite":
         return
+
+    # 一次性设置 WAL（数据库级持久），用独立 sqlite3 连接，不污染 SQLAlchemy 池
+    try:
+        db_path = target.url.database
+        # 仅对落盘 SQLite 文件设置；":memory:" / 空路径跳过
+        if db_path and db_path != ":memory:":
+            # target.url.database 可能是相对路径（如 sqlite:///kb.db）。进程 cwd
+            # 漂移（service / worker / 测试 fixture）会让本函数和 SQLAlchemy 池
+            # 打开不同物理文件，WAL 设置作用到错的库上。先解析为绝对路径再开。
+            if not Path(db_path).is_absolute():
+                db_path = str(Path(db_path).resolve())
+            # TODO(security): 若未来 KB_DB_URL 允许来自非信任源（CI、外部配置中心），
+            # 这里需要做 path traversal 校验（限制在项目根 + 白名单目录内）。
+            # 当前 env 仅由部署者控制，暂不强制校验。
+            _raw = sqlite3.connect(db_path, timeout=30)
+            try:
+                _raw.execute("PRAGMA journal_mode=WAL")
+                _raw.commit()
+            finally:
+                _raw.close()
+    except Exception:
+        # WAL 设置失败不致命（如只读 / 内存库），继续按默认 journal 模式工作
+        pass
 
     @event.listens_for(target, "connect")
     def _set_sqlite_pragma(dbapi_connection, _connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # 任何 SQL 遇锁等待 30s 再报错（毫秒）。连接级，必须每次设
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
 

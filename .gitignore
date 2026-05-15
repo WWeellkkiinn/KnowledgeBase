@@ -7,6 +7,16 @@ __pycache__/
 *.log
 scripts/config.py
 
+# 本地环境变量（含 token），仅本机使用
+.env
+.env.local
+
+# start_public.ps1 运行时产生的日志
+flask_public.log
+flask_public.log.err
+cpolar.log
+cpolar.log.err
+
 # SQLite 数据库（DB 是真相源，但本地实例不入库；可通过 migrate_to_db.py 重建）
 kb.db
 kb.db-journal

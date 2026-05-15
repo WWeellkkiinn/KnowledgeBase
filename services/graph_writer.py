@@ -26,6 +26,18 @@ def _doi_to_stem(doi: str) -> str:
     return doi.replace("/", "_").replace(".", "_").replace(":", "_")[:_STEM_MAX]
 
 
+def _parse_authors(raw) -> Optional[list]:
+    """容错处理 authors 字段：可能是 str / list / None。"""
+    if not raw:
+        return None
+    if isinstance(raw, list):
+        cleaned = [str(a).strip() for a in raw if a]
+        return cleaned[:50] or None
+    if isinstance(raw, str):
+        return [a for a in raw[:_AUTHORS_MAX].split(", ") if a] or None
+    return None
+
+
 def upsert_paper(
     session: Session,
     doi: str,
@@ -61,7 +73,7 @@ def upsert_paper(
         stem=stem,
         doi=doi,
         title=title or None,
-        authors_json=[a for a in authors[:_AUTHORS_MAX].split(", ") if a] if authors else None,
+        authors_json=_parse_authors(authors),
         year=year,
         status="pending",
         source=source,
@@ -93,8 +105,10 @@ _VENUE_NAME_MAX = 512
 _VENUE_ISSN_MAX = 16
 
 
-def _attach_journal_if_any(session: Session, paper, item: dict) -> None:
-    """若 item 带有 venue 信息且 paper 尚未关联期刊，顺手写入期刊。"""
+def _attach_journal_if_any(session: Session, paper, item: dict, journal_service=None) -> None:
+    """若 item 带有 venue 信息且 paper 尚未关联期刊，顺手写入期刊。
+    journal_service 可由调用方传入以复用实例。
+    """
     if paper.journal_id is not None:
         return
     venue_name = (item.get("venue_name") or "").strip()[:_VENUE_NAME_MAX]
@@ -102,13 +116,15 @@ def _attach_journal_if_any(session: Session, paper, item: dict) -> None:
     if not venue_name and not venue_issn:
         return
     try:
-        from services.journal_service import JournalService
+        if journal_service is None:
+            from services.journal_service import JournalService
+            journal_service = JournalService()
         meta = {
             "name": venue_name,
             "issn": venue_issn,
             "source_dataset": "openalex",
         }
-        JournalService().attach_to_paper(session, paper, meta=meta)
+        journal_service.attach_to_paper(session, paper, meta=meta)
     except Exception as exc:
         _log.warning("[graph_writer] journal attach failed paper_id=%s err=%s", paper.id, exc)
 
@@ -139,6 +155,14 @@ def write_tracking_results(
         .where(models.Edge.from_paper_id == from_paper_id)
         .where(models.Edge.direction == direction)
     ).scalars())
+
+    # 复用单一 JournalService 实例
+    try:
+        from services.journal_service import JournalService
+        journal_service = JournalService()
+    except Exception:
+        journal_service = None
+
     new_edges = []
 
     for item in papers_data:
@@ -146,14 +170,17 @@ def write_tracking_results(
         if not doi:
             continue  # 无 DOI 无法去重，跳过
 
+        new_abstract = (item.get("abstract") or "").strip() or None
+
         paper = existing_by_doi.get(doi)
         if paper is None:
             paper = models.Paper(
                 stem=_doi_to_stem(doi),
                 doi=doi,
                 title=item.get("title") or None,
-                authors_json=[a for a in item["authors"][:_AUTHORS_MAX].split(", ") if a] if item.get("authors") else None,
+                authors_json=_parse_authors(item.get("authors")),
                 year=item.get("year"),
+                abstract=new_abstract,
                 status="pending",
                 source=stub_source,
             )
@@ -167,11 +194,15 @@ def write_tracking_results(
                 ).scalar_one_or_none()
             if paper is not None:
                 existing_by_doi[doi] = paper
+        else:
+            # 旧记录无 abstract 但新数据带 abstract，顺手回填
+            if not paper.abstract and new_abstract:
+                paper.abstract = new_abstract
 
         if paper is None or paper.id is None:
             continue
 
-        _attach_journal_if_any(session, paper, item)
+        _attach_journal_if_any(session, paper, item, journal_service=journal_service)
 
         to_id = paper.id
         if to_id in existing_to_ids:
