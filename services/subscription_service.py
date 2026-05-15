@@ -52,6 +52,21 @@ def parse_simple_interval(expr: str) -> timedelta:
         return timedelta(days=7)
     if e.startswith("every "):
         e = e[len("every "):].strip()
+    # 公网部署最小触发间隔：防止 every 1m 把外部 API/Ollama 打满
+    # 折中策略：保留用户原始 cron_expr 不变，但 next_run_at 至少 6h 后；
+    # 同时打 warning 让运维知情（避免静默覆盖）
+    min_interval = timedelta(hours=6)
+
+    def _clamp(actual: timedelta) -> timedelta:
+        if actual < min_interval:
+            _log.warning(
+                "subscription interval %r resolves to %s, clamped to min_interval=%s "
+                "(cron_expr preserved verbatim, only next_run_at delayed)",
+                expr, actual, min_interval,
+            )
+            return min_interval
+        return actual
+
     # 极简单位
     try:
         n: Optional[int] = None
@@ -61,10 +76,10 @@ def parse_simple_interval(expr: str) -> timedelta:
             if n <= 0:
                 return timedelta(days=7)
             if unit == "m":
-                return timedelta(minutes=n)
+                return _clamp(timedelta(minutes=n))
             if unit == "h":
-                return timedelta(hours=n)
-            return timedelta(days=n)
+                return _clamp(timedelta(hours=n))
+            return _clamp(timedelta(days=n))
     except ValueError:
         pass
     # 标准 cron：用 APScheduler CronTrigger 算下次触发
@@ -78,7 +93,7 @@ def parse_simple_interval(expr: str) -> timedelta:
             if nxt is not None:
                 delta = nxt - now_aware
                 if delta.total_seconds() > 0:
-                    return delta
+                    return _clamp(delta)
         except Exception:
             pass
     return timedelta(days=7)

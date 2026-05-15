@@ -18,13 +18,16 @@ const stats = ref<{ nodes: number; edges: number; total: number; truncated: bool
 })
 let disposed = false
 
-// Tier → 颜色（PLAN §M3.4 要求按 Tier 着色）
+// Tier → 颜色（学术蓝色阶，PLAN §M3.4 要求按 Tier 着色）
 const TIER_COLOR: Record<string, string> = {
-  '1': '#fbbf24', // 金
-  '2': '#a3a3a3', // 银
-  '3': '#b45309', // 铜
-  unknown: '#94a3b8',
+  '1': '#1E40AF', // 深蓝
+  '2': '#3B82F6', // 中蓝
+  '3': '#93C5FD', // 浅蓝
+  unknown: '#CBD5E1', // 中性灰
 }
+const HIGH_IMPACT_BORDER = '#D97706' // 琥珀，描边高亮高被引节点
+const HIGH_IMPACT_RATIO = 0.6 // citation_count / max >= 此值视为高被引
+const HIGH_IMPACT_MIN_MAX = 10 // max 太小（样本贫瘠）时不做"高被引"标注，避免误报
 
 function colorFor(tier: number | null): string {
   if (tier === null || tier === undefined) return TIER_COLOR.unknown
@@ -57,24 +60,33 @@ async function render() {
     // 节点数大时改用更稳的 grid layout，避免 cose 在 200+ 节点冻结主线程
     // （C2+X2 审查）。100 是经验阈值。
     const layoutName = data.nodes.length > 100 ? 'grid' : 'cose'
-    const counts = data.nodes.map(n => n.citation_count ?? 0)
-    const maxCnt = Math.max(counts.reduce((a, b) => Math.max(a, b), 0), 1)
+    const maxCnt = Math.max(
+      data.nodes.reduce((m, n) => Math.max(m, n.citation_count ?? 0), 0),
+      1,
+    )
+    const allowHighImpact = maxCnt >= HIGH_IMPACT_MIN_MAX
     const nodeSize = (c: number) => Math.round(16 + (c / maxCnt) * 48)
     cy.value = cytoscape({
       container: container.value,
       elements: [
-        ...data.nodes.map((n) => ({
-          data: {
-            id: String(n.id),
-            label: n.authors_json?.length
-              ? `${n.authors_json[0].trim().split(/\s+/).at(-1)}${n.authors_json.length > 1 ? ' et al.' : ''} · ${n.year ?? '?'}`
-              : `· ${n.year ?? '?'}`,
-            tier: n.quality_tier,
-            color: colorFor(n.quality_tier),
-            source: n.source,
-            size: nodeSize(n.citation_count ?? 0),
-          },
-        })),
+        ...data.nodes.map((n) => {
+          const cnt = n.citation_count ?? 0
+          const highImpact = allowHighImpact && cnt / maxCnt >= HIGH_IMPACT_RATIO
+          return {
+            data: {
+              id: String(n.id),
+              label: n.authors_json?.length
+                ? `${n.authors_json[0].trim().split(/\s+/).at(-1)}${n.authors_json.length > 1 ? ' et al.' : ''} · ${n.year ?? '?'}`
+                : `· ${n.year ?? '?'}`,
+              tier: n.quality_tier,
+              color: colorFor(n.quality_tier),
+              source: n.source,
+              size: nodeSize(cnt),
+              borderColor: highImpact ? HIGH_IMPACT_BORDER : '#1E3A8A',
+              borderWidth: highImpact ? 2.5 : 1,
+            },
+          }
+        }),
         ...data.edges.map((e) => ({
           data: {
             id: `e${e.id}`,
@@ -97,17 +109,18 @@ async function render() {
             'text-margin-y': 4,
             width: 'data(size)',
             height: 'data(size)',
-            'border-width': 1,
-            'border-color': '#475569',
+            'border-width': 'data(borderWidth)',
+            'border-color': 'data(borderColor)',
           },
         },
         {
           selector: 'edge',
           style: {
             width: 1,
-            'line-color': '#cbd5e1',
-            'target-arrow-color': '#94a3b8',
+            'line-color': '#DBEAFE',
+            'target-arrow-color': '#93C5FD',
             'target-arrow-shape': 'triangle',
+            'arrow-scale': 0.8,
             'curve-style': 'bezier',
           },
         },
@@ -160,28 +173,32 @@ onBeforeUnmount(() => {
       {{ error }}
     </p>
 
-    <div class="flex items-center gap-4 text-xs text-slate-500">
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
       <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#fbbf24"></span>
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#1E40AF"></span>
         一级期刊
       </span>
       <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#a3a3a3"></span>
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#3B82F6"></span>
         二级期刊
       </span>
       <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#b45309"></span>
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#93C5FD"></span>
         三级期刊
       </span>
       <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#94a3b8"></span>
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#CBD5E1"></span>
         未知 / 无期刊
+      </span>
+      <span class="flex items-center gap-1">
+        <span class="inline-block h-3 w-3 rounded-full border-[2.5px]" style="background:#fff;border-color:#D97706"></span>
+        高被引
       </span>
     </div>
 
     <div
       ref="container"
-      class="h-[640px] w-full rounded-lg border border-slate-200 bg-white"
+      class="h-[640px] w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
     ></div>
   </section>
 </template>

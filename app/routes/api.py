@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 from datetime import datetime, timezone
@@ -11,38 +10,18 @@ from pathlib import Path as _Path
 from flask import Blueprint, Response, abort, g, jsonify, request, stream_with_context
 from sqlalchemy import delete, func, select, update
 
+from app import limiter
 from database import models
 
-
-_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-
-
-def _require_token(scope: str = "write") -> None:
-    """检查 X-KB-Token header（仅当对应 KB_API_TOKEN_* 环境变量配置时启用）。
-
-    scope=write：优先读 KB_API_TOKEN_WRITE，未设时 fallback KB_API_TOKEN（统一令牌），
-                  仍未设则放行（本地开发默认）。
-    """
-    expected = (
-        os.environ.get(f"KB_API_TOKEN_{scope.upper()}")
-        or os.environ.get("KB_API_TOKEN")
-    )
-    if not expected:
-        return  # 未配置 = 本地开发模式，不强制
-    provided = request.headers.get("X-KB-Token") or request.args.get("token") or ""
-    if provided != expected:
-        abort(401, description="invalid or missing API token")
 
 _log = logging.getLogger(__name__)
 
 bp = Blueprint("api", __name__)
+# 全局 Bearer 鉴权统一在 app/__init__.py 的 _require_bearer_token 处理；
+# 此蓝图不再单独鉴权。
 
-
-@bp.before_request
-def _gate_writes() -> None:
-    """全局写操作鉴权：所有 POST/PUT/PATCH/DELETE 都需要 token（若已配置）。"""
-    if request.method in _WRITE_METHODS:
-        _require_token("write")
+# 异步 digest 全局互斥锁，防止 /digest/send?async=1 被重放堆积线程
+_digest_lock = threading.Lock()
 
 
 # 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
@@ -228,6 +207,7 @@ def paper_insight(paper_id: int):
 
 
 @bp.post("/papers/<int:paper_id>/forward-track")
+@limiter.limit("10 per minute")
 def forward_track(paper_id: int):
     """触发前向追踪。可选 body：`{"refresh": true, "limit": 100}`。
 
@@ -270,6 +250,7 @@ def forward_track(paper_id: int):
 
 
 @bp.post("/papers/<int:paper_id>/backward-track")
+@limiter.limit("10 per minute")
 def backward_track(paper_id: int):
     """触发后向追踪：查这篇论文引用了哪些论文。可选 body：`{"refresh": true, "limit": 100}`。
 
@@ -332,13 +313,21 @@ def promote_paper(paper_id: int):
 
 
 @bp.post("/papers/<int:paper_id>/ai-analyze")
+@limiter.limit("5 per minute")
 def ai_analyze_paper(paper_id: int):
-    """触发单篇论文的 AI 打标签 + 精炼（F1+F2）。"""
+    """触发单篇论文的 AI 打标签 + 精炼（F1+F2）。
+    幂等：已分析过的论文除非 body 传 refresh=true，否则直接返回现有结果，
+    避免公网重放刷算力。"""
     p = g.db.get(models.Paper, paper_id)
     if p is None:
         return jsonify({"error": "not found"}), 404
     if not p.abstract:
         return jsonify({"error": "no abstract"}), 422
+    refresh = bool((request.get_json(silent=True) or {}).get("refresh", False))
+    # 幂等守卫：仅当上次分析成功（ai_summary 非空）时跳过；失败路径会写 ai_analyzed_at
+    # 但不写 ai_summary（见 services/ai_service.py:run_batch_analysis 失败分支），允许重试
+    if p.ai_analyzed_at is not None and p.ai_summary and not refresh:
+        return jsonify(_paper_to_dict(p, include_journal=True))
     from services.ai_service import analyze_paper
     try:
         result = analyze_paper(p.title or "", p.abstract)
@@ -589,6 +578,7 @@ def _release_review_slot() -> None:
 
 
 @bp.post("/reviews")
+@limiter.limit("3 per hour")
 def create_review():
     """触发综述生成。SSE 流式响应，事件名 `chunk` / `done` / `error`。
 
@@ -904,6 +894,7 @@ def move_papers_batch():
 
 
 @bp.post("/digest/send")
+@limiter.limit("2 per hour")
 def send_digest_now():
     """手动触发邮件日报（F3）。
     ?all=1    发送全库（有摘要的）论文，否则仅过去 24h
@@ -923,16 +914,38 @@ def send_digest_now():
         )
 
     if request.args.get("async") == "1" and not test_mode:
+        # 全局互斥：未释放前重复请求直接 409，防止公网重放堆积 SMTP/DB 任务
+        if not _digest_lock.acquire(blocking=False):
+            return jsonify({"error": "digest already running"}), 409
+
+        # 捕获真实 app 对象供后台线程建立 app_context（脱离请求上下文后
+        # send_digest 内部若使用 current_app/g 不会 RuntimeError）
+        from flask import current_app
+        _app = current_app._get_current_object()
+
         def _bg():
             from database import SessionLocal
-            session = SessionLocal()
             try:
-                send_digest(session, **kwargs)
-            except Exception:
-                _log.exception("async send_digest failed")
+                with _app.app_context():
+                    session = SessionLocal()
+                    try:
+                        send_digest(session, **kwargs)
+                    except Exception:
+                        # 后台异步语义：异常无法 1:1 同步报告给客户端，
+                        # 只能写日志，避免静默吞错
+                        _log.exception("async send_digest failed")
+                    finally:
+                        session.close()
             finally:
-                session.close()
-        threading.Thread(target=_bg, name="digest-async", daemon=True).start()
+                _digest_lock.release()
+
+        try:
+            threading.Thread(target=_bg, name="digest-async", daemon=True).start()
+        except Exception:
+            # Thread 构造/启动失败：锁必须立即释放，否则永久 409
+            _digest_lock.release()
+            _log.exception("failed to start digest-async thread")
+            return jsonify({"error": "failed to start background task"}), 500
         return jsonify({"accepted": True})
 
     try:
