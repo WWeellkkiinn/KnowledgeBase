@@ -72,6 +72,12 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _crossref_ua() -> str:
+    """Crossref 礼貌池 User-Agent：带可联系邮箱时享用更稳定的限速档。"""
+    email = os.environ.get("UNPAYWALL_EMAIL", "").strip()
+    return f"KnowledgeBase/1.0 (mailto:{email})" if email else "KnowledgeBase/1.0"
+
+
 def _emit(task_id: int, step: str, msg: str, **extra) -> None:
     payload = {"step": step, "message": msg}
     payload.update(extra)
@@ -146,7 +152,7 @@ def _crossref_metadata(doi: str, timeout: float = 10.0) -> dict:
         r = httpx.get(
             f"https://api.crossref.org/works/{encoded}",
             timeout=timeout,
-            headers={"User-Agent": "KnowledgeBase/1.0 (mailto:<UNPAYWALL_EMAIL>)"},
+            headers={"User-Agent": _crossref_ua()},
         )
         r.raise_for_status()
         msg = r.json().get("message") or {}

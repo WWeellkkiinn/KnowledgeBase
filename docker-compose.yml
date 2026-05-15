@@ -1,0 +1,65 @@
+name: kb
+
+# 日志驱动统一限制（避免 json-file 撑满磁盘）
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ./data/.env
+    environment:
+      KB_DB_PATH: /app/data/kb.db
+      PAPERS_DIR: /app/data/papers
+      KB_BIND_HOST: 0.0.0.0
+    # 把整个 data/ 目录挂进来：SQLite 的 wal/shm 由它自己在容器内创建/checkpoint，
+    # 不会因为单文件 bind-mount 的 inode 漂移导致写丢失。
+    volumes:
+      - ./data:/app/data
+    # 让容器内能解析宿主：app -> http://host.docker.internal:13813 = ECS 本机 frps 转出的 Ollama。
+    # Linux Docker 23+ 通过 host-gateway 把这个名字指到宿主的 docker0 / iptables 转发回环。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "5000"
+    mem_limit: 900m
+    mem_reservation: 400m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging: *default-logging
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    mem_limit: 128m
+    restart: unless-stopped
+    logging: *default-logging
+
+  frps:
+    image: snowdreamtech/frps:0.68.1
+    # host 网络模式：同一进程同时听 7000（公网控制面）+ 13813（回环数据面）。
+    # 配合 frps.toml 的 proxyBindAddr=127.0.0.1，13813 只对本机暴露，公网安全。
+    # app 容器通过 extra_hosts 的 host.docker.internal 走宿主回环到达这里。
+    network_mode: host
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml:ro
+    mem_limit: 128m
+    restart: unless-stopped
+    logging: *default-logging

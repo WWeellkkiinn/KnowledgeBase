@@ -5,6 +5,7 @@ Output (stdout): {"md_path": "...", "sections": [...]}
 """
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -12,9 +13,9 @@ from pathlib import Path
 
 import httpx
 
-MINERU_API = "http://<ollama-host>:8000"
-POLL_INTERVAL = 5
-POLL_TIMEOUT = 600
+MINERU_API = os.environ.get("KB_MINERU_LOCAL_URL", "http://localhost:8000")
+POLL_INTERVAL = int(os.environ.get("KB_MINERU_POLL_INTERVAL", "5"))
+POLL_TIMEOUT = int(os.environ.get("KB_MINERU_POLL_TIMEOUT", "600"))
 
 
 def main():

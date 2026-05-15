@@ -2,11 +2,13 @@
 
 不是 handler，供 generic.py 调用。
 """
+import os
 import re
 
 import httpx
 
-_EMAIL = "<UNPAYWALL_EMAIL>"
+# Unpaywall 仅用邮箱做 rate-limit 标识，不做身份校验。配在 .env 的 UNPAYWALL_EMAIL。
+_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "")
 # 匹配 DOI，不吃 ? # & 以及尾部标点
 _DOI_RE = re.compile(r"10\.\d{4,}/[^\s?#&\"'<>]+")
 _DOI_TRAIL = re.compile(r"[.,;:)\]]+$")

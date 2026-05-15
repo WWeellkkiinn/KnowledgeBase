@@ -18,8 +18,10 @@ from database import models
 
 _log = logging.getLogger(__name__)
 
-_URL = "http://<ollama-host>:13813/api/chat"
-_MODEL = "qwen3.6-27b"
+import os
+
+_URL = os.environ.get("KB_OLLAMA_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
+_MODEL = os.environ.get("KB_OLLAMA_MODEL", "qwen3.6-27b")
 _VOCAB_PATH = Path(__file__).parent / "tags_vocab.json"
 _CHANNEL_RE = re.compile(r"(<channel\|>|<\|[^|>]*\|>)")
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")

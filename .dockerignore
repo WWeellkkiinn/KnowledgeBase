@@ -1,0 +1,48 @@
+# VCS / IDE
+.git/
+.gitignore
+.claude/
+CLAUDE.md
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.cache/
+*.egg-info/
+
+# 前端构建中间产物（stage1 内部会自己 npm ci）
+frontend/node_modules/
+frontend/dist/
+frontend/vite.log
+frontend/vite.err.log
+
+# 数据 / 凭证 / 日志（容器通过 bind mount 注入）
+papers/
+kb.db
+kb.db-journal
+kb.db-shm
+kb.db-wal
+.env
+.env.local
+data/
+backup/
+
+# 测试
+tests/downloads/
+tests/__pycache__/
+
+# 启动脚本日志
+*.log
+flask_public.log*
+cpolar.log*
+
+# 文档（不影响运行）
+docs/
+PLAN.md
+README.md
+*.md
+!requirements.txt

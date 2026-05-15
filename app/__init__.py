@@ -23,7 +23,7 @@ from database import SessionLocal
 
 
 # CORS allowlist 支持环境变量覆盖；默认放行 Vite dev 的 localhost 与 127.0.0.1。
-# 公网部署时通过 KB_CORS_ORIGINS=https://你的cpolar.cn 覆盖（多值用逗号分隔）。
+# 公网部署时通过 KB_CORS_ORIGINS=https://你的域名 覆盖（多值用逗号分隔）。
 _DEFAULT_CORS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 _CORS = os.environ.get("KB_CORS_ORIGINS")
 _CORS_LIST = [s.strip() for s in _CORS.split(",") if s.strip()] if _CORS else _DEFAULT_CORS
@@ -31,7 +31,7 @@ _CORS_LIST = [s.strip() for s in _CORS.split(",") if s.strip()] if _CORS else _D
 socketio = SocketIO(cors_allowed_origins=_CORS_LIST, async_mode="threading")
 
 # 公网部署速率限制：按客户端 IP 配额，重端点用 @limiter.limit 单独覆盖。
-# cpolar 隧道透传真实公网 IP 到 X-Forwarded-For，get_remote_address 已识别。
+# 上游反向代理（nginx 等）透传真实公网 IP 到 X-Forwarded-For，get_remote_address 已识别。
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["120 per minute"],
@@ -126,7 +126,7 @@ def create_app(config: dict | None = None) -> Flask:
                 "do NOT run under gunicorn/uwsgi multi-worker without KB_ALLOW_MULTI_WORKER=1"
             )
 
-    # 公网通过 cpolar 隧道转发到 127.0.0.1，真实客户端 IP 在 X-Forwarded-For。
+    # 公网通过反向代理（nginx）转发到 app:5000，真实客户端 IP 在 X-Forwarded-For。
     # 仅当显式启用时挂 ProxyFix，避免本地 dev 信任任意 header 导致 IP 伪造。
     if os.environ.get("KB_TRUST_PROXY") == "1":
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)

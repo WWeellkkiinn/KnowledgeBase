@@ -1,6 +1,6 @@
 """SPA 静态托管：根路径返回 frontend/dist/index.html，未匹配的路径 fallback 到 index.html。
 
-为生产化部署（公网通过 cpolar 隧道暴露）服务。前端打包后产物在 frontend/dist/。
+为生产化部署（公网通过反向代理暴露）服务。前端打包后产物在 frontend/dist/。
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _DIST_RESOLVED = _DIST_DIR.resolve()
 @bp.get("/health")
 @limiter.exempt
 def health():
-    """无鉴权健康检查端点，给 cpolar 隧道/监控用。
+    """无鉴权健康检查端点，给反向代理 / 监控 / Docker healthcheck 用。
 
     豁免限流：监控通常以秒级频率轮询，不能算进默认 120/min 配额。
     """

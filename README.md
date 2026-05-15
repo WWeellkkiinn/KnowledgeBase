@@ -47,7 +47,7 @@
 
 - Python 3.12（conda 环境）
 - Node.js 18+
-- Ollama 推理服务（默认 `<ollama-host>:13812`；用于 AI 精炼 / 综述）
+- Ollama 推理服务（端点通过 `KB_OLLAMA_URL` 环境变量配置，默认 `http://localhost:11434`；用于 AI 精炼 / 综述）
 - **MinerU 云 API**：默认走 [mineru.net](https://mineru.net) 公网，需注册账号拿 Bearer token
   填到 `.env` 的 `KB_MINERU_API_KEY`；也可改 `KB_PDF2MD_PROVIDER=local` 走局域网 MinerU
 
@@ -76,7 +76,7 @@ python scripts/migrate_to_db.py   # 把现有 papers/ 目录里的论文导入�
 **终端 1 — Flask 后端：**
 ```powershell
 cd C:\dev\KnowledgeBase
-<home>\anaconda3\envs\kb\python.exe scripts/serve.py
+&lt;path-to-conda-env&gt;\python.exe scripts/serve.py
 # 监听 http://127.0.0.1:5000，调度器自动启动
 ```
 
@@ -96,7 +96,7 @@ Stop-Process -Id (Get-NetTCPConnection -LocalPort 5000).OwningProcess -Force
 
 # 2. 重新启动（需在新 PowerShell 窗口或等待上条完成）
 cd C:\dev\KnowledgeBase
-<home>\anaconda3\envs\kb\python.exe scripts/serve.py
+&lt;path-to-conda-env&gt;\python.exe scripts/serve.py
 ```
 
 #### 常见失败原因
@@ -104,7 +104,7 @@ cd C:\dev\KnowledgeBase
 | 症状 | 原因 | 解决 |
 |------|------|------|
 | `conda activate` 报错 | Git Bash 不支持 conda activate | 改用 PowerShell |
-| `flask: command not found` | 用了 base conda 而不是 kb 环境 | 用完整路径 `<home>\anaconda3\envs\kb\python.exe` |
+| `flask: command not found` | 用了 base conda 而不是 kb 环境 | 用完整路径 `&lt;path-to-conda-env&gt;\python.exe` |
 | 500 / 端口已被占用 | 旧进程未退出 | 先 `Stop-Process` 再启动 |
 | 调度器未启动 | 用 `flask run` 而非 `serve.py` | 必须用 `python scripts/serve.py`，它会自动设 `KB_ENABLE_SCHEDULER=1` |
 
@@ -346,27 +346,25 @@ KnowledgeBase/
 | 数据库 | SQLite（`kb.db`），WAL 模式 |
 | 前端 | Vue 3.5 + Vite 5 + Tailwind CSS 3 + Pinia + Cytoscape.js |
 | 引用 API | Semantic Scholar + OpenAlex + Crossref（service 层 ThreadPoolExecutor 并行）|
-| LLM | Ollama（`http://<ollama-host>:13812`，模型 `qwen3.6-27b`）|
+| LLM | Ollama（端点经 `KB_OLLAMA_URL` 配置；默认模型 `qwen3.6-27b`，可经 `KB_OLLAMA_MODEL` 覆盖）|
 | PDF 转换 | **MinerU 云 API**（`mineru.net`，默认）；可切 `local` 走自托管 |
 | HTTP 客户端 | httpx |
 
 ---
 
-## 推理服务器（<ollama-host>）
+## 推理服务器
+
+Ollama 推理跑在独立主机上，本仓库不预设主机地址 / SSH 凭证。通过 `KB_OLLAMA_URL`
+环境变量配置端点（参考 `.env.example`）；若推理主机在内网，可用 frp 反向隧道
+把端口映射回应用主机（参考 `deploy/README.md` + `frpc.toml.example`）。
+
+### Ollama 日常操作（示例 alias）
 
 ```bash
-ssh -i <home>/.ssh/<deploy-ssh-key> <deploy-user>@<ollama-host>
-```
-
-### Ollama 日常操作
-
-```bash
-ollama-up              # 启动容器 + 预热 qwen3.6-27b
+ollama-up              # 启动容器 + 预热模型
 ollama-down            # 停止容器，释放 GPU
 ollama-status          # 查看状态
 ```
-
-Windows 本地访问端点：`http://<ollama-host>:13812`
 
 ### 已部署模型
 
@@ -389,13 +387,15 @@ docker run -d --name mineru-api-kb \
 
 ---
 
-## 公网部署（cpolar 内网穿透）
+## 生产部署（Docker + frp）
 
-把本地服务暴露到公网给小规模用户访问。架构：**前端打包 → Flask 同源托管 → cpolar 反向暴露**，无需公网 IP / 端口转发 / 域名。
+把项目以 Docker Compose 方式部署到一台有公网 IP 的服务器，并通过 frp 反向隧道
+连接内网 Ollama 主机。详见 [`deploy/README.md`](deploy/README.md)。
 
-> 国内网络下 Tailscale / Cloudflare Tunnel 经常无法连接其控制面与中继，本节默认走 cpolar；如海外网络可参考末尾"备选：Tailscale Funnel"。
+> 历史版本曾用 cpolar 内网穿透从 Windows 本地暴露公网；当前推荐 Docker + frp。
+> 国内网络下 Tailscale / Cloudflare Tunnel 经常无法连接其控制面与中继。
 
-### 1. 安全前提
+### 安全前提
 
 公网部署后所有请求（包括 Socket.IO）都必须带 `Authorization: Bearer <token>`，缺/错一律 401。`/`、`/assets/*`、`/login`、`/health`、`/favicon*` 是白名单（要让前端 SPA 能加载）。
 
@@ -403,19 +403,21 @@ docker run -d --name mineru-api-kb \
 |----------|------|------|
 | `KB_API_TOKEN` | ✅ | 访问令牌；用户在登录页输入此值 |
 | `KB_SECRET_KEY` | ✅ | Flask session / Socket.IO 签名密钥 |
-| `KB_TRUST_PROXY` | ✅ | 公网部署设 `1`，启用 ProxyFix；**仅当 Flask 绑 127.0.0.1 + cpolar 单跳时安全** |
+| `KB_TRUST_PROXY` | ✅ | 公网部署设 `1`，启用 ProxyFix；**仅当 Flask 绑 127.0.0.1 + 单跳可信代理（nginx）时安全** |
 | `KB_MINERU_API_KEY` | 上传时必填 | MinerU 云 Bearer token（注册 [mineru.net](https://mineru.net) 获取） |
+| `KB_OLLAMA_URL` | 否 | Ollama 端点；容器内默认 `http://host.docker.internal:11434` |
+| `KB_OLLAMA_MODEL` | 否 | 默认 `qwen3.6-27b` |
 | `KB_PDF2MD_PROVIDER` | 否 | `mineru-cloud`（默认）/ `local` |
 | `KB_MINERU_API_URL` | 否 | 默认 `https://mineru.net` |
 | `KB_MINERU_ALLOWED_HOSTS` | 否 | 预签名 URL host 白名单；默认含 mineru.net + cdn-mineru.openxlab.org.cn + MinerU 官方 OSS bucket |
-| `KB_MAX_CONTENT_LENGTH` | 否 | 全局请求体上限，默认 60MB（覆盖 50MB 上传 + multipart 头）。**非上传路径** 通过 before_request 单独限到 256KB，DoS 面已收紧 |
+| `KB_MAX_CONTENT_LENGTH` | 否 | 全局请求体上限，默认 60MB；**非上传路径** 通过 before_request 单独限到 256KB |
 | `KB_ENABLE_SCHEDULER` | 否 | `serve.py` 入口自动设 `1` |
 | `KB_DISABLE_UPLOAD_WORKER` | 否 | 测试用；置 1 跳过后台 worker 线程 |
-| `KB_ALLOW_MULTI_WORKER` | 否 | 仅当切换到多 Flask 进程部署时设；自动禁用进程内 worker（须独立跑 worker 进程） |
+| `KB_ALLOW_MULTI_WORKER` | 否 | 仅当切换到多 Flask 进程部署时设；自动禁用进程内 worker |
 
-生成两个 token：
+生成两个 token（≥32 字节）：
 
-```powershell
+```bash
 python -c "import secrets; print('KB_API_TOKEN=' + secrets.token_urlsafe(32))"
 python -c "import secrets; print('KB_SECRET_KEY=' + secrets.token_urlsafe(32))"
 ```
@@ -425,7 +427,7 @@ python -c "import secrets; print('KB_SECRET_KEY=' + secrets.token_urlsafe(32))"
 - `KB_API_TOKEN` — 用户的"门票"，在 `/login` 页输入它；泄露则换值重启 Flask 即可吊销
 - `KB_SECRET_KEY` — 服务器内部用（Flask session / Socket.IO polling 签名），永不出现在前端
 
-### 2. 速率限制（`flask-limiter`）
+### 速率限制（`flask-limiter`）
 
 按客户端 IP 配额，防 token 泄露后的重放：
 
@@ -439,78 +441,30 @@ python -c "import secrets; print('KB_SECRET_KEY=' + secrets.token_urlsafe(32))"
 | `POST /api/reviews` | 3 / hour |
 | `POST /api/digest/send` | 2 / hour |
 
-`ai-analyze` 现已幂等：已分析过的论文除非 body 传 `{"refresh": true}` 否则直接返回缓存结果。订阅最小触发间隔强制 6 小时（保留 cron 表达式原值，仅在实际间隔 <6h 时把 next_run clamp 到 6h 并 warning），避免 `every 1m` 把后台打满。
-
-> ⚠️ **单 worker 部署限定**：当前 `flask-limiter` 用 `memory://` 存储，限速状态进程内独占；
-> 重启后清零，多 worker 部署各自计数。`start_public.ps1` 走 socketio.run 单进程模式，符合假设。
-> 若日后切 gunicorn / uwsgi 多 worker，必须改用 `redis://` 后端，否则限速等同失效。
+> ⚠️ **单 worker 部署限定**：`flask-limiter` 用 `memory://` 存储，限速状态进程内独占。
+> docker compose 默认走 `socketio.run` 单进程，符合假设。
+> 若切 gunicorn 多 worker，必须改用 `redis://` 后端。
 >
-> ⚠️ **ProxyFix x_for 跳数**：当前代码 `x_for=1`，假设 cpolar → Flask 是单跳。
-> 若 cpolar 链路上还有 CDN/反代，攻击者可伪造 `X-Forwarded-For` 绕过 IP 限速。
-> 验证方法：登录后 `curl -H "X-Forwarded-For: 1.2.3.4" -H "Authorization: Bearer <token>" <公网URL>/api/papers?limit=1`，
-> 然后查 `flask_public.log`，看到 `Remote IP` 是 `1.2.3.4` 说明 cpolar 透传可信；若仍是真实 IP 则 cpolar 未透传，需把 `x_for` 调为 0。
+> ⚠️ **ProxyFix x_for 跳数**：代码 `x_for=1`，假设 nginx → Flask 单跳。
+> 若上游链路再加 CDN/反代，攻击者可伪造 `X-Forwarded-For` 绕过 IP 限速。
 
-### 3. 一次性准备
+### 生产启动（Docker Compose）
 
-```powershell
-# 安装依赖
-<home>\anaconda3\envs\kb\python.exe -m pip install -r requirements.txt
+详见 [`deploy/README.md`](deploy/README.md)。一键流程：
 
-# 生成 token 模板
-Copy-Item .env.example .env
-notepad .env   # 填入 KB_API_TOKEN、KB_SECRET_KEY；确认 KB_TRUST_PROXY=1（公网部署必须）
-
-# 注册 cpolar 账号：https://www.cpolar.com/
-# 下载 Windows 客户端：https://dashboard.cpolar.com/get-started
-# 拿到 authtoken：https://dashboard.cpolar.com/auth
-cpolar authtoken <你的authtoken>
+```bash
+cp .env.example data/.env && vim data/.env   # 填 token / 各类 key
+docker compose up -d --build
+docker compose logs -f app
 ```
 
-> `.env` 含明文 token，**绝不提交**；`start_prod.ps1` / `start_public.ps1` / `.env.example` 是模板，可提交。换 token 直接编辑 `.env` 重启即可吊销旧值。
+浏览器访问 `http://<your-server-ip-or-domain>`，输入 `KB_API_TOKEN` 登录。
 
-### 4. 启动方式
+### 开发与生产并存
 
-#### 仅本地（不暴露公网）
-
-```powershell
-cd frontend; npm run build; cd ..   # 仅第一次或前端有改动时
-.\start_prod.ps1
-```
-
-打开 `http://127.0.0.1:5000` 跳 `/login`，粘贴 `KB_API_TOKEN` 即可。
-
-#### 一键公网（推荐）
-
-```powershell
-cd frontend; npm run build; cd ..   # 仅第一次或前端有改动时
-.\start_public.ps1
-```
-
-脚本会：
-1. 新窗口启动 Flask（沿用 `start_prod.ps1`）
-2. 启动 cpolar 隧道
-3. 自动探测 cpolar dashboard 端口并在当前窗口打印形如 `https://xxxxxxxx.r3.cpolar.cn` 的公网 URL
-4. Ctrl+C 退出时一并关闭 Flask 与 cpolar
-
-> 免费版 cpolar 每次启动 URL 随机变化（要固定子域名需升级套餐）。
->
-> ⚠️ **隐私边界**：cpolar 是公网 TLS 终止方，理论上可见明文请求/响应内容。本项目的 Bearer 鉴权 + 速率限制能挡住未授权访问，但**无法防止中继方观察流量**。仅适合非敏感场景（文献元数据、个人知识库）；如要传输敏感内容，请改用自控隧道（frp/nps + 自有 VPS）、企业 VPN 或局域网访问。
-
-### 5. 开发与生产并存
-
-公网走打包产物（`frontend/dist/`），日常开发仍可用 Vite dev server（`localhost:5173`）+ Flask（`localhost:5000`）。`KB_API_TOKEN` 未设置时后端进入 dev mode 全放行，前端 axios 也不会注入 token，体验和原来一致。
-
-### 6. 备选：Tailscale Funnel（需海外网络）
-
-如你的网络可稳定访问 `controlplane.tailscale.com` 与 Tailscale DERP（国内一般不可用），可改走 Tailscale Funnel，免去第三方中继：
-
-```powershell
-.\start_prod.ps1            # 起 Flask
-tailscale funnel 5000       # 拿到 https://xxx.tail-xxxxx.ts.net
-tailscale funnel --https=443 off   # 关闭
-```
-
-国内尝试过的失败现象：客户端持续 bootstrap DERP 全部 `context deadline exceeded`，无法注册到 controlplane。Cloudflare Tunnel 同样不稳定。
+公网走打包产物（`frontend/dist/`，由 Dockerfile stage1 构建），日常开发仍可用
+Vite dev server（`localhost:5173`）+ Flask（`localhost:5000`）。`KB_API_TOKEN` 未
+设置时后端进入 dev mode 全放行，前端 axios 不注入 token，体验和原来一致。
 
 ---
 

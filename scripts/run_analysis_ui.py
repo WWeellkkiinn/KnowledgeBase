@@ -34,9 +34,9 @@ except FileNotFoundError as _e:
           f"('_dompurify.min.js','https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js')]]\"")
     sys.exit(1)
 
-OLLAMA_BASE = "http://<ollama-host>:13812"
+OLLAMA_BASE = os.environ.get("KB_OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_CHAT = f"{OLLAMA_BASE}/api/chat"
-MODEL = "qwen3.6-27b"
+MODEL = os.environ.get("KB_OLLAMA_MODEL", "qwen3.6-27b")
 
 SYSTEM_TPL = (
     "/no_think\n"

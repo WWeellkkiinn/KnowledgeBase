@@ -16,7 +16,7 @@
 
 | 项 | 细节 |
 |----|------|
-| Ollama 端点 | `http://<ollama-host>:13812` |
+| Ollama 端点 | `KB_OLLAMA_URL` 环境变量（默认 `http://localhost:11434`） |
 | 模型 | `qwen3.6-27b`（`/no_think` 前缀开启思维链，tag 生成不需要，直接用默认） |
 | 触发时机 | 论文入库时自动触发；批量补跑接口供已有论文使用 |
 | 存储 | `papers` 表新增 `tags` JSON 字段；词表存 `services/tags_vocab.json` |
@@ -47,7 +47,7 @@
 
 ## F3 — 邮件推送
 
-**目标**：每天凌晨自动抓取新论文，筛选 ABM 相关内容，发送日报到 `<DIGEST_RECIPIENT>`；同时提供手动触发按钮。
+**目标**：每天凌晨自动抓取新论文，筛选 ABM 相关内容，发送日报到 `&lt;DIGEST_RECIPIENT&gt;`；同时提供手动触发按钮。
 
 ### 流程
 
@@ -56,7 +56,7 @@
   → 查询过去 24h 新增论文（created_at > now-24h）
   → 对每篇论文：调用 Ollama 判断与 ABM 领域的相关性（0–1 分）
   → 相关性 ≥ 0.6 的论文入选，同时触发 F1+F2 分析（若尚未分析）
-  → 组装 HTML 邮件 → 发送至 <DIGEST_RECIPIENT>
+  → 组装 HTML 邮件 → 发送至 &lt;DIGEST_RECIPIENT&gt;
   → 无入选论文时跳过（不发空邮件）
 ```
 
@@ -89,7 +89,7 @@
 | 手动触发 | 新增 `POST /api/digest/send` 接口；前端 Dashboard 增加"发送今日日报"按钮 |
 | 邮件发送 | Python `smtplib`，163 SMTP（`smtp.163.com:465`，SSL） |
 | SMTP 认证 | 授权码读自 `.env`（`EMAIL_AUTH_CODE=...`），**⚠️ 需用户提供授权码** |
-| 收件人 | `<DIGEST_RECIPIENT>`（写死在配置里，不做多收件人） |
+| 收件人 | `&lt;DIGEST_RECIPIENT&gt;`（写死在配置里，不做多收件人） |
 
 ---
 

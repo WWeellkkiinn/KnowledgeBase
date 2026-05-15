@@ -1,17 +1,21 @@
 .claude/
+CLAUDE.md
 .cache/
 .pytest_cache/
 tests/downloads/
 __pycache__/
 *.pyc
 *.log
-scripts/config.py
 
 # 本地环境变量（含 token），仅本机使用
 .env
 .env.local
 
-# start_public.ps1 运行时产生的日志
+# Docker 部署运行时数据（ECS 上的 /opt/kb/data 镜像）
+data/
+backup/
+
+# 旧 start_public.ps1 / cpolar 残留（已弃用，保留忽略避免误入库）
 flask_public.log
 flask_public.log.err
 cpolar.log
@@ -25,3 +29,9 @@ kb.db-wal
 
 # 迁移脚本运行报告（每次重跑覆盖，不入库）
 migration_report.md
+
+# 前端构建中间产物
+frontend/node_modules/
+frontend/dist/
+frontend/vite.log
+frontend/vite.err.log
