@@ -38,6 +38,42 @@ def _utcnow() -> datetime:
 # ── cron 表达式（最小子集；完整解析交给 APScheduler）─────────────────
 # 这里只在没装 APScheduler 时用作 fallback，计算下一次执行时间。
 # 支持："every Nm/Nh/Nd" 简化语法 + 默认 7 天。
+
+# 最小触发间隔常量（模块级，供 parse_simple_interval / clamp_overdue_subs 共享）
+_MIN_INTERVAL = timedelta(hours=6)
+
+
+def _parse_simple_interval_raw(expr: str) -> Optional[timedelta]:
+    """解析极简单位表达式（Nm/Nh/Nd / every Nm/...），**不做 clamp**。
+
+    专给 boot clamp 路径用：判断"用户原始声明的间隔"是否短于 min_interval。
+    返回 None 表示：非极简语法（例如 5 段 cron 表达式），调用方应跳过 boot clamp。
+    解析失败或 n<=0 返回 timedelta(days=7)（与公共 API 行为一致）。
+    """
+    e = (expr or "").strip().lower()
+    if not e:
+        return timedelta(days=7)
+    if e.startswith("every "):
+        e = e[len("every "):].strip()
+    try:
+        unit = e[-1] if e else ""
+        if unit in ("m", "h", "d") and e[:-1].lstrip("-").isdigit():
+            n = int(e[:-1])
+            if n <= 0:
+                return timedelta(days=7)
+            if unit == "m":
+                return timedelta(minutes=n)
+            if unit == "h":
+                return timedelta(hours=n)
+            return timedelta(days=n)
+    except ValueError:
+        pass
+    # 非极简语法（如 5 段 cron）：返回 None，让调用方决定如何处理
+    if len(e.split()) == 5:
+        return None
+    return timedelta(days=7)
+
+
 def parse_simple_interval(expr: str) -> timedelta:
     """解析间隔表达式（含极简 + 标准 cron）。失败/负数默认 7 天。
 
@@ -55,7 +91,7 @@ def parse_simple_interval(expr: str) -> timedelta:
     # 公网部署最小触发间隔：防止 every 1m 把外部 API/Ollama 打满
     # 折中策略：保留用户原始 cron_expr 不变，但 next_run_at 至少 6h 后；
     # 同时打 warning 让运维知情（避免静默覆盖）
-    min_interval = timedelta(hours=6)
+    min_interval = _MIN_INTERVAL
 
     def _clamp(actual: timedelta) -> timedelta:
         if actual < min_interval:
@@ -351,7 +387,7 @@ def clamp_overdue_subs(session: Session) -> int:
 
     返回被 clamp 的订阅数。
     """
-    min_interval = timedelta(hours=6)
+    min_interval = _MIN_INTERVAL
     now = _utcnow()
     floor = now + min_interval
     overdue = list(session.execute(
@@ -363,9 +399,13 @@ def clamp_overdue_subs(session: Session) -> int:
     ).scalars().all())
     n = 0
     for sub in overdue:
-        # 仅当订阅本身是短周期时 clamp（与 _clamp 保持一致）
-        interval = parse_simple_interval(sub.cron_expr or "")
-        if interval < min_interval:
+        # 仅当订阅本身是短周期时 clamp。必须用 raw 解析判断"用户声明的原始间隔"，
+        # 否则 parse_simple_interval 已 clamp 到 6h，比较恒为 False，clamp 永不生效。
+        raw_interval = _parse_simple_interval_raw(sub.cron_expr or "")
+        if raw_interval is None:
+            # 5 段 cron 表达式：boot 阶段跳过 clamp（让 APScheduler/run_due 自然处理）
+            continue
+        if raw_interval < min_interval:
             _log.warning(
                 "[boot clamp] subscription %d cron_expr=%r next_run_at=%s overdue, "
                 "delayed to %s (cron_expr preserved)",
@@ -398,9 +438,12 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         from apscheduler.schedulers.background import BackgroundScheduler
     except ImportError as e:
         _log.warning("APScheduler not installed; subscription scheduler disabled (%s)", e)
+        # APScheduler 不可用时不做 clamp：没有调度器会触发 run_due，
+        # clamp 没意义且会浪费 DB IO
         return None
 
-    # Boot 时对短周期 overdue 订阅做一次 clamp，避免瞬时全触发
+    # Boot 时对短周期 overdue 订阅做一次 clamp，避免瞬时全触发。
+    # 必须放在 APScheduler import 成功之后：import 失败已 return None，不再走到这里。
     _boot_session = SessionLocal()
     try:
         clamped = clamp_overdue_subs(_boot_session)

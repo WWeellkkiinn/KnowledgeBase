@@ -127,19 +127,26 @@ try {
     # cpolar 公网域名会随服务端调度变化（.cpolar.cn / .cpolar.top / .cpolar.io 等），
     # 用宽松正则匹配多种顶级域，避免脚本因后缀变更误报失败
     $urlRegex = 'https://[a-zA-Z0-9.-]+\.cpolar\.[a-z]+'
-    # cpolar 首次连接控制服务器可能慢，90 秒足够即使弱网也能拿到 URL
-    for ($i = 0; $i -lt 90; $i++) {
+    # 总超时用 stopwatch 控制，避免 fallback 端口（4040..4045）每轮全扫导致
+    # 最坏 90 × 6 × 1s 累加（实测可达 540s）远超用户感知的 90s
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $maxSeconds = 90
+    while ($sw.Elapsed.TotalSeconds -lt $maxSeconds) {
         Start-Sleep -Seconds 1
         if ($script:cpolarProc.HasExited) {
             throw "cpolar 进程已退出。日志：$cpolarLog / $cpolarLog.err"
         }
-        # 找出 cpolar 进程实际开了哪些 4040+ 监听端口
+        # 优先使用 Get-NetTCPConnection 拿真实监听端口（精确、O(1) 候选）
         $candidates = @()
         try {
             $candidates = Get-NetTCPConnection -State Listen -OwningProcess $script:cpolarProc.Id -ErrorAction Stop |
                 Where-Object { $_.LocalPort -ge 4040 -and $_.LocalPort -lt 4060 } |
                 Select-Object -ExpandProperty LocalPort -Unique
-        } catch { $candidates = 4040..4045 }
+        } catch {
+            # 权限不足等场景才走 fallback；这里只试 4040 一个最常用端口，
+            # 不要把 4040..4045 全 6 个端口都试（防累加超时）
+            $candidates = @(4040)
+        }
         foreach ($p in $candidates) {
             try {
                 $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$p/http/in" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
@@ -153,6 +160,7 @@ try {
         }
         if ($publicUrl) { break }
     }
+    $sw.Stop()
 
     if (-not $publicUrl) {
         throw '无法从 cpolar dashboard 抓取公网 URL；可能 authtoken 未配置或网络异常。'

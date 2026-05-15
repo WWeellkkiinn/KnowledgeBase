@@ -1,5 +1,8 @@
 import axios, { type AxiosInstance, AxiosError } from 'axios'
-import { resetSocket } from './socket'
+// 注意：故意不在此处 import { resetSocket } from './socket'。
+// socket.ts 依赖本文件的 getToken，若顶层互相 import 会形成循环依赖，
+// 在某些求值顺序下 resetSocket 可能为 undefined，导致 401 拦截器抛 TypeError 中断登出流程。
+// 改为 401 拦截器内动态 import，单向化模块依赖。
 
 export const TOKEN_KEY = 'KB_API_TOKEN'
 export const API_BASE_URL = '/api'
@@ -70,7 +73,7 @@ client.interceptors.request.use((config) => {
 
 client.interceptors.response.use(
   (resp) => resp,
-  (err: AxiosError) => {
+  async (err: AxiosError) => {
     // 401：清掉无效 token 并跳登录页（避免无限刷新；登录页本身不会触发拦截）
     if (
       err.response?.status === 401
@@ -81,8 +84,10 @@ client.interceptors.response.use(
       // 5 秒后允许下一波 401 触发跳转；防止跳转被浏览器/router 拦截后永久卡死
       setTimeout(() => { redirecting = false }, 5000)
       clearToken()
-      // 断开旧 socket，避免登录后 /progress 仍用过期 token
-      resetSocket()
+      // 断开旧 socket，避免登录后 /progress 仍用过期 token。
+      // 动态 import 打破 client ↔ socket 循环依赖；await 确保 transport 关闭后再跳转，
+      // 防止 in-flight 帧带旧 token 抵达 server。失败兜底为 noop。
+      await import('./socket').then(({ resetSocket }) => resetSocket()).catch(() => {})
       const current = window.location.pathname + window.location.search
       const back = isSafeBackPath(current) ? encodeURIComponent(current) : '/'
       window.location.href = `/login?back=${back}`

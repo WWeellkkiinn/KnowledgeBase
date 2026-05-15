@@ -24,14 +24,25 @@ export function ensureConnected(): Socket {
   return s
 }
 
-// 登录/登出后调用：丢掉旧 socket，下次 getSocket() 用新 token 重建
-export function resetSocket(): void {
-  if (_socket) {
+// 登录/登出后调用：丢掉旧 socket，下次 getSocket() 用新 token 重建。
+// 返回 Promise：等 underlying transport 真正发出 disconnect 包后再 resolve，
+// 否则调用方立刻跳转会让旧 transport 的 in-flight 帧带着旧 token 抵达 server。
+// 1s 超时兜底，避免 socket 永远不触发 disconnect 事件时卡住登出流程。
+export async function resetSocket(): Promise<void> {
+  const s = _socket
+  _socket = null
+  if (!s) return
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 1000)
     try {
-      _socket.disconnect()
+      s.once('disconnect', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+      s.disconnect()
     } catch {
-      // ignore
+      clearTimeout(timer)
+      resolve()
     }
-    _socket = null
-  }
+  })
 }

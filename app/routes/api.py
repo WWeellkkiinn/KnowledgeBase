@@ -324,11 +324,16 @@ def ai_analyze_paper(paper_id: int):
     if not p.abstract:
         return jsonify({"error": "no abstract"}), 422
     refresh = bool((request.get_json(silent=True) or {}).get("refresh", False))
-    # 幂等守卫：仅当上次分析"完整成功"（ai_summary + tags 都非空）时跳过。
-    # 失败路径会写 ai_analyzed_at 但不写 ai_summary；部分失败可能 summary 写了
-    # 而 tags 仍为空/None（batch 路径下 new_tags==[] 不会覆盖原值，但首次分析为
-    # None），此时也应允许重试，避免永久缓存"缺 tags"的不完整结果。
-    if p.ai_analyzed_at is not None and p.ai_summary and p.tags and not refresh:
+    # 幂等守卫：仅当上次分析"已完成"（ai_summary 非空 且 tags 字段被显式赋过值）时跳过。
+    # tags 用 is not None 判断（不是 truthy）：历史成功分析但 LLM 没产出标签
+    # 会落 tags=[]，仍属"完成"状态，再跑只会重复烧 LLM 成本。
+    # 失败路径仅写 ai_analyzed_at，不写 ai_summary，会自然落到重试分支。
+    if (
+        p.ai_analyzed_at is not None
+        and p.ai_summary
+        and p.tags is not None
+        and not refresh
+    ):
         return jsonify(_paper_to_dict(p, include_journal=True))
     from services.ai_service import analyze_paper
     try:

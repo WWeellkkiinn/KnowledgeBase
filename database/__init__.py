@@ -9,6 +9,7 @@ SQLite 默认不执行外键约束；本模块在每次 connect 上注册 `PRAGM
 from __future__ import annotations
 
 import os
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -61,7 +62,14 @@ def enable_sqlite_foreign_keys(target: Engine) -> None:
         db_path = target.url.database
         # 仅对落盘 SQLite 文件设置；":memory:" / 空路径跳过
         if db_path and db_path != ":memory:":
-            import sqlite3
+            # target.url.database 可能是相对路径（如 sqlite:///kb.db）。进程 cwd
+            # 漂移（service / worker / 测试 fixture）会让本函数和 SQLAlchemy 池
+            # 打开不同物理文件，WAL 设置作用到错的库上。先解析为绝对路径再开。
+            if not Path(db_path).is_absolute():
+                db_path = str(Path(db_path).resolve())
+            # TODO(security): 若未来 KB_DB_URL 允许来自非信任源（CI、外部配置中心），
+            # 这里需要做 path traversal 校验（限制在项目根 + 白名单目录内）。
+            # 当前 env 仅由部署者控制，暂不强制校验。
             _raw = sqlite3.connect(db_path, timeout=30)
             try:
                 _raw.execute("PRAGMA journal_mode=WAL")
