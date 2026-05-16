@@ -6,14 +6,12 @@ import { useTasksStore } from '@/stores/tasks'
 import { usePapersStore } from '@/stores/papers'
 import { useSubscriptionsStore } from '@/stores/subscriptions'
 import { useProgressStore } from '@/stores/progress'
-import { useRecommendationsStore } from '@/stores/recommendations'
 import { digestApi } from '@/api/endpoints'
 
 const tasks = useTasksStore()
 const papers = usePapersStore()
 const subs = useSubscriptionsStore()
 const progress = useProgressStore()
-const recs = useRecommendationsStore()
 const refreshing = ref(false)
 const watched = ref<Set<string>>(new Set())
 
@@ -21,7 +19,7 @@ async function refresh() {
   refreshing.value = true
   try {
     // Dashboard 仅展示计数，不再拉 papers 全表（C2/X2 审查）
-    await Promise.all([tasks.fetch(), papers.fetchStats(), subs.fetchAll(), recs.fetch()])
+    await Promise.all([tasks.fetch(), papers.fetchStats(), subs.fetchAll()])
   } finally {
     refreshing.value = false
   }
@@ -157,78 +155,27 @@ async function sendDigest() {
 
       <div class="rounded-lg border border-slate-200 bg-white p-4">
         <div class="mb-3 flex items-center justify-between">
-          <h2 class="font-semibold">订阅 Inbox</h2>
+          <h2 class="font-semibold">今日推送 Top 5</h2>
           <RouterLink
             to="/subscriptions"
-            class="text-xs text-blue-600 hover:underline"
-          >
-            管理 →
-          </RouterLink>
-        </div>
-        <p v-if="subs.inbox.length === 0" class="text-sm text-slate-500">
-          暂无收件。
-        </p>
-        <ul v-else class="divide-y divide-slate-100">
-          <li
-            v-for="item in subs.inbox.slice(0, 8)"
-            :key="item.id"
-            class="flex items-center justify-between py-2 text-sm"
-          >
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-slate-700">
-                {{ (item.metadata?.title as string) || '(无标题)' }}
-              </div>
-              <div class="text-xs text-slate-400">
-                sub #{{ item.subscription_id }}
-              </div>
-            </div>
-            <button
-              v-if="!item.notified"
-              class="ml-2 text-xs text-blue-600 hover:underline"
-              @click="subs.markRead(item.id)"
-            >
-              标记已读
-            </button>
-            <span v-else class="ml-2 text-xs text-slate-400">已读</span>
-          </li>
-        </ul>
-      </div>
-
-      <div class="rounded-lg border border-slate-200 bg-white p-4">
-        <div class="mb-3 flex items-center justify-between">
-          <h2 class="font-semibold">今日推荐</h2>
-          <RouterLink
-            to="/recommendations"
             class="text-xs text-blue-600 hover:underline"
           >
             查看全部 →
           </RouterLink>
         </div>
-        <p v-if="recs.loading && recs.topPicks.length === 0" class="text-sm text-slate-500">
+        <p v-if="subs.loading && subs.inbox.length === 0" class="text-sm text-slate-500">
           加载中…
         </p>
-        <p v-else-if="recs.topPicks.length === 0" class="text-sm text-slate-500">
-          暂无推荐。
+        <p v-else-if="subs.inbox.length === 0" class="text-sm text-slate-500">
+          暂无推送。
         </p>
-        <ul v-else class="divide-y divide-slate-100">
-          <li
-            v-for="r in recs.topPicks"
-            :key="r.id"
-            class="py-2 text-sm"
-          >
-            <div class="flex items-start justify-between gap-2">
-              <div class="min-w-0 flex-1">
-                <div class="truncate text-slate-700" :title="r.title">
-                  {{ r.title }}
-                </div>
-                <div class="text-xs text-slate-400">
-                  {{ r.source }} · 评分 {{ r.relevance_score.toFixed(2) }}
-                  <span v-if="r.matched_theme"> · {{ r.matched_theme }}</span>
-                </div>
-              </div>
-            </div>
-          </li>
-        </ul>
+        <div v-else class="space-y-2">
+          <div
+            v-for="item in [...subs.inbox].sort((a, b) => (b.llm_score ?? -1) - (a.llm_score ?? -1)).slice(0, 5)"
+            :key="item.id"
+            v-html="item.card_html"
+          ></div>
+        </div>
       </div>
     </section>
   </section>

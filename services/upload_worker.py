@@ -65,7 +65,8 @@ _atexit_registered = False
 UPLOAD_TASK_TYPE = "upload_pipeline"
 BACKWARD_TRACK_TYPE = "backward_track"
 FORWARD_TRACK_TYPE = "forward_track"
-_HANDLED_TYPES = (UPLOAD_TASK_TYPE, BACKWARD_TRACK_TYPE, FORWARD_TRACK_TYPE)
+GENERATE_QUERIES_TASK_TYPE = "generate_queries"
+_HANDLED_TYPES = (UPLOAD_TASK_TYPE, BACKWARD_TRACK_TYPE, FORWARD_TRACK_TYPE, GENERATE_QUERIES_TASK_TYPE)
 
 
 def _utcnow() -> datetime:
@@ -225,8 +226,32 @@ def _process_one(session, task: models.Task) -> None:
         _process_track(session, task, direction="backward")
     elif task.type == FORWARD_TRACK_TYPE:
         _process_track(session, task, direction="forward")
+    elif task.type == GENERATE_QUERIES_TASK_TYPE:
+        _process_generate_queries(session, task)
     else:
         raise _UnknownTaskTypeError(f"unknown task type: {task.type}")
+
+
+def _process_generate_queries(session, task: models.Task) -> None:
+    """后台调 LLM 生成 OpenAlex 检索式。payload: {subscription_id: int}。
+
+    异常向上抛由 worker 主循环 _fail_task 处理（attempt 自增 + 重试，达上限标 failed）。
+    最终失败时 generated_queries 保持 None，前端列表行可显示"生成失败"。
+    """
+    payload = task.payload_json or {}
+    sub_id = payload.get("subscription_id")
+    if not sub_id:
+        raise RuntimeError("generate_queries task missing subscription_id")
+    sub = session.get(models.Subscription, int(sub_id))
+    if sub is None:
+        raise RuntimeError(f"subscription {sub_id} disappeared")
+    if not sub.description:
+        raise RuntimeError(f"subscription {sub_id} has no description")
+
+    from services.llm_query_gen import generate_openalex_queries
+    queries = generate_openalex_queries(sub.description)
+    sub.generated_queries = queries or None
+    session.commit()
 
 
 def _process_track(session, task: models.Task, *, direction: str) -> None:
@@ -603,4 +628,5 @@ __all__ = [
     "wake_worker",
     "compute_sha1",
     "UPLOAD_TASK_TYPE",
+    "GENERATE_QUERIES_TASK_TYPE",
 ]

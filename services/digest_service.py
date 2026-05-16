@@ -158,6 +158,31 @@ def _build_html(entries: list[dict], date_str: str) -> str:
 </body></html>"""
 
 
+def _send_html_mail(subject: str, html: str) -> dict:
+    """组装并发送一封 HTML 邮件。配置缺失返回 reason；SMTP 失败抛 RuntimeError。"""
+    from_addr, to_addr, auth_code = _get_email_config()
+    if not auth_code or not from_addr or not to_addr:
+        _log.error("digest: email config not loaded")
+        return {"sent": False, "reason": "missing_email_config"}
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    try:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(_SMTP_HOST, _SMTP_PORT, context=ctx) as server:
+            server.login(from_addr, auth_code)
+            server.send_message(msg)
+        return {"sent": True}
+    except smtplib.SMTPException as exc:
+        # 不让授权码意外随 stack trace 漏到日志
+        _log.error("digest send failed (SMTP): %s", type(exc).__name__)
+        raise RuntimeError(f"SMTP failure: {type(exc).__name__}") from None
+
+
 def send_digest(
     db: Session,
     *,
@@ -267,28 +292,66 @@ def send_digest(
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     html = _build_html(entries, date_str)
 
-    from_addr, to_addr, auth_code = _get_email_config()
-    if not auth_code or not from_addr or not to_addr:
-        _log.error("digest: email config not loaded (scripts/config.py missing?)")
-        return {"sent": False, "reason": "missing_email_config"}
+    result = _send_html_mail(
+        f"[KnowledgeBase] 今日论文日报 · {date_str}（共 {len(entries)} 篇）", html,
+    )
+    if result.get("sent"):
+        _log.info("digest sent: %d papers", len(entries))
+        result["paper_count"] = len(entries)
+    return result
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[KnowledgeBase] 今日论文日报 · {date_str}（共 {len(entries)} 篇）"
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-    msg.attach(MIMEText(html, "html", "utf-8"))
 
-    try:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL(_SMTP_HOST, _SMTP_PORT, context=ctx) as server:
-            server.login(from_addr, auth_code)
-            server.send_message(msg)
-        _log.info("digest sent: %d papers to %s", len(entries), to_addr)
-        return {"sent": True, "paper_count": len(entries)}
-    except smtplib.SMTPException as exc:
-        # 不让授权码意外随 stack trace 漏到日志
-        _log.error("digest send failed (SMTP): %s", type(exc).__name__)
-        raise RuntimeError(f"SMTP failure: {type(exc).__name__}") from None
-    except Exception as exc:
-        _log.error("digest send failed: %s", type(exc).__name__)
-        raise
+def _build_subscription_html(rows: list[tuple], date_str: str) -> str:
+    """rows: [(SubscriptionResult, Subscription)]，按 llm_score desc 已排序"""
+    from services.card_renderer import render_subscription_card
+
+    parts = [render_subscription_card(r, sub) for r, sub in rows]
+    body = "".join(parts) or '<p style="color:#64748b">无评分结果。</p>'
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:-apple-system,sans-serif;max-width:720px;margin:0 auto;padding:24px;color:#334155">
+<h2 style="color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:8px">
+  KnowledgeBase · 订阅推送 · {_e(date_str)}</h2>
+{body}
+<p style="font-size:11px;color:#94a3b8;margin-top:24px">由 KnowledgeBase 自动生成</p>
+</body></html>"""
+
+
+def send_subscription_digest(
+    db: Session,
+    *,
+    subscription_id: Optional[int] = None,
+    limit: int = 10,
+    min_score: float = 0.0,
+) -> dict:
+    """把 subscription_results 中已评分的 top-N（按 llm_score desc）打成邮件。
+    subscription_id 不为空时只取该订阅的结果。
+    """
+    stmt = (
+        select(models.SubscriptionResult, models.Subscription)
+        .join(models.Subscription, models.SubscriptionResult.subscription_id == models.Subscription.id)
+        .where(models.SubscriptionResult.scored_at.isnot(None))
+        .where(models.SubscriptionResult.llm_score.isnot(None))
+        .where(models.SubscriptionResult.llm_score >= min_score)
+    )
+    if subscription_id is not None:
+        stmt = stmt.where(models.SubscriptionResult.subscription_id == subscription_id)
+    stmt = stmt.order_by(models.SubscriptionResult.llm_score.desc()).limit(limit)
+    rows = list(db.execute(stmt).all())
+    if not rows:
+        _log.info("subscription_digest: no scored rows")
+        return {"sent": False, "reason": "no_scored_results"}
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    html = _build_subscription_html(rows, date_str)
+
+    result = _send_html_mail(
+        f"[KnowledgeBase] 订阅推送 · {date_str}（共 {len(rows)} 篇）", html,
+    )
+    if result.get("sent"):
+        _log.info("subscription_digest sent: %d papers", len(rows))
+        for r, _sub in rows:
+            r.notified = True
+        db.commit()
+        result["paper_count"] = len(rows)
+    return result

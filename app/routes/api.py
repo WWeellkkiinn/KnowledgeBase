@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import limiter
 from database import models
-from database.models_recs import UserProfile, Recommendation  # noqa: F401
+from services.card_renderer import render_subscription_card
 
 
 _log = logging.getLogger(__name__)
@@ -26,7 +26,6 @@ bp = Blueprint("api", __name__)
 
 # 异步 digest 全局互斥锁，防止 /digest/send?async=1 被重放堆积线程
 _digest_lock = threading.Lock()
-_profile_regen_lock = threading.Lock()
 
 
 # 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
@@ -708,10 +707,15 @@ def _sub_to_dict(s: models.Subscription) -> dict:
         "active": bool(s.active),
         "last_run_at": _iso_utc(s.last_run_at),
         "next_run_at": _iso_utc(s.next_run_at),
+        "description": s.description,
+        "generated_queries": s.generated_queries,
+        "queries_pending": bool(s.description and not s.generated_queries),
     }
 
 
-def _result_to_dict(r: models.SubscriptionResult) -> dict:
+def _result_to_dict(r: models.SubscriptionResult, sub: Optional[models.Subscription] = None) -> dict:
+    if sub is None:
+        sub = g.db.get(models.Subscription, r.subscription_id)
     return {
         "id": r.id,
         "subscription_id": r.subscription_id,
@@ -719,6 +723,15 @@ def _result_to_dict(r: models.SubscriptionResult) -> dict:
         "metadata": r.raw_metadata_json,
         "notified": bool(r.notified),
         "found_at": _iso_utc(r.found_at),
+        "llm_score": r.llm_score,
+        "llm_reason": r.llm_reason,
+        "scored_at": _iso_utc(r.scored_at),
+        "title_zh": r.title_zh,
+        "tags": r.tags_json or [],
+        "research_question": r.research_question,
+        "methodology": r.methodology,
+        "key_findings": r.key_findings_json or [],
+        "card_html": render_subscription_card(r, sub),
     }
 
 
@@ -741,13 +754,19 @@ def create_subscription():
             type=body.get("type", ""),
             target=body.get("target", {}),
             cron_expr=body.get("cron_expr", "every 7d"),
+            description=body.get("description", ""),
             active=bool(body.get("active", True)),
         )
         g.db.commit()
-        return jsonify(_sub_to_dict(sub)), 201
     except ValueError as e:
         g.db.rollback()
         return jsonify({"error": str(e)}), 400
+    try:
+        from services.upload_worker import wake_worker
+        wake_worker()
+    except Exception:
+        pass
+    return jsonify(_sub_to_dict(sub)), 201
 
 
 @bp.patch("/subscriptions/<int:sub_id>")
@@ -760,6 +779,7 @@ def update_subscription(sub_id: int):
             cron_expr=body.get("cron_expr"),
             active=body.get("active"),
             target=body.get("target"),
+            description=body.get("description"),
         )
     except ValueError as e:
         g.db.rollback()
@@ -767,7 +787,47 @@ def update_subscription(sub_id: int):
     if sub is None:
         return jsonify({"error": "not found"}), 404
     g.db.commit()
+    try:
+        from services.upload_worker import wake_worker
+        wake_worker()
+    except Exception:
+        pass
     return jsonify(_sub_to_dict(sub))
+
+
+@bp.post("/subscriptions/<int:sub_id>/run-now")
+@limiter.limit("10 per hour")
+def run_subscription_now(sub_id: int):
+    """手动立刻执行一个订阅，不等 cron tick。返回 {ran, found, errors}。
+
+    复用 SubscriptionService._execute_one 的内部逻辑，并按 run_due 的方式更新
+    last_run_at / next_run_at（保证立刻刷新后下次 cron 时间也被推后）。
+    """
+    from services import SubscriptionService
+    from services.subscription_service import _utcnow, compute_next_run_at
+
+    sub = g.db.get(models.Subscription, sub_id)
+    if sub is None:
+        return jsonify({"error": "not found"}), 404
+    if not sub.active:
+        return jsonify({"error": "subscription is paused"}), 409
+
+    svc = SubscriptionService()
+    try:
+        found = svc._execute_one(g.db, sub)
+    except Exception as e:
+        g.db.rollback()
+        return jsonify({"error": f"execute failed: {e}"}), 500
+    # 更新元数据（独立 try，与 run_due 对齐）
+    try:
+        now2 = _utcnow()
+        sub.last_run_at = now2
+        sub.next_run_at = compute_next_run_at(sub.cron_expr, now2)
+        g.db.commit()
+    except Exception as e:
+        g.db.rollback()
+        return jsonify({"error": f"metadata update failed: {e}"}), 500
+    return jsonify({"ran": 1, "found": found, "errors": 0, "next_run_at": sub.next_run_at.isoformat() if sub.next_run_at else None})
 
 
 @bp.delete("/subscriptions/<int:sub_id>")
@@ -798,17 +858,24 @@ def list_inbox():
     """订阅发现的新论文。?unread=1 只看未读。"""
     unread = request.args.get("unread") in ("1", "true", "yes")
     try:
-        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+        limit = max(1, min(int(request.args.get("limit", 10)), 500))
     except ValueError:
         return jsonify({"error": "invalid pagination"}), 400
     stmt = select(models.SubscriptionResult).order_by(
-        models.SubscriptionResult.found_at.desc()
+        models.SubscriptionResult.llm_score.desc().nulls_last(),
+        models.SubscriptionResult.found_at.desc(),
     )
     if unread:
         stmt = stmt.where(models.SubscriptionResult.notified.is_(False))
     stmt = stmt.limit(limit)
     rows = g.db.execute(stmt).scalars().all()
-    return jsonify({"items": [_result_to_dict(r) for r in rows]})
+    sub_ids = {r.subscription_id for r in rows}
+    subs = {} if not sub_ids else {
+        s.id: s for s in g.db.execute(
+            select(models.Subscription).where(models.Subscription.id.in_(sub_ids))
+        ).scalars()
+    }
+    return jsonify({"items": [_result_to_dict(r, subs.get(r.subscription_id)) for r in rows]})
 
 
 @bp.post("/inbox/<int:result_id>/read")
@@ -1283,102 +1350,3 @@ def send_digest_now():
         return jsonify({"error": "digest failed"}), 502
 
 
-# ─── Recommendations & Profile ─────────────────────────────────────
-
-def _serialize_recommendation(r: Recommendation) -> dict:
-    return {
-        "id": r.id, "external_id": r.external_id, "source": r.source,
-        "title": r.title, "abstract": r.abstract, "authors_json": r.authors_json,
-        "year": r.year, "url": r.url, "matched_theme": r.matched_theme,
-        "relevance_score": r.relevance_score, "reason": r.reason,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "dismissed": r.dismissed, "saved_to_library": r.saved_to_library,
-    }
-
-
-@bp.get("/recommendations")
-@limiter.limit("30 per minute")
-def list_recommendations():
-    try:
-        limit = int(request.args.get("limit", 50))
-        offset = int(request.args.get("offset", 0))
-    except (TypeError, ValueError):
-        return jsonify({"error": "invalid pagination parameter"}), 400
-    if not 1 <= limit <= 200 or not 0 <= offset <= 1000:
-        return jsonify({"error": "pagination parameter out of range"}), 400
-    stmt = (
-        select(Recommendation)
-        .where(Recommendation.dismissed.is_(False))
-        .where(Recommendation.saved_to_library.is_(False))
-    )
-    total = g.db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
-    rows = g.db.execute(
-        stmt
-        .order_by(Recommendation.relevance_score.desc(), Recommendation.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    ).scalars().all()
-    items = [_serialize_recommendation(r) for r in rows]
-    return jsonify({"items": items, "total": total})
-
-
-@bp.post("/recommendations/<int:rec_id>/dismiss")
-@limiter.limit("30 per minute")
-def dismiss_recommendation(rec_id: int):
-    rec = g.db.get(Recommendation, rec_id)
-    if not rec:
-        return jsonify({"error": "not found"}), 404
-    rec.dismissed = True
-    g.db.commit()
-    return jsonify({"ok": True})
-
-
-@bp.post("/recommendations/<int:rec_id>/save-to-library")
-@limiter.limit("10 per minute")
-def save_recommendation_to_library(rec_id: int):
-    rec = g.db.get(Recommendation, rec_id)
-    if not rec:
-        return jsonify({"error": "not found"}), 404
-    if rec.saved_to_library or rec.dismissed:
-        return jsonify({"error": "recommendation already handled"}), 409
-    # 创建 Paper stub（不立即触发分析；用户在论文库可手动 ai-analyze）
-    external_id = (rec.external_id or "").strip()
-    is_arxiv = external_id.startswith("arxiv:")
-    if not is_arxiv and not re.fullmatch(r"10\.\d{4,9}/[\w.\-/:;()]+$", external_id):
-        return jsonify({"error": "invalid DOI"}), 400
-    stem = re.sub(r"[^A-Za-z0-9._-]", "_", external_id or f"rec-{rec.id}").strip("._-")[:128]
-    if not stem:
-        stem = f"rec-{rec.id}"
-    paper = models.Paper(
-        stem=stem,
-        title=rec.title,
-        abstract=rec.abstract,
-        doi=None if is_arxiv else external_id,
-        arxiv_id=external_id[len("arxiv:"):] if is_arxiv else None,
-        authors_json=rec.authors_json,
-        year=rec.year,
-        status="pending",
-        source="subscription",
-    )
-    try:
-        g.db.add(paper)
-        g.db.flush()
-        rec.saved_to_library = True
-        g.db.commit()
-    except IntegrityError:
-        g.db.rollback()
-        return jsonify({"error": "paper already exists"}), 409
-    return jsonify({"ok": True, "paper_id": paper.id})
-
-
-@bp.post("/profile/regenerate")
-@limiter.limit("2 per hour")
-def regenerate_user_profile():
-    if not _profile_regen_lock.acquire(blocking=False):
-        return jsonify({"error": "profile regeneration already running"}), 429
-    from services.profile_service import regenerate_profile
-    try:
-        result = regenerate_profile(g.db, force=True)
-        return jsonify(result)
-    finally:
-        _profile_regen_lock.release()

@@ -18,11 +18,8 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/pages/Subscriptions.vue'),
   },
   { path: '/failures', name: 'failures', component: () => import('@/pages/Failures.vue') },
-  {
-    path: '/recommendations',
-    name: 'recommendations',
-    component: () => import('@/pages/Recommendations.vue'),
-  },
+  { path: '/feed', redirect: '/subscriptions' },
+  { path: '/recommendations', redirect: '/subscriptions' },
   { path: '/login', name: 'login', component: () => import('@/pages/Login.vue'), meta: { public: true } },
 ]
 

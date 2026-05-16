@@ -2,6 +2,8 @@
 # ──────────────── Stage 1: 前端构建 ────────────────
 FROM node:20-alpine AS frontend
 WORKDIR /build/frontend
+# 国内 mirror（海外部署改回 https://registry.npmjs.org 即可）
+RUN npm config set registry https://registry.npmmirror.com
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
@@ -10,6 +12,13 @@ RUN npm run build
 # ──────────────── Stage 2: 运行时 ────────────────
 FROM python:3.12-slim AS runtime
 
+# Debian apt 换阿里源（国内拉 deb.debian.org 极慢；海外部署可注释掉）
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
+        /etc/apt/sources.list 2>/dev/null \
+    || true
+
 # 系统依赖：libssl/libffi 给 pip 编译用；sqlite3 给 ecs-backup.sh 用；
 # tini 让 PID 1 正确收信号（compose stop 不会 kill -9）
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,6 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# pip 走清华源（国内提速；海外部署改回默认即可）
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
 
 # 先装依赖（利用 docker layer cache）
 COPY requirements.txt ./

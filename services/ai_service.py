@@ -48,8 +48,10 @@ def _get_client() -> httpx.Client:
     global _CLIENT
     cli = _CLIENT
     if cli is None or cli.is_closed:
+        # read=600s: num_ctx=71680 时 Ollama 首次加载 KV cache 极慢
+        # （27B 模型 + 70k ctx 显存压力大，可能 unload/reload）
         cli = httpx.Client(
-            timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=10.0),
+            timeout=httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0),
         )
         _CLIENT = cli
     return cli
@@ -130,12 +132,15 @@ def _sanitize_findings(raw: Any) -> list[str]:
     return out
 
 
-def _call_ollama(messages: list[dict], num_predict: int = 4096) -> str:
+def _call_ollama(messages: list[dict], num_predict: int = 8192) -> str:
+    # num_ctx=32768 匹配 Ollama 服务端 Modelfile 配置（qwen3.6-27b 默认就是 32k）；
+    # 模型原生支持 256k，但单卡 24GB RTX4090 装不下更大的 KV cache，强传会触发 reload+OOM。
+    # 思考型 LLM (qwen3.6-27b 默认开 thinking) 输出预算必须留出思考链 + 答案两段。
     payload = {
         "model": _MODEL,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": num_predict},
+        "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": num_predict},
     }
     resp = _get_client().post(_URL, json=payload)
     resp.raise_for_status()

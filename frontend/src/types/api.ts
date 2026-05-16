@@ -129,6 +129,9 @@ export interface Subscription {
   active: boolean
   last_run_at: string | null
   next_run_at: string | null
+  description?: string | null
+  generated_queries?: string[] | null
+  queries_pending?: boolean
 }
 
 export interface InboxItem {
@@ -138,6 +141,15 @@ export interface InboxItem {
   metadata: Record<string, unknown>
   notified: boolean
   found_at: string | null
+  title_zh?: string | null
+  tags?: string[]
+  research_question?: string | null
+  methodology?: string | null
+  key_findings?: string[]
+  llm_score?: number | null
+  llm_reason?: string | null
+  scored_at?: string | null
+  card_html?: string
 }
 
 export interface ProgressEvent {

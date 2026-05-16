@@ -20,6 +20,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -157,9 +158,16 @@ class Subscription(Base):
     active: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=text("1"), nullable=False, index=True
     )
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    generated_queries: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
 
 class SubscriptionResult(Base):
+    """订阅结果行。
+
+    llm_score / llm_reason / scored_at：LLM 相关性评分字段，由 score_pending_results 写入。
+    """
+
     __tablename__ = "subscription_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -176,6 +184,14 @@ class SubscriptionResult(Base):
     found_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.current_timestamp(), nullable=False
     )
+    llm_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    llm_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    scored_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    title_zh: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tags_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    research_question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
 
 class Citation(Base):

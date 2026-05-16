@@ -24,8 +24,16 @@ ssh <YOUR_DEPLOY_USER>@<YOUR_ECS_HOST>
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-# 放行 frp 控制端口
+# 放行 frp 控制端口（公网入口）
 ufw allow 7000/tcp
+
+# 放行 docker bridge → 宿主机的隧道端口（容器走 host.docker.internal 访问 frps 转出来的 Ollama）
+# 注意：必须用 source = 172.16.0.0/12（docker 默认私网池），不能省略 source，否则等于公网开放。
+# 端口随 frpc.toml 里 remotePort 调整（默认 13813，按你 Ollama 端口）。
+ufw allow from 172.16.0.0/12 to any port 13813 proto tcp comment 'kb-app -> frps tunnel'
+
+# 放行 nginx 对外端口（若宿主 80 空闲可改 80/tcp）
+ufw allow 8080/tcp
 
 # 准备部署目录
 mkdir -p /opt/kb && cd /opt/kb

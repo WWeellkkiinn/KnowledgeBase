@@ -19,14 +19,25 @@
 from __future__ import annotations
 
 import logging
+import re as _re_mod
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, models
+from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
+
+_NORM_TITLE_RE = _re_mod.compile(r"[^\w一-鿿]+", flags=_re_mod.UNICODE)
+
+
+def _norm_title(s: str) -> str:
+    if not s:
+        return ""
+    return _NORM_TITLE_RE.sub(" ", s.lower()).strip()
 
 _log = logging.getLogger(__name__)
 
@@ -72,6 +83,34 @@ def _parse_simple_interval_raw(expr: str) -> Optional[timedelta]:
     if len(e.split()) == 5:
         return None
     return timedelta(days=7)
+
+
+def compute_next_run_at(cron_expr: str, now: Optional[datetime] = None) -> datetime:
+    """计算下次运行时间。对齐策略：
+
+    - `every Nd`（N >= 1）→ 对齐到 next 03:00 UTC + (N-1) 天。
+      03:00 UTC = 11:00 北京；距 04:00 UTC 的 kb-daily-llm-scoring cron 1 小时，
+      足够 OpenAlex 拉数据。
+    - 其他（every Nm/Nh、5 段 cron 等）→ 用 raw interval（不对齐）。
+
+    返回 naive UTC datetime（与项目 _utcnow 对齐）。
+    """
+    if now is None:
+        now = _utcnow()
+    e = (cron_expr or "").strip().lower()
+    if e.startswith("every "):
+        e = e[len("every "):].strip()
+    if e.endswith("d") and e[:-1].isdigit():
+        n = int(e[:-1])
+        if n > 0:
+            # 取当天 03:00 UTC；若已过则推到明天；N > 1 再加 (N-1) 天
+            target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target = target + timedelta(days=1)
+            if n > 1:
+                target = target + timedelta(days=n - 1)
+            return target
+    return now + parse_simple_interval(cron_expr)
 
 
 def parse_simple_interval(expr: str) -> timedelta:
@@ -164,6 +203,7 @@ class SubscriptionService:
         type: str,
         target: dict,
         cron_expr: str,
+        description: str = "",
         active: bool = True,
     ) -> models.Subscription:
         if type not in ("paper_citations", "author_works", "topic_search", "arxiv_daily"):
@@ -174,10 +214,21 @@ class SubscriptionService:
             target_json=dict(target),
             cron_expr=cron_expr,
             active=active,
-            next_run_at=_utcnow() + parse_simple_interval(cron_expr),
+            description=description.strip() or None,
+            generated_queries=None,  # 后台任务填
+            next_run_at=compute_next_run_at(cron_expr),
         )
         session.add(sub)
         session.flush()
+        # 有 description 才需要生成 → 入队后台 task
+        if description.strip():
+            from services.task_queue import TaskQueue
+            from services.upload_worker import GENERATE_QUERIES_TASK_TYPE
+            TaskQueue(session).enqueue(
+                GENERATE_QUERIES_TASK_TYPE,
+                payload={"subscription_id": sub.id},
+                max_attempts=2,
+            )
         return sub
 
     @staticmethod
@@ -188,18 +239,32 @@ class SubscriptionService:
         cron_expr: Optional[str] = None,
         active: Optional[bool] = None,
         target: Optional[dict] = None,
+        description: Optional[str] = None,
     ) -> Optional[models.Subscription]:
         sub = session.get(models.Subscription, sub_id)
         if sub is None:
             return None
         if cron_expr is not None:
             sub.cron_expr = cron_expr
-            sub.next_run_at = _utcnow() + parse_simple_interval(cron_expr)
+            sub.next_run_at = compute_next_run_at(cron_expr)
         if active is not None:
             sub.active = bool(active)
         if target is not None:
             SubscriptionService._validate_target(sub.type, target)
             sub.target_json = dict(target)
+        if description is not None:
+            new_desc = description.strip() or None
+            if new_desc != sub.description:
+                sub.description = new_desc
+                sub.generated_queries = None  # 清空，触发重新生成
+                if new_desc:
+                    from services.task_queue import TaskQueue
+                    from services.upload_worker import GENERATE_QUERIES_TASK_TYPE
+                    TaskQueue(session).enqueue(
+                        GENERATE_QUERIES_TASK_TYPE,
+                        payload={"subscription_id": sub.id},
+                        max_attempts=2,
+                    )
         session.flush()
         return sub
 
@@ -244,8 +309,8 @@ class SubscriptionService:
             if not target.get("author_id"):
                 raise ValueError("author_works target requires 'author_id'")
         elif type == "topic_search":
-            if not target.get("query"):
-                raise ValueError("topic_search target requires 'query'")
+            # target 可空：检索式由 description 通过 LLM 生成存进 generated_queries
+            pass
         elif type == "arxiv_daily":
             cats = target.get("categories")
             if not cats or not isinstance(cats, list) or not all(isinstance(c, str) and c for c in cats):
@@ -289,7 +354,7 @@ class SubscriptionService:
                 try:
                     now2 = _utcnow()
                     sub.last_run_at = now2
-                    sub.next_run_at = now2 + parse_simple_interval(sub.cron_expr)
+                    sub.next_run_at = compute_next_run_at(sub.cron_expr, now2)
                     if owns:
                         session.commit()
                     else:
@@ -318,16 +383,71 @@ class SubscriptionService:
             from services.forward_track_service import ForwardTrackService
             result = ForwardTrackService(db_session=session).track(tgt["doi"])
             return self._materialize_citing(session, sub, result.get("citing_papers", []))
-        if sub.type == "author_works":
-            # M2.3 阶段先记录 placeholder；实际抓取留给后续 milestone（避免引入 OpenAlex
-            # author 列表 API 的额外复杂度，先保证调度通路）
-            _log.info("[subscription %d] author_works not yet implemented", sub.id)
-            return 0
         if sub.type == "topic_search":
-            _log.info("[subscription %d] topic_search not yet implemented", sub.id)
-            return 0
+            queries = sub.generated_queries or []
+            # 兼容旧数据：generated_queries 为空时 fallback 到 target.query 单查
+            if not queries:
+                legacy_query = (tgt.get("query") or "").strip()
+                if legacy_query:
+                    queries = [legacy_query]
+            if not queries:
+                return 0
+            # raw 总上限 20，按 query 数量平摊
+            per_query = max(1, 20 // len(queries))
+            since_iso = (_utcnow() - timedelta(days=14)).date().isoformat()
+            import httpx
+            mailto = _openalex_mailto()
+
+            # filter=title_and_abstract.search 严格匹配标题/摘要，支持 boolean
+            def _fetch(c: httpx.Client, q: str) -> list[dict]:
+                params = {
+                    "filter": f"title_and_abstract.search:{q},from_publication_date:{since_iso}",
+                    "per_page": per_query,
+                    "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
+                }
+                if mailto:
+                    params["mailto"] = mailto
+                try:
+                    r = c.get("https://api.openalex.org/works", params=params)
+                    r.raise_for_status()
+                    return r.json().get("results", [])
+                except Exception as e:
+                    _log.warning("[subscription %d] topic_search query %r openalex error: %s", sub.id, q, e)
+                    return []
+
+            all_works: list[dict] = []
+            with httpx.Client(timeout=20.0) as c:
+                with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as ex:
+                    for works in ex.map(lambda q: _fetch(c, q), queries):
+                        all_works.extend(works)
+            return self._materialize_openalex_works(session, sub, all_works)
+
+        if sub.type == "author_works":
+            author_id = tgt.get("author_id", "").strip()
+            if not author_id:
+                return 0
+            since_iso = (_utcnow() - timedelta(days=180)).date().isoformat()
+            import httpx
+            params = {
+                "filter": f"author.id:{author_id},from_publication_date:{since_iso}",
+                "per_page": 20,
+                "sort": "publication_date:desc",
+                "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
+            }
+            mailto = _openalex_mailto()
+            if mailto:
+                params["mailto"] = mailto
+            try:
+                with httpx.Client(timeout=20.0) as c:
+                    r = c.get("https://api.openalex.org/works", params=params)
+                    r.raise_for_status()
+                    works = r.json().get("results", [])
+            except Exception as e:
+                _log.warning("[subscription %d] author_works openalex error: %s", sub.id, e)
+                return 0
+            return self._materialize_openalex_works(session, sub, works)
         if sub.type == "arxiv_daily":
-            # 只拉数据写 SubscriptionResult；评分由 kb-daily-recommendations cron 统一做
+            # 只拉数据写 SubscriptionResult；评分由 kb-daily-llm-scoring cron 统一做
             from services import arxiv_service
             categories = tgt.get("categories") or ["cs.AI"]
             hours = int(tgt.get("hours") or 24)
@@ -362,10 +482,29 @@ class SubscriptionService:
             aid = (item.get("arxiv_id") or "").strip().lower()
             if not aid or aid in seen:
                 continue
+            # 字段 normalize：跟 _materialize_openalex_works 对齐，前端 FeedItem 统一访问
+            published = (item.get("published_at") or "")[:10]  # YYYY-MM-DD or ''
+            year = None
+            if len(published) >= 4 and published[:4].isdigit():
+                year = int(published[:4])
+            meta = {
+                "external_id": f"arxiv:{aid}",
+                "source": "arxiv",
+                "title": item.get("title", ""),
+                "abstract": item.get("abstract", ""),
+                "authors_json": item.get("authors") or [],
+                "year": year,
+                "publication_date": published or None,
+                "cited_by_count": None,  # arxiv 无 citation 元数据
+                "doi": None,
+                "url": item.get("abs_url") or item.get("pdf_url"),
+                "arxiv_id": aid,
+                "primary_category": item.get("primary_category"),
+            }
             session.add(models.SubscriptionResult(
                 subscription_id=sub.id,
                 paper_id=None,
-                raw_metadata_json=item,
+                raw_metadata_json=meta,
                 notified=False,
             ))
             seen.add(aid)
@@ -425,6 +564,98 @@ class SubscriptionService:
                 notified=False,
             ))
             seen.add(key)
+            new += 1
+        session.flush()
+        return new
+
+    def _materialize_openalex_works(
+        self,
+        session: Session,
+        sub: models.Subscription,
+        works: list[dict],
+    ) -> int:
+        """把 OpenAlex works 列表落到 subscription_results，按 external_id 去重。"""
+        if not works:
+            return 0
+
+        # 拉现有 external_id 集合 + norm_title 集合做去重
+        existing_ids: set[str] = set()
+        existing_norm_titles: set[str] = set()
+        rows = session.execute(
+            select(models.SubscriptionResult.raw_metadata_json).where(
+                models.SubscriptionResult.subscription_id == sub.id,
+            ).limit(2000)
+        ).all()
+        for (meta,) in rows:
+            eid = ((meta or {}).get("external_id") or "").strip()
+            if eid:
+                existing_ids.add(eid)
+            t = _norm_title((meta or {}).get("title") or "")
+            if t:
+                existing_norm_titles.add(t)
+
+        # 按 norm_title 聚合入参 works，保留 cited_by_count 最大；tie 时优先有 DOI 的
+        _title_best: dict[str, dict] = {}
+        for work in works:
+            nt = _norm_title(work.get("title") or "")
+            if not nt:
+                _title_best.setdefault("", work)
+                continue
+            if nt not in _title_best:
+                _title_best[nt] = work
+            else:
+                cur = _title_best[nt]
+                cur_cnt = cur.get("cited_by_count") or 0
+                new_cnt = work.get("cited_by_count") or 0
+                if new_cnt > cur_cnt or (new_cnt == cur_cnt and work.get("doi") and not cur.get("doi")):
+                    _title_best[nt] = work
+        deduped_works = list(_title_best.values())
+
+        new = 0
+        for work in deduped_works:
+            eid = (work.get("id") or work.get("doi") or "").strip()
+            if not eid or eid in existing_ids:
+                continue
+            title = (work.get("title") or "").strip()
+            nt = _norm_title(title)
+            if nt and nt in existing_norm_titles:
+                continue
+            abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
+            authors = [
+                a["author"]["display_name"]
+                for a in (work.get("authorships") or [])
+                if a.get("author") and a["author"].get("display_name")
+            ]
+            # url 优先 landing page，其次 DOI 链接，最后 OpenAlex work URL
+            doi = (work.get("doi") or "").strip()
+            primary = work.get("primary_location") or {}
+            url = (
+                (primary.get("landing_page_url") or "").strip()
+                or (f"https://doi.org/{doi}" if doi and not doi.startswith("http") else doi)
+                or eid
+            )
+            meta = {
+                "external_id": eid,
+                "source": "openalex",
+                "title": title,
+                "abstract": abstract,
+                # 用 authors_json 跟前端 FeedItem.metadata.authors_json 对齐
+                "authors_json": authors,
+                "year": work.get("publication_year"),
+                "publication_date": work.get("publication_date"),
+                "cited_by_count": work.get("cited_by_count"),
+                "doi": doi or None,
+                "url": url or None,
+            }
+            session.add(models.SubscriptionResult(
+                subscription_id=sub.id,
+                paper_id=None,
+                raw_metadata_json=meta,
+                notified=False,
+            ))
+            existing_ids.add(eid)
+            if nt:
+                existing_norm_titles.add(nt)
             new += 1
         session.flush()
         return new
@@ -701,18 +932,10 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     )
 
     sched.add_job(
-        _job_weekly_profile,
-        trigger="cron",
-        day_of_week="mon", hour=3, minute=0,
-        id="kb-weekly-profile",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
-    sched.add_job(
-        _job_daily_recommendations,
+        _daily_llm_scoring,
         trigger="cron",
         hour=4, minute=0,
-        id="kb-daily-recommendations",
+        id="kb-daily-llm-scoring",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -723,28 +946,12 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     return sched
 
 
-def _job_weekly_profile() -> None:
-    from services.profile_service import regenerate_profile
-    db = SessionLocal()
+def _daily_llm_scoring() -> None:
+    session = SessionLocal()
     try:
-        regenerate_profile(db)
-    except Exception:
-        _log.exception("weekly_profile job failed")
-        raise  # 让 APScheduler 标记 job 失败而非默默成功
+        score_pending_results(session)
     finally:
-        db.close()
-
-
-def _job_daily_recommendations() -> None:
-    from services.recommendation_service import run_daily_recommendation
-    db = SessionLocal()
-    try:
-        run_daily_recommendation(db)
-    except Exception:
-        _log.exception("daily_recommendations job failed")
-        raise  # 让 APScheduler 标记 job 失败而非默默成功
-    finally:
-        db.close()
+        session.close()
 
 
 def stop_scheduler() -> None:
@@ -756,3 +963,105 @@ def stop_scheduler() -> None:
         except Exception:
             pass
     _scheduler = None
+
+
+def score_pending_results(db: Session, max_score: int = 30) -> dict:
+    """对 scored_at IS NULL 的 results LLM 评分。每条按其订阅的 description 评分。"""
+    pdate_expr = func.json_extract(models.SubscriptionResult.raw_metadata_json, "$.publication_date")
+    cited_expr = func.coalesce(
+        func.json_extract(models.SubscriptionResult.raw_metadata_json, "$.cited_by_count"), 0
+    )
+    stmt = (
+        select(models.SubscriptionResult, models.Subscription.description)
+        .join(models.Subscription, models.SubscriptionResult.subscription_id == models.Subscription.id)
+        .where(models.SubscriptionResult.scored_at.is_(None))
+        .order_by(pdate_expr.desc().nulls_last(), cited_expr.desc())
+        .limit(max_score)
+    )
+    rows = list(db.execute(stmt).all())
+    if not rows:
+        return {"scored": 0, "errors": 0}
+
+    from collections import defaultdict
+    groups: dict[int, list] = defaultdict(list)
+    for r, desc in rows:
+        groups[r.subscription_id].append((r, desc))
+
+    scored = 0
+    errors = 0
+    for sub_id, group in groups.items():
+        desc = group[0][1] or ""
+        items = [r for r, _ in group]
+        for i in range(0, len(items), 5):
+            batch = items[i:i + 5]
+            try:
+                _score_batch(db, desc, batch)
+                scored += len(batch)
+            except Exception as e:
+                _log.warning("score_batch error for sub %d: %s", sub_id, e)
+                errors += len(batch)
+                from datetime import datetime as _dt, timezone as _tz
+                now = _dt.now(_tz.utc).replace(tzinfo=None)
+                for r in batch:
+                    r.scored_at = now
+        db.commit()
+    return {"scored": scored, "errors": errors}
+
+
+def _score_batch(db: Session, description: str, batch: list) -> None:
+    """5 篇/批 LLM 评分+精炼。失败时整批抛异常，由调用方标 scored_at。"""
+    import json
+    import re as _re
+    from services.ai_service import _call_ollama, _sanitize_tags, _sanitize_text, _sanitize_findings
+    from datetime import datetime as _dt, timezone as _tz
+
+    payload = []
+    for idx, r in enumerate(batch):
+        meta = r.raw_metadata_json or {}
+        payload.append({
+            "idx": idx,
+            "title": (meta.get("title") or "")[:200],
+            "abstract": (meta.get("abstract") or "")[:600],
+        })
+    sys_prompt = (
+        "你是学术论文评分+精炼助手。对输入论文列表中的每篇，输出一个 JSON 数组项，包含：\n"
+        "- idx: 输入论文的索引（int）\n"
+        "- score: 0.0-1.0 浮点，按用户研究兴趣评估的相关度\n"
+        "- reason: <=80 字简短中文理由\n"
+        "- title_zh: 中文翻译标题\n"
+        '- tags: 2-4 字中文标签数组，最多 8 个（如 ["机器学习", "宏观经济"]）\n'
+        "- research_question: 1-2 句中文，核心研究问题\n"
+        "- methodology: 中文简述方法/数据/模型\n"
+        "- key_findings: 中文要点数组，最多 5 条\n\n"
+        "只输出 JSON 数组，无 markdown 围栏、无说明。"
+    )
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": (
+            f"用户研究兴趣：\n{description}\n\n"
+            f"论文列表：\n{json.dumps(payload, ensure_ascii=False)}"
+        )},
+    ]
+    raw = _call_ollama(messages, num_predict=4096)
+    match = _re.search(r"\[[\s\S]*\]", raw)
+    if not match:
+        raise ValueError("no JSON array")
+    arr = json.loads(match.group())
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    by_idx = {int(item["idx"]): item for item in arr if isinstance(item, dict) and "idx" in item}
+    for idx, r in enumerate(batch):
+        info = by_idx.get(idx, {})
+        score = info.get("score")
+        reason = info.get("reason")
+        if isinstance(score, (int, float)):
+            r.llm_score = max(0.0, min(1.0, float(score)))
+        if isinstance(reason, str):
+            r.llm_reason = reason[:500]
+        r.title_zh = _sanitize_text(info.get("title_zh")) or None
+        tags = _sanitize_tags(info.get("tags"))
+        r.tags_json = tags if tags else None
+        r.research_question = _sanitize_text(info.get("research_question")) or None
+        r.methodology = _sanitize_text(info.get("methodology")) or None
+        findings = _sanitize_findings(info.get("key_findings"))
+        r.key_findings_json = findings if findings else None
+        r.scored_at = now
