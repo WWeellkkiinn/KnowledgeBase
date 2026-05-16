@@ -182,4 +182,5 @@ docker compose up -d app
 | 80 端口被占 | `ss -lntp \| grep :80` 找占用进程；或改 compose 把 nginx 改成 `8080:80` |
 | frps 拒连 | token 不匹配；`docker compose logs frps` 看 `auth failed` |
 | frpc 反复重连，frps 日志报 `tls handshake` | 客户端 `frpc.toml` 的 `transport.tls.enable` 必须为 `true`（与 frps 端 `force=true` 配套）；客户端 frpc 二进制必须用 fatedier 官方 release（见 Wave B 下载链接），切勿混用第三方包装 |
+| frpc 突然连不上，frps 日志**完全没有新连接**，抓包看 ECS:7000 收到 SYN 但被 `[UFW BLOCK]` | Ollama 主机运营商 NAT 出口 IP 漂移，不再匹配 ufw 白名单。恢复：①`ssh welkin@... 'curl -s ifconfig.me'` 取新出口 IP；②ECS 上 `ufw allow from <新IP> to any port 7000 proto tcp comment 'frps from ollama egress'`；③`ufw status numbered` 找到旧 IP 那条 `ufw delete <序号>`；④确认 frpc 自动重连成功 |
 | `git pull` 拒绝 | ECS 上有本地改动，先 `git stash` 或回滚 |
