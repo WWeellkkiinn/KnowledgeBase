@@ -40,6 +40,7 @@ COPY app/         /app/app/
 COPY database/    /app/database/
 COPY services/    /app/services/
 COPY scripts/     /app/scripts/
+COPY templates/   /app/templates/
 COPY alembic.ini  /app/alembic.ini
 # 注：迁移脚本位于 database/migrations/，由 alembic.ini 的 script_location 指向
 
