@@ -10,10 +10,11 @@ const error = ref<string | null>(null)
 const submitting = ref(false)
 
 const form = reactive({
-  type: 'paper_citations' as 'paper_citations' | 'author_works' | 'topic_search',
+  type: 'paper_citations' as 'paper_citations' | 'author_works' | 'topic_search' | 'arxiv_daily',
   doi: '',
   author_id: '',
   query: '',
+  categoriesRaw: '',
   cron_expr: 'every 7d',
 })
 
@@ -22,6 +23,12 @@ onMounted(() => store.fetchAll())
 function targetFor(): Record<string, unknown> {
   if (form.type === 'paper_citations') return { doi: form.doi.trim() }
   if (form.type === 'author_works') return { author_id: form.author_id.trim() }
+  if (form.type === 'arxiv_daily') {
+    return {
+      categories: form.categoriesRaw.split(',').map((s) => s.trim()).filter(Boolean),
+      hours: 24,
+    }
+  }
   return { query: form.query.trim() }
 }
 
@@ -98,6 +105,7 @@ async function remove(id: number) {
             <option value="paper_citations">论文被引（paper_citations）</option>
             <option value="author_works">作者新作（author_works）</option>
             <option value="topic_search">话题搜索（topic_search）</option>
+            <option value="arxiv_daily">arXiv 日报（arxiv_daily）</option>
           </select>
         </div>
         <div>
@@ -131,6 +139,14 @@ async function remove(id: number) {
           v-model="form.query"
           class="w-full rounded border border-slate-300 px-2 py-1"
           placeholder="agent-based model AND inequality"
+        />
+      </div>
+      <div v-if="form.type === 'arxiv_daily'">
+        <label class="mb-1 block text-xs font-semibold text-slate-600">arXiv 分类（逗号分隔）</label>
+        <input
+          v-model="form.categoriesRaw"
+          class="w-full rounded border border-slate-300 px-2 py-1"
+          placeholder="cs.AI,cs.CL,stat.ML"
         />
       </div>
       <button

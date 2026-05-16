@@ -255,3 +255,7 @@ __all__ = [
     "ForwardTrackCache",
     "BackwardTrackCache",
 ]
+
+# 触发 SQLAlchemy 注册 UserProfile / Recommendation 到同一个 Base.metadata，
+# 让 alembic autogen 与 Base.metadata.create_all 都能看到这两张表。
+from database import models_recs  # noqa: F401,E402

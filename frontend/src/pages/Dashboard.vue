@@ -6,12 +6,14 @@ import { useTasksStore } from '@/stores/tasks'
 import { usePapersStore } from '@/stores/papers'
 import { useSubscriptionsStore } from '@/stores/subscriptions'
 import { useProgressStore } from '@/stores/progress'
+import { useRecommendationsStore } from '@/stores/recommendations'
 import { digestApi } from '@/api/endpoints'
 
 const tasks = useTasksStore()
 const papers = usePapersStore()
 const subs = useSubscriptionsStore()
 const progress = useProgressStore()
+const recs = useRecommendationsStore()
 const refreshing = ref(false)
 const watched = ref<Set<string>>(new Set())
 
@@ -19,7 +21,7 @@ async function refresh() {
   refreshing.value = true
   try {
     // Dashboard 仅展示计数，不再拉 papers 全表（C2/X2 审查）
-    await Promise.all([tasks.fetch(), papers.fetchStats(), subs.fetchAll()])
+    await Promise.all([tasks.fetch(), papers.fetchStats(), subs.fetchAll(), recs.fetch()])
   } finally {
     refreshing.value = false
   }
@@ -108,7 +110,7 @@ async function sendDigest() {
       />
     </div>
 
-    <section class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <section class="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <div class="rounded-lg border border-slate-200 bg-white p-4">
         <div class="mb-3 flex items-center justify-between">
           <h2 class="font-semibold">最近任务</h2>
@@ -188,6 +190,43 @@ async function sendDigest() {
               标记已读
             </button>
             <span v-else class="ml-2 text-xs text-slate-400">已读</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="rounded-lg border border-slate-200 bg-white p-4">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="font-semibold">今日推荐</h2>
+          <RouterLink
+            to="/recommendations"
+            class="text-xs text-blue-600 hover:underline"
+          >
+            查看全部 →
+          </RouterLink>
+        </div>
+        <p v-if="recs.loading && recs.topPicks.length === 0" class="text-sm text-slate-500">
+          加载中…
+        </p>
+        <p v-else-if="recs.topPicks.length === 0" class="text-sm text-slate-500">
+          暂无推荐。
+        </p>
+        <ul v-else class="divide-y divide-slate-100">
+          <li
+            v-for="r in recs.topPicks"
+            :key="r.id"
+            class="py-2 text-sm"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-slate-700" :title="r.title">
+                  {{ r.title }}
+                </div>
+                <div class="text-xs text-slate-400">
+                  {{ r.source }} · 评分 {{ r.relevance_score.toFixed(2) }}
+                  <span v-if="r.matched_theme"> · {{ r.matched_theme }}</span>
+                </div>
+              </div>
+            </div>
           </li>
         </ul>
       </div>

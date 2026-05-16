@@ -117,3 +117,34 @@ export const healthApi = {
 export const failuresApi = {
   list: () => client.get<FailuresResponse>('/failures').then((r) => r.data),
 }
+
+export interface Recommendation {
+  id: number
+  external_id: string
+  source: string
+  title: string
+  abstract: string | null
+  authors_json: string[] | null
+  year: number | null
+  url: string | null
+  matched_theme: string | null
+  relevance_score: number
+  reason: string | null
+  created_at: string
+  dismissed: boolean
+  saved_to_library: boolean
+}
+
+export const recommendationsApi = {
+  list: (limit = 50) =>
+    client
+      .get<{ items: Recommendation[]; total: number }>('/recommendations', { params: { limit } })
+      .then((r) => r.data),
+  dismiss: (id: number) => client.post(`/recommendations/${id}/dismiss`).then((r) => r.data),
+  saveToLibrary: (id: number) =>
+    client.post<{ ok: boolean; paper_id: number }>(`/recommendations/${id}/save-to-library`).then((r) => r.data),
+}
+
+export const profileApi = {
+  regenerate: () => client.post('/profile/regenerate').then((r) => r.data),
+}
