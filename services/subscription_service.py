@@ -166,7 +166,7 @@ class SubscriptionService:
         cron_expr: str,
         active: bool = True,
     ) -> models.Subscription:
-        if type not in ("paper_citations", "author_works", "topic_search"):
+        if type not in ("paper_citations", "author_works", "topic_search", "arxiv_daily"):
             raise ValueError(f"unsupported subscription type: {type!r}")
         self._validate_target(type, target)
         sub = models.Subscription(
@@ -246,6 +246,10 @@ class SubscriptionService:
         elif type == "topic_search":
             if not target.get("query"):
                 raise ValueError("topic_search target requires 'query'")
+        elif type == "arxiv_daily":
+            cats = target.get("categories")
+            if not cats or not isinstance(cats, list) or not all(isinstance(c, str) and c for c in cats):
+                raise ValueError("arxiv_daily target requires non-empty 'categories' list of strings")
 
     # ─── 执行 ─────────────────────────────────────────────────────
 
@@ -322,7 +326,52 @@ class SubscriptionService:
         if sub.type == "topic_search":
             _log.info("[subscription %d] topic_search not yet implemented", sub.id)
             return 0
+        if sub.type == "arxiv_daily":
+            # 只拉数据写 SubscriptionResult；评分由 kb-daily-recommendations cron 统一做
+            from services import arxiv_service
+            categories = tgt.get("categories") or ["cs.AI"]
+            hours = int(tgt.get("hours") or 24)
+            papers = arxiv_service.fetch_arxiv_recent(
+                categories=categories, hours=hours, max_per_category=30,
+            )
+            return self._materialize_arxiv(session, sub, papers)
         return 0
+
+    def _materialize_arxiv(
+        self,
+        session: Session,
+        sub: models.Subscription,
+        papers: list[dict],
+    ) -> int:
+        """把 arxiv_service 返回的 papers 落到 subscription_results。按 arxiv_id 去重。"""
+        if not papers:
+            return 0
+        seen: set = set()
+        # TODO: 长期运行后 dedup 行数会涨；加 (subscription_id, arxiv_id) 索引后可去掉 limit
+        rows = session.execute(
+            select(models.SubscriptionResult.raw_metadata_json).where(
+                models.SubscriptionResult.subscription_id == sub.id,
+            ).limit(1000)
+        ).all()
+        for (meta,) in rows:
+            aid = ((meta or {}).get("arxiv_id") or "").strip().lower()
+            if aid:
+                seen.add(aid)
+        new = 0
+        for item in papers:
+            aid = (item.get("arxiv_id") or "").strip().lower()
+            if not aid or aid in seen:
+                continue
+            session.add(models.SubscriptionResult(
+                subscription_id=sub.id,
+                paper_id=None,
+                raw_metadata_json=item,
+                notified=False,
+            ))
+            seen.add(aid)
+            new += 1
+        session.flush()
+        return new
 
     @staticmethod
     def _result_dedup_key(item: dict) -> tuple:
@@ -644,8 +693,26 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     sched.add_job(
         _daily_digest,
         trigger="cron",
-        hour=2, minute=0,
+        # minute=30 错峰：max_workers=1 下避免与 daily-track-refresh(hour=2,minute=0) 同时触发
+        hour=2, minute=30,
         id="kb-daily-digest",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    sched.add_job(
+        _job_weekly_profile,
+        trigger="cron",
+        day_of_week="mon", hour=3, minute=0,
+        id="kb-weekly-profile",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    sched.add_job(
+        _job_daily_recommendations,
+        trigger="cron",
+        hour=4, minute=0,
+        id="kb-daily-recommendations",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -654,6 +721,30 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
     _scheduler = sched
     _log.info("subscription scheduler started (poll %ds)", poll_seconds)
     return sched
+
+
+def _job_weekly_profile() -> None:
+    from services.profile_service import regenerate_profile
+    db = SessionLocal()
+    try:
+        regenerate_profile(db)
+    except Exception:
+        _log.exception("weekly_profile job failed")
+        raise  # 让 APScheduler 标记 job 失败而非默默成功
+    finally:
+        db.close()
+
+
+def _job_daily_recommendations() -> None:
+    from services.recommendation_service import run_daily_recommendation
+    db = SessionLocal()
+    try:
+        run_daily_recommendation(db)
+    except Exception:
+        _log.exception("daily_recommendations job failed")
+        raise  # 让 APScheduler 标记 job 失败而非默默成功
+    finally:
+        db.close()
 
 
 def stop_scheduler() -> None:

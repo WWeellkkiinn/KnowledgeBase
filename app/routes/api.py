@@ -11,9 +11,11 @@ from typing import Optional
 
 from flask import Blueprint, Response, abort, g, jsonify, request, stream_with_context
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app import limiter
 from database import models
+from database.models_recs import UserProfile, Recommendation  # noqa: F401
 
 
 _log = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ bp = Blueprint("api", __name__)
 
 # 异步 digest 全局互斥锁，防止 /digest/send?async=1 被重放堆积线程
 _digest_lock = threading.Lock()
+_profile_regen_lock = threading.Lock()
 
 
 # 项目根目录（app/routes/api.py → app/routes/ → app/ → 项目根）
@@ -1278,3 +1281,104 @@ def send_digest_now():
     except Exception as exc:
         _log.exception("send_digest_now failed: %s", type(exc).__name__)
         return jsonify({"error": "digest failed"}), 502
+
+
+# ─── Recommendations & Profile ─────────────────────────────────────
+
+def _serialize_recommendation(r: Recommendation) -> dict:
+    return {
+        "id": r.id, "external_id": r.external_id, "source": r.source,
+        "title": r.title, "abstract": r.abstract, "authors_json": r.authors_json,
+        "year": r.year, "url": r.url, "matched_theme": r.matched_theme,
+        "relevance_score": r.relevance_score, "reason": r.reason,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "dismissed": r.dismissed, "saved_to_library": r.saved_to_library,
+    }
+
+
+@bp.get("/recommendations")
+@limiter.limit("30 per minute")
+def list_recommendations():
+    try:
+        limit = int(request.args.get("limit", 50))
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid pagination parameter"}), 400
+    if not 1 <= limit <= 200 or not 0 <= offset <= 1000:
+        return jsonify({"error": "pagination parameter out of range"}), 400
+    stmt = (
+        select(Recommendation)
+        .where(Recommendation.dismissed.is_(False))
+        .where(Recommendation.saved_to_library.is_(False))
+    )
+    total = g.db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    rows = g.db.execute(
+        stmt
+        .order_by(Recommendation.relevance_score.desc(), Recommendation.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    ).scalars().all()
+    items = [_serialize_recommendation(r) for r in rows]
+    return jsonify({"items": items, "total": total})
+
+
+@bp.post("/recommendations/<int:rec_id>/dismiss")
+@limiter.limit("30 per minute")
+def dismiss_recommendation(rec_id: int):
+    rec = g.db.get(Recommendation, rec_id)
+    if not rec:
+        return jsonify({"error": "not found"}), 404
+    rec.dismissed = True
+    g.db.commit()
+    return jsonify({"ok": True})
+
+
+@bp.post("/recommendations/<int:rec_id>/save-to-library")
+@limiter.limit("10 per minute")
+def save_recommendation_to_library(rec_id: int):
+    rec = g.db.get(Recommendation, rec_id)
+    if not rec:
+        return jsonify({"error": "not found"}), 404
+    if rec.saved_to_library or rec.dismissed:
+        return jsonify({"error": "recommendation already handled"}), 409
+    # 创建 Paper stub（不立即触发分析；用户在论文库可手动 ai-analyze）
+    external_id = (rec.external_id or "").strip()
+    is_arxiv = external_id.startswith("arxiv:")
+    if not is_arxiv and not re.fullmatch(r"10\.\d{4,9}/[\w.\-/:;()]+$", external_id):
+        return jsonify({"error": "invalid DOI"}), 400
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", external_id or f"rec-{rec.id}").strip("._-")[:128]
+    if not stem:
+        stem = f"rec-{rec.id}"
+    paper = models.Paper(
+        stem=stem,
+        title=rec.title,
+        abstract=rec.abstract,
+        doi=None if is_arxiv else external_id,
+        arxiv_id=external_id[len("arxiv:"):] if is_arxiv else None,
+        authors_json=rec.authors_json,
+        year=rec.year,
+        status="pending",
+        source="subscription",
+    )
+    try:
+        g.db.add(paper)
+        g.db.flush()
+        rec.saved_to_library = True
+        g.db.commit()
+    except IntegrityError:
+        g.db.rollback()
+        return jsonify({"error": "paper already exists"}), 409
+    return jsonify({"ok": True, "paper_id": paper.id})
+
+
+@bp.post("/profile/regenerate")
+@limiter.limit("2 per hour")
+def regenerate_user_profile():
+    if not _profile_regen_lock.acquire(blocking=False):
+        return jsonify({"error": "profile regeneration already running"}), 429
+    from services.profile_service import regenerate_profile
+    try:
+        result = regenerate_profile(g.db, force=True)
+        return jsonify(result)
+    finally:
+        _profile_regen_lock.release()
