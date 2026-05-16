@@ -22,9 +22,11 @@ method = "token"
 token = "REPLACE_WITH_RANDOM_TOKEN"
 
 [transport.tls]
-# 强制 TLS：frps 拒绝任何明文连接。客户端 frpc.toml 必须 enable = true。
-# 镜像使用 fatedier 官方 release 二进制（见 deploy/frps.Dockerfile），与官方 frpc 握手兼容。
-force = true
+# 已知问题（2026-05-16）：fatedier 官方 0.68.1 frps + 0.68.1 frpc 也无法完成 TLS 握手
+# （抓包：ClientHello → ServerHello 后 frpc 立即 RST，疑似 custom-first-byte 协商或
+# 证书校验细节差异）。临时保持明文，靠强 token + ufw 限源 IP 缓解中间人风险。
+# 长期修复：升级到 0.69+ 后两端同步开 force=true / enable=true 再验证。
+# force = true
 
 [log]
 to = "console"

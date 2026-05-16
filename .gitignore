@@ -36,3 +36,6 @@ frontend/dist/
 frontend/vite.log
 frontend/vite.err.log
 REVIEW.md
+
+# frps.toml 含真 token，本地管理（见 deploy/frps.toml.example）
+frps.toml

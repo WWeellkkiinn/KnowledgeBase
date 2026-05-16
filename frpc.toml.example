@@ -21,8 +21,9 @@ method = "token"
 token = "REPLACE_WITH_FRPS_TOKEN"
 
 [transport.tls]
-# 与 frps.toml 的 force = true 配套；明文连接会被服务端拒。
-enable = true
+# 与 frps.toml 配套；当前两端 0.68.1 的 TLS 握手有兼容问题（见 deploy/frps.toml.example
+# 的说明），暂保持 false。frps 端升级后两端同步切到 true。
+enable = false
 
 [[proxies]]
 name = "ollama"
