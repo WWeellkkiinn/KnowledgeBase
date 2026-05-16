@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Bash 包装：找一个可用的 Python 3，运行 pre-commit.py。
+# 跨 Linux / macOS / Windows Git Bash 通用。
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+SCRIPT="$ROOT/deploy/git-hooks/pre-commit.py"
+
+if [[ ! -f "$SCRIPT" ]]; then
+  echo "[pre-commit] WARN: $SCRIPT 不存在，跳过扫描" >&2
+  exit 0
+fi
+
+for PY in python3 python py; do
+  if command -v "$PY" >/dev/null 2>&1; then
+    exec "$PY" "$SCRIPT" "$@"
+  fi
+done
+
+echo "[pre-commit] WARN: 找不到 python3 / python / py，跳过扫描（建议装 Python 3）" >&2
+exit 0
