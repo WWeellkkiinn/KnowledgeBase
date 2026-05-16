@@ -5,7 +5,7 @@
 一台**仅出网、不公开服务端口**的 Ollama 推理主机。
 
 最低硬件：2 vCPU / 1.6 GB RAM（建议同时配 2G swap）。
-对外端口：80（nginx 反代到 app）、7000（frps 控制面）。
+对外端口：8080（nginx 反代到 app，宿主 80 若空闲可改回）、7000（frps 控制面）。
 本机回环：13813（或你 Ollama 的实际端口，frp 隧道映射点）。
 
 > 文档中的 `<YOUR_ECS_HOST>` / `<YOUR_OLLAMA_HOST>` / `<YOUR_DEPLOY_USER>` 是占位，
@@ -88,7 +88,7 @@ docker compose up -d
 docker compose logs -f app        # 看 SocketIO 启动日志，确认无堆栈
 ```
 
-浏览器访问 `http://<YOUR_ECS_HOST>`，输入 `KB_API_TOKEN` 登录。
+浏览器访问 `http://<YOUR_ECS_HOST>:8080`，输入 `KB_API_TOKEN` 登录。
 
 ### Wave D — 备份 cron
 
