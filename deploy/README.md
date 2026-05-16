@@ -105,7 +105,17 @@ docker compose logs -f app        # 看 SocketIO 启动日志，确认无堆栈
 
 浏览器访问 `http://<YOUR_ECS_HOST>:8080`，输入 `KB_API_TOKEN` 登录。
 
-### Wave D — 备份 cron
+### Wave D — 开发机：装 pre-commit hook（强烈建议）
+
+```bash
+bash deploy/install-hooks.sh   # 仓库根目录运行一次
+```
+
+之后每次 `git commit` 会自动扫 staged 改动，命中真 token / 真公网 IP / 真邮箱 /
+SSH key 名 / 敏感文件名时拦下提交。规则见 `deploy/git-hooks/pre-commit.py`。
+误报豁免：在该行末加 `# noqa: secrets`；紧急绕过：`git commit --no-verify`。
+
+### Wave E — 备份 cron
 
 ```bash
 chmod +x /opt/kb/deploy/ecs-backup.sh
