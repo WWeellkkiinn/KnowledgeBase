@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -68,6 +69,48 @@ def _normalize_name(name: str) -> str:
     n = re.sub(r"[^\w\s]", " ", n)
     n = re.sub(r"\s+", " ", n).strip()
     return n
+
+
+# ─── name → journal_id 进程内缓存 ──────────────────────────────────
+# 首次调用 lookup_by_name 时一次性预加载全表（按 normalize 后的 name 索引），
+# 之后 O(1) 命中。attach_to_paper 创建新 Journal 时同步写入，保证缓存最新。
+# 进程生命周期内常驻；测试场景如需重置可调用 _reset_name_cache()。
+_name_cache: dict[str, int] = {}
+_name_cache_loaded: bool = False
+_name_cache_lock = threading.Lock()
+
+
+def _ensure_name_cache(session: Session) -> None:
+    """首次调用时全表加载到 _name_cache。线程安全：双检锁。"""
+    global _name_cache_loaded
+    if _name_cache_loaded:
+        return
+    with _name_cache_lock:
+        if _name_cache_loaded:
+            return
+        rows = session.execute(select(models.Journal.id, models.Journal.name)).all()
+        for jid, jname in rows:
+            key = _normalize_name(jname or "")
+            if key:
+                _name_cache.setdefault(key, jid)
+        _name_cache_loaded = True
+
+
+def _cache_journal_name(name: str, journal_id: int) -> None:
+    """新建 Journal 时调用，将 normalize 后的 name 写入缓存。"""
+    key = _normalize_name(name or "")
+    if not key:
+        return
+    with _name_cache_lock:
+        _name_cache[key] = journal_id
+
+
+def _reset_name_cache() -> None:
+    """测试钩子：清空缓存（生产代码不应调用）。"""
+    global _name_cache_loaded
+    with _name_cache_lock:
+        _name_cache.clear()
+        _name_cache_loaded = False
 
 
 def _openalex_mailto() -> Optional[str]:
@@ -139,7 +182,7 @@ class JournalService:
 
             existing = existing_by_issn.get(issn)
             if existing is None:
-                session.add(models.Journal(
+                new_j = models.Journal(
                     issn=issn,
                     name=name,
                     publisher=publisher,
@@ -148,7 +191,11 @@ class JournalService:
                     oa_status=oa_status,
                     source_dataset=source_dataset,
                     refreshed_at=_utcnow(),
-                ))
+                )
+                session.add(new_j)
+                session.flush()
+                if new_j.id is not None:
+                    _cache_journal_name(name, new_j.id)
                 inserted += 1
             else:
                 existing.name = name
@@ -177,14 +224,19 @@ class JournalService:
 
     @staticmethod
     def lookup_by_name(session: Session, name: str) -> Optional[models.Journal]:
-        """名字精确匹配（归一化后）。只加载 id+name 列，减少内存占用。"""
+        """名字精确匹配（归一化后）。
+
+        使用模块级 _name_cache：首次调用预加载全表 id+name，之后 O(1) 命中。
+        attach_to_paper 创建新 Journal 时会回写缓存，保证后续 lookup 可见。
+        """
         n = _normalize_name(name)
         if not n:
             return None
-        for jid, jname in session.execute(select(models.Journal.id, models.Journal.name)).all():
-            if _normalize_name(jname) == n:
-                return session.get(models.Journal, jid)
-        return None
+        _ensure_name_cache(session)
+        jid = _name_cache.get(n)
+        if jid is None:
+            return None
+        return session.get(models.Journal, jid)
 
     # ─── OpenAlex 兜底 ──────────────────────────────────────────────
 
@@ -282,6 +334,9 @@ class JournalService:
                 ).scalar_one_or_none()
                 if journal is None:
                     raise
+            # 同步更新 name 缓存，避免下次 lookup_by_name 又走全表
+            if journal is not None and journal.id is not None:
+                _cache_journal_name(journal.name or name, journal.id)
         else:
             # 已存在：仅在原值为空时填补，避免 OpenAlex 覆盖 manual seed 的 tier
             if journal.quality_tier is None and meta.get("quality_tier") is not None:

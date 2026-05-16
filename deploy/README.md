@@ -25,6 +25,10 @@ fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 # 放行 frp 控制端口（公网入口）
+# 强烈建议限制来源 IP：仅放行 Ollama 主机的出口公网 IP，避免 7000 暴露给全网扫描。
+# 如果 Ollama 主机出口 IP 固定（已知 <YOUR_OLLAMA_EGRESS_IP>）：
+#   ufw allow from <YOUR_OLLAMA_EGRESS_IP> to any port 7000 proto tcp comment 'frps from ollama host'
+# 否则（运营商动态 IP）退化为全网放开，依赖 frps token + 后续 TLS 鉴权：
 ufw allow 7000/tcp
 
 # 放行 docker bridge → 宿主机的隧道端口（容器走 host.docker.internal 访问 frps 转出来的 Ollama）
@@ -39,8 +43,11 @@ ufw allow 8080/tcp
 mkdir -p /opt/kb && cd /opt/kb
 git clone <YOUR_REPO_URL> .
 mkdir -p data/papers data/logs backup
-cp .env.example data/.env
-vim data/.env   # 填入真实 token / key / 你的 OLLAMA_URL
+# .env 放仓库根目录（/opt/kb/.env），不要放进 data/，
+# 否则会被 ./data:/app/data 挂载暴露给 app 容器内任何遍历 papers 父目录的代码。
+cp .env.example .env
+chmod 600 .env
+vim .env   # 填入真实 token / key / 你的 OLLAMA_URL
 ```
 
 `.env` 必填项：
@@ -170,8 +177,9 @@ docker compose up -d app
 | --- | --- |
 | AI 标签 / 精炼报错 502 / connect | ECS 上 `curl http://127.0.0.1:<REMOTE_PORT>/api/tags`；不通查 frpc 日志（Ollama 主机），重启 frpc |
 | 容器内调 Ollama 失败 | 验证 `docker compose exec app curl http://host.docker.internal:<REMOTE_PORT>/api/tags`；不通检查 compose `extra_hosts` 是否生效 |
-| 上传 PDF 卡 413 | `nginx.conf` `client_max_body_size 60m`，再大需调大 |
+| 上传 PDF 卡 413 | `nginx.conf` `client_max_body_size 220m`（与 `KB_MINERU_ZIP_MAX_BYTES=209715200` 对齐），再大需同时调两边 |
 | app 容器 OOM 重启 | `docker compose stats`；2C/1.6G 机型避免同时跑多个抓取任务，必要时调 `mem_limit` |
 | 80 端口被占 | `ss -lntp \| grep :80` 找占用进程；或改 compose 把 nginx 改成 `8080:80` |
 | frps 拒连 | token 不匹配；`docker compose logs frps` 看 `auth failed` |
+| frpc 反复重连，frps 日志报 `tls handshake` | 客户端 `frpc.toml` 的 `transport.tls.enable` 必须为 `true`（与 frps 端 `force=true` 配套）；客户端 frpc 二进制必须用 fatedier 官方 release（见 Wave B 下载链接），切勿混用第三方包装 |
 | `git pull` 拒绝 | ECS 上有本地改动，先 `git stash` 或回滚 |

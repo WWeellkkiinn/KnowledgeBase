@@ -300,7 +300,20 @@ def _process_track(session, task: models.Task, *, direction: str) -> None:
 
 
 def _process_upload(session, task: models.Task) -> None:
-    """执行上传管线（原 _process_one 内容）。异常向上抛由 worker 主循环处理。"""
+    """执行上传管线（原 _process_one 内容）。异常向上抛由 worker 主循环处理。
+
+    事务边界（C4 修复，2 段）：
+      段 A — 极短，提交 status='processing'（仅给 UI 观察性，无业务字段）
+      段 B — 整条管线 step1..step6 为单事务：
+          * 中间步骤只 session.flush()，绝不 commit
+          * 末端成功 → 一次 commit（含 status='analyzed'）
+          * 任意 step 抛错 → session.rollback() 整片回滚，避免脏字段残留
+            （例如 md_path 落库但 references 失败导致 status 卡在 processing）
+
+    设计取舍：不把 status='processing' 也并入大事务，是因为 pdf2md 可能跑数分钟，
+    若不提前 commit，UI 会一直看不到状态变化。但 status='processing' 是无害的中间
+    标记，独立短事务 commit 不会留下业务字段脏数据。
+    """
     payload = task.payload_json or {}
     raw_id = payload.get("paper_id") or task.paper_id
     try:
@@ -314,106 +327,125 @@ def _process_upload(session, task: models.Task) -> None:
         raise RuntimeError(f"paper {paper_id} disappeared")
 
     _emit(task.id, "start", f"开始处理 {paper.stem}", paper_id=paper.id)
+
+    # ── 段 A：observability commit ────────────────────────────────────────
     paper.status = "processing"
     session.commit()
 
-    # 路径：落库为 ROOT-相对，先校验后用绝对路径
-    if not paper.pdf_path:
-        raise RuntimeError("paper.pdf_path empty")
-    pdf_path = _abs_under_root(paper.pdf_path)
-    if not pdf_path.exists():
-        raise RuntimeError(f"PDF missing on disk: {paper.pdf_path}")
+    # ── 段 B：单事务管线（所有步骤共享一个事务，失败整片回滚）─────────────
+    try:
+        # 路径：落库为 ROOT-相对，先校验后用绝对路径
+        if not paper.pdf_path:
+            raise RuntimeError("paper.pdf_path empty")
+        pdf_path = _abs_under_root(paper.pdf_path)
+        if not pdf_path.exists():
+            raise RuntimeError(f"PDF missing on disk: {paper.pdf_path}")
 
-    # 1) PDF → MD
-    _emit(task.id, "pdf2md", "PDF 解析中…")
+        # 1) PDF → MD
+        _emit(task.id, "pdf2md", "PDF 解析中…")
 
-    def _cb(step: str, msg: str) -> None:
-        _emit(task.id, step, msg)
+        def _cb(step: str, msg: str) -> None:
+            _emit(task.id, step, msg)
 
-    output_dir = pdf_path.parent  # papers/<stem>/
-    result = Pdf2MdService().convert(
-        pdf_path, output_dir=output_dir, on_progress=_cb, stop_event=_shutdown,
-    )
-    if "error" in result:
-        raise RuntimeError(f"pdf2md failed: {result['error']}")
-    md_path = _abs_under_root(result["md_path"])
-    paper.md_path = _rel_to_root(md_path)
-    session.flush()
+        output_dir = pdf_path.parent  # papers/<stem>/
+        result = Pdf2MdService().convert(
+            pdf_path, output_dir=output_dir, on_progress=_cb, stop_event=_shutdown,
+        )
+        if "error" in result:
+            raise RuntimeError(f"pdf2md failed: {result['error']}")
+        md_path = _abs_under_root(result["md_path"])
+        paper.md_path = _rel_to_root(md_path)
+        session.flush()
 
-    # 2) Title
-    if not paper.title:
-        title = _extract_title_from_md(md_path)
-        if title:
-            paper.title = title
-            session.flush()
-            _emit(task.id, "title", f"标题：{title[:60]}")
+        # 2) Title
+        if not paper.title:
+            title = _extract_title_from_md(md_path)
+            if title:
+                paper.title = title
+                session.flush()
+                _emit(task.id, "title", f"标题：{title[:60]}")
 
-    # 3) DOI 反查（duplicate → 立刻清理本上传，留既有 paper）
-    if not paper.doi and paper.title:
-        _emit(task.id, "doi", "查询 DOI…")
+        # 3) DOI 反查（duplicate → 立刻清理本上传，留既有 paper）
+        if not paper.doi and paper.title:
+            _emit(task.id, "doi", "查询 DOI…")
+            try:
+                doi = resolve_doi(paper.title)
+            except Exception as e:
+                _log.info("doi resolve failed: %s", e)
+                doi = None
+            if doi:
+                existing = session.execute(
+                    select(models.Paper).where(
+                        models.Paper.doi == doi, models.Paper.id != paper.id
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    # 同一篇但 sha1 不同（如重排版 / 不同来源 PDF）：放弃本上传，统一归到既有 paper。
+                    # 清理刚落盘的 pdf 目录避免孤儿；失败让 mark_failed 走，paper.status="failed"
+                    _emit(
+                        task.id, "doi",
+                        f"DOI {doi} 已存在于 paper #{existing.id}，本上传视为重复",
+                        duplicate_of=existing.id,
+                    )
+                    _cleanup_paper_files(paper)
+                    # 把本 Paper 标 failed + failure_reason，调用方负责 mark_failed
+                    raise _DuplicatePaperError(existing.id, doi)
+                paper.doi = doi
+                session.flush()
+                _emit(task.id, "doi", f"DOI: {doi}")
+
+        # 4) Crossref
+        if paper.doi:
+            _emit(task.id, "crossref", "拉取 Crossref 元数据…")
+            meta = _crossref_metadata(paper.doi)
+            if meta:
+                if not paper.year and meta.get("year"):
+                    paper.year = meta["year"]
+                if not paper.authors_json and meta.get("authors_json"):
+                    paper.authors_json = meta["authors_json"]
+                if not paper.abstract and meta.get("abstract"):
+                    paper.abstract = meta["abstract"]
+                if not paper.title and meta.get("title"):
+                    paper.title = meta["title"]
+                session.flush()
+
+        # 5) Journal
+        if paper.doi:
+            sp = session.begin_nested()
+            try:
+                JournalService().attach_to_paper(session, paper)
+                session.flush()
+                sp.commit()
+            except Exception as e:
+                sp.rollback()
+                _log.info("journal attach failed: %s", e)
+
+        # 6) References
+        _emit(task.id, "refs", "抽取引用…")
+        refs_path = output_dir / "refs.json"
+        err = _run_extract_refs(md_path, refs_path)
+        if err:
+            _emit(task.id, "refs", f"引用抽取失败：{err}")
+        else:
+            try:
+                paper.refs_path = _rel_to_root(refs_path)
+                session.flush()
+            except ValueError:
+                pass  # 极端情况：refs 写到 ROOT 外，不入库但不影响 analyzed 状态
+
+        paper.status = "analyzed"
+        paper.analyzed_at = _utcnow()
+        # 段 B 唯一 commit：step1..step6 全部成功才真正落库
+        session.commit()
+    except Exception:
+        # 任意 step 失败 → 整片段 B 回滚，避免 md_path/title/doi 等脏字段残留
+        # （注意：磁盘文件不在事务内，已写入的 md/refs 文件由失败处理或下次重跑覆盖）
         try:
-            doi = resolve_doi(paper.title)
-        except Exception as e:
-            _log.info("doi resolve failed: %s", e)
-            doi = None
-        if doi:
-            existing = session.execute(
-                select(models.Paper).where(
-                    models.Paper.doi == doi, models.Paper.id != paper.id
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                # 同一篇但 sha1 不同（如重排版 / 不同来源 PDF）：放弃本上传，统一归到既有 paper。
-                # 清理刚落盘的 pdf 目录避免孤儿；失败让 mark_failed 走，paper.status="failed"
-                _emit(
-                    task.id, "doi",
-                    f"DOI {doi} 已存在于 paper #{existing.id}，本上传视为重复",
-                    duplicate_of=existing.id,
-                )
-                _cleanup_paper_files(paper)
-                # 把本 Paper 标 failed + failure_reason，调用方负责 mark_failed
-                raise _DuplicatePaperError(existing.id, doi)
-            paper.doi = doi
-            session.flush()
-            _emit(task.id, "doi", f"DOI: {doi}")
+            session.rollback()
+        except Exception:
+            _log.exception("rollback inside _process_upload failed")
+        raise
 
-    # 4) Crossref
-    if paper.doi:
-        _emit(task.id, "crossref", "拉取 Crossref 元数据…")
-        meta = _crossref_metadata(paper.doi)
-        if meta:
-            if not paper.year and meta.get("year"):
-                paper.year = meta["year"]
-            if not paper.authors_json and meta.get("authors_json"):
-                paper.authors_json = meta["authors_json"]
-            if not paper.abstract and meta.get("abstract"):
-                paper.abstract = meta["abstract"]
-            if not paper.title and meta.get("title"):
-                paper.title = meta["title"]
-            session.flush()
-
-    # 5) Journal
-    if paper.doi:
-        try:
-            JournalService().attach_to_paper(session, paper)
-        except Exception as e:
-            _log.info("journal attach failed: %s", e)
-
-    # 6) References
-    _emit(task.id, "refs", "抽取引用…")
-    refs_path = output_dir / "refs.json"
-    err = _run_extract_refs(md_path, refs_path)
-    if err:
-        _emit(task.id, "refs", f"引用抽取失败：{err}")
-    else:
-        try:
-            paper.refs_path = _rel_to_root(refs_path)
-        except ValueError:
-            pass  # 极端情况：refs 写到 ROOT 外，不入库但不影响 analyzed 状态
-
-    paper.status = "analyzed"
-    paper.analyzed_at = _utcnow()
-    session.commit()
     _emit(task.id, "done", "完成", paper_id=paper.id)
 
 
@@ -513,6 +545,14 @@ def _worker_loop() -> None:
         paper_id: Optional[int] = None
         try:
             tq = TaskQueue(session)
+            # C3 lost-wakeup 修复：必须在 fetch_next 之前 clear()。
+            # 顺序：clear → fetch → (None) → wait
+            #   - 若生产者在 clear 之前 set：本次 fetch 必然能拿到任务，进入处理分支
+            #   - 若生产者在 clear 之后、wait 之前 set：wait 立即返回
+            #   - 若生产者在 wait 期间 set：wait 正常被唤醒
+            # 旧顺序（fetch → clear → wait）有窗口：fetch 返回 None 后、clear 之前
+            # 生产者 set + enqueue，会被 clear 抹掉 → 任务卡到 _IDLE_WAIT_SECONDS。
+            _wakeup.clear()
             # 单次 type IN (...) 查询，全局 FIFO（按 id 升序），避免顺序循环带来的
             # 公平问题（upload 永远优先 → backward/forward 饿死）+ 3 倍 DB roundtrip
             task = tq.fetch_next(types=list(_HANDLED_TYPES))
@@ -521,7 +561,6 @@ def _worker_loop() -> None:
                 session.close()
                 # _wakeup 是统一信号：wake_worker() set 唤醒；stop_worker() 同时 set
                 # _shutdown 与 _wakeup 让等待立刻返回。返回后检查 _shutdown 决定退出。
-                _wakeup.clear()
                 _wakeup.wait(_IDLE_WAIT_SECONDS)
                 if _shutdown.is_set():
                     break

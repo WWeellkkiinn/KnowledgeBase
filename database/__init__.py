@@ -49,36 +49,17 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False
 
 
 def enable_sqlite_foreign_keys(target: Engine) -> None:
-    """对 SQLite engine 注册 PRAGMA：FK + busy_timeout（每连接）。
-    WAL 是数据库级持久设置，用独立 sqlite3 连接一次性完成 —— 不经过 SQLAlchemy
-    连接池，避免该连接被归还池后跳过 connect 监听器（导致 FK/busy_timeout 未生效）。
+    """对 SQLite engine 注册 connect 监听器：FK + busy_timeout（每连接）。
+
+    纯监听器注册，**不打开任何数据库连接**，可在模块顶层安全执行。
+    WAL 这种"打开数据库文件"的副作用已剥离到 `init_sqlite()`，由真正的应用
+    入口（serve.py / app factory）显式调用，避免 alembic/测试/CLI 仅 import
+    database 模块时就触发 SQLite 文件打开和 WAL 写盘。
+
     其他方言无效。
     """
     if target.dialect.name != "sqlite":
         return
-
-    # 一次性设置 WAL（数据库级持久），用独立 sqlite3 连接，不污染 SQLAlchemy 池
-    try:
-        db_path = target.url.database
-        # 仅对落盘 SQLite 文件设置；":memory:" / 空路径跳过
-        if db_path and db_path != ":memory:":
-            # target.url.database 可能是相对路径（如 sqlite:///kb.db）。进程 cwd
-            # 漂移（service / worker / 测试 fixture）会让本函数和 SQLAlchemy 池
-            # 打开不同物理文件，WAL 设置作用到错的库上。先解析为绝对路径再开。
-            if not Path(db_path).is_absolute():
-                db_path = str(Path(db_path).resolve())
-            # TODO(security): 若未来 KB_DB_URL 允许来自非信任源（CI、外部配置中心），
-            # 这里需要做 path traversal 校验（限制在项目根 + 白名单目录内）。
-            # 当前 env 仅由部署者控制，暂不强制校验。
-            _raw = sqlite3.connect(db_path, timeout=30)
-            try:
-                _raw.execute("PRAGMA journal_mode=WAL")
-                _raw.commit()
-            finally:
-                _raw.close()
-    except Exception:
-        # WAL 设置失败不致命（如只读 / 内存库），继续按默认 journal 模式工作
-        pass
 
     @event.listens_for(target, "connect")
     def _set_sqlite_pragma(dbapi_connection, _connection_record):
@@ -89,6 +70,45 @@ def enable_sqlite_foreign_keys(target: Engine) -> None:
         cursor.close()
 
 
+def init_sqlite(target: Engine | None = None) -> None:
+    """显式初始化 SQLite 数据库级持久设置（当前仅 WAL）。
+
+    必须由应用入口显式调用一次（见 scripts/serve.py / app.create_app）。
+    用独立 sqlite3 连接而非走 SQLAlchemy 池，避免该连接被归还池后跳过
+    connect 监听器（导致 FK/busy_timeout 未生效）。
+
+    幂等：重复调用只是再写一次 PRAGMA，无副作用。
+    非 SQLite 方言、内存库、只读库均安全跳过。
+    """
+    eng = target if target is not None else engine
+    if eng.dialect.name != "sqlite":
+        return
+    try:
+        db_path = eng.url.database
+        # 仅对落盘 SQLite 文件设置；":memory:" / 空路径跳过
+        if not db_path or db_path == ":memory:":
+            return
+        # eng.url.database 可能是相对路径（如 sqlite:///kb.db）。进程 cwd
+        # 漂移（service / worker / 测试 fixture）会让本函数和 SQLAlchemy 池
+        # 打开不同物理文件，WAL 设置作用到错的库上。先解析为绝对路径再开。
+        if not Path(db_path).is_absolute():
+            db_path = str(Path(db_path).resolve())
+        # TODO(security): 若未来 KB_DB_URL 允许来自非信任源（CI、外部配置中心），
+        # 这里需要做 path traversal 校验（限制在项目根 + 白名单目录内）。
+        # 当前 env 仅由部署者控制，暂不强制校验。
+        _raw = sqlite3.connect(db_path, timeout=30)
+        try:
+            _raw.execute("PRAGMA journal_mode=WAL")
+            _raw.commit()
+        finally:
+            _raw.close()
+    except Exception:
+        # WAL 设置失败不致命（如只读 / 内存库），继续按默认 journal 模式工作
+        pass
+
+
+# 仅注册 connect 监听器（无副作用）；WAL 等需要打开数据库文件的初始化
+# 由应用入口显式调用 init_sqlite()。
 enable_sqlite_foreign_keys(engine)
 
 
@@ -112,4 +132,5 @@ __all__ = [
     "session_scope",
     "DEFAULT_DB_PATH",
     "enable_sqlite_foreign_keys",
+    "init_sqlite",
 ]

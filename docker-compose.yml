@@ -12,8 +12,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # .env 故意放在 ./data/ 之外：data/ 整个挂进容器 /app/data，
+    # 任何遍历 papers 父目录的代码都会读到明文 token。放仓库根目录由 compose 注入环境变量即可。
     env_file:
-      - ./data/.env
+      - ./.env
     environment:
       KB_DB_PATH: /app/data/kb.db
       PAPERS_DIR: /app/data/papers
@@ -54,7 +56,10 @@ services:
     logging: *default-logging
 
   frps:
-    image: snowdreamtech/frps:0.68.1
+    build:
+      context: ./deploy
+      dockerfile: frps.Dockerfile
+    image: kb-frps:0.68.1
     # host 网络模式：同一进程同时听 7000（公网控制面）+ 13813（回环数据面）。
     # 配合 frps.toml 的 proxyBindAddr=127.0.0.1，13813 只对本机暴露，公网安全。
     # app 容器通过 extra_hosts 的 host.docker.internal 走宿主回环到达这里。

@@ -21,6 +21,7 @@ from typing import Optional
 
 from sqlalchemy import case, literal, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from database import models
 
@@ -71,25 +72,58 @@ class TaskQueue:
         type：精确匹配单一类型
         types：匹配集合中任意类型（与 type IN (...) 等价）；同时传则取 type 单值
         FIFO 全局公平：按 id 升序，所有 type 共享同一顺序，不会出现某 type 饥饿
+
+        原子领取（C3 修复）：SQLite 无 SKIP LOCKED，改用
+            UPDATE tasks SET status='running', ...
+            WHERE id = (SELECT id FROM tasks WHERE status='queued' [...] ORDER BY id LIMIT 1)
+              AND status='queued'
+            RETURNING id
+        其中外层 WHERE 的 `AND status='queued'` 是关键 —— 若两个并发事务都通过子查询
+        拿到同一 id，只有第一个 UPDATE 能改到 status='queued' 的行；第二个 UPDATE 因
+        status 已变成 'running' 而 rowcount=0，RETURNING 返回空。
+        SQLite 默认 WAL/journal 下，写操作串行化，配合 BEGIN IMMEDIATE 语义即可。
         """
-        stmt = (
-            select(models.Task)
+        now = _utcnow()
+        # 子查询：按 FIFO 找一个 queued 任务的 id
+        inner = (
+            select(models.Task.id)
             .where(models.Task.status == "queued")
             .order_by(models.Task.id.asc())
             .limit(1)
         )
         if type:
-            stmt = stmt.where(models.Task.type == type)
+            inner = inner.where(models.Task.type == type)
         elif types:
-            stmt = stmt.where(models.Task.type.in_(tuple(types)))
-        task = self.session.execute(stmt).scalar_one_or_none()
-        if task is None:
+            inner = inner.where(models.Task.type.in_(tuple(types)))
+
+        # 原子 UPDATE：再次校验 status='queued'，防双领；RETURNING 拿回 id
+        stmt = (
+            update(models.Task)
+            .where(models.Task.id == inner.scalar_subquery())
+            .where(models.Task.status == "queued")
+            .values(
+                status="running",
+                attempt=models.Task.attempt + 1,
+                started_at=now,
+            )
+            .returning(models.Task.id)
+            .execution_options(synchronize_session=False)
+        )
+        try:
+            row = self.session.execute(stmt).first()
+        except OperationalError:
+            # SQLite 写冲突（database is locked）—— 让上层重试
+            self.session.rollback()
+            raise
+
+        if row is None:
             return None
-        task.status = "running"
-        task.attempt += 1
-        task.started_at = _utcnow()
+
+        task_id = row[0]
         self.session.flush()
-        return task
+        # 把已更新的行加载进 session（identity map），下游用 ORM 操作不踩脏
+        self.session.expire_all()
+        return self.session.get(models.Task, task_id)
 
     # ─── 状态转换 ────────────────────────────────────────────────────
 

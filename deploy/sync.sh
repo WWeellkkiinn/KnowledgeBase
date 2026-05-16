@@ -50,8 +50,11 @@ if [[ "$PUSH_ENV" == "1" ]]; then
   if [[ ! -f .env ]]; then
     echo "ERROR: 本地无 .env，无法 --env 推送。"; exit 1
   fi
-  echo "==> scp .env -> ${ECS_HOST}:${ECS_PATH}/data/.env"
-  scp -p .env "${ECS_HOST}:${ECS_PATH}/data/.env"
+  # .env 推到仓库根（与 docker-compose.yml 的 env_file: ./.env 对齐），
+  # 不要落到 data/ 内——data/ 整个挂进容器，明文 token 会被遍历到。
+  echo "==> scp .env -> ${ECS_HOST}:${ECS_PATH}/.env"
+  scp -p .env "${ECS_HOST}:${ECS_PATH}/.env"
+  ssh "$ECS_HOST" "chmod 600 ${ECS_PATH}/.env"
 fi
 
 if [[ "$REBUILD" == "1" ]]; then

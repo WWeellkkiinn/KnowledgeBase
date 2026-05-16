@@ -21,9 +21,8 @@ method = "token"
 token = "REPLACE_WITH_FRPS_TOKEN"
 
 [transport.tls]
-# 与 frps.toml 配套：snowdreamtech/frps:0.68.1 与官方 frpc TLS 不兼容，
-# 暂关 TLS。换官方 frps 镜像后改回 enable = true。
-enable = false
+# 与 frps.toml 的 force = true 配套；明文连接会被服务端拒。
+enable = true
 
 [[proxies]]
 name = "ollama"

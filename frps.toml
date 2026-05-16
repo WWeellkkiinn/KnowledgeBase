@@ -22,11 +22,9 @@ method = "token"
 token = "REPLACE_WITH_RANDOM_TOKEN"
 
 [transport.tls]
-# 已知问题（2026-05）：snowdreamtech/frps:0.68.1 与官方 fatedier/frp 0.68.1 frpc
-# 的 TLS 握手不兼容（症状：frpc 报 "session shutdown"，frps 完全收不到连接）。
-# 临时关 TLS；token (43 字符 base64) + ufw 限制 7000 来源仍提供足够鉴权。
-# 长期修复：换 fatedier 官方镜像或 ECS 上跑原生 binary 后取消下行注释。
-# force = true
+# 强制 TLS：frps 拒绝任何明文连接。客户端 frpc.toml 必须 enable = true。
+# 镜像使用 fatedier 官方 release 二进制（见 deploy/frps.Dockerfile），与官方 frpc 握手兼容。
+force = true
 
 [log]
 to = "console"

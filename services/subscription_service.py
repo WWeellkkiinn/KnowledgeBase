@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re as _re_mod
+import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -710,6 +711,9 @@ def clamp_overdue_subs(session: Session) -> int:
 
 
 _scheduler = None  # 全局单例（每进程一份）
+_tick_executor: Optional[ThreadPoolExecutor] = None  # run_due 异步执行池
+_tick_busy = False  # 防止前一次 run_due 未跑完时新 tick 又起一个
+_tick_lock = threading.Lock()
 
 
 def start_scheduler(*, poll_seconds: int = 60) -> object:
@@ -745,11 +749,42 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 300},
     )
 
-    def _tick():
+    # 异步化：scheduler worker 线程只负责提交 future，run_due 跑在独立池里。
+    # max_workers=1 保留"同一时刻只有一个 run_due 在跑"的并发不变性（见模块 docstring）。
+    global _tick_executor
+    if _tick_executor is None:
+        _tick_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kb-sub-tick")
+
+    def _run_due_safe():
+        global _tick_busy
         try:
             SubscriptionService().run_due()
         except Exception as e:
-            _log.exception("[scheduler tick] %s", e)
+            _log.exception("[scheduler tick run_due] %s", e)
+        finally:
+            with _tick_lock:
+                _tick_busy = False
+
+    def _tick():
+        global _tick_busy
+        with _tick_lock:
+            if _tick_busy:
+                # 上一轮 run_due 还在跑，跳过本次 tick（等价于 APScheduler coalesce）
+                _log.debug("[scheduler tick] previous run_due still running, skipping")
+                return
+            _tick_busy = True
+        try:
+            if _tick_executor is None:
+                # 边缘情况：stop_scheduler 与 tick 竞态，回退同步执行
+                with _tick_lock:
+                    _tick_busy = False
+                SubscriptionService().run_due()
+                return
+            _tick_executor.submit(_run_due_safe)
+        except Exception as e:
+            with _tick_lock:
+                _tick_busy = False
+            _log.exception("[scheduler tick submit] %s", e)
 
     sched.add_job(_tick, "interval", seconds=poll_seconds, id="kb-subscriptions-tick",
                   replace_existing=True)
@@ -956,13 +991,23 @@ def _daily_llm_scoring() -> None:
 
 def stop_scheduler() -> None:
     """关闭 scheduler。Flask 进程退出时调用，测试也用。"""
-    global _scheduler
+    global _scheduler, _tick_executor, _tick_busy
     if _scheduler is not None and getattr(_scheduler, "running", False):
         try:
             _scheduler.shutdown(wait=False)
         except Exception:
             pass
     _scheduler = None
+    if _tick_executor is not None:
+        try:
+            _tick_executor.shutdown(wait=True, cancel_futures=True)
+        except TypeError:
+            _tick_executor.shutdown(wait=True)
+        except Exception:
+            _log.exception("[scheduler stop] tick executor shutdown failed")
+        _tick_executor = None
+    with _tick_lock:
+        _tick_busy = False
 
 
 def score_pending_results(db: Session, max_score: int = 30) -> dict:

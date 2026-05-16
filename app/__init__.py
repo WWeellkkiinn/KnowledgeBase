@@ -19,7 +19,7 @@ from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from database import SessionLocal
+from database import SessionLocal, init_sqlite
 
 
 # CORS allowlist 支持环境变量覆盖；默认放行 Vite dev 的 localhost 与 127.0.0.1。
@@ -67,6 +67,7 @@ def _unauthorized() -> Response:
 
 
 def create_app(config: dict | None = None) -> Flask:
+    init_sqlite()
     app = Flask(__name__)
     # SECRET_KEY 必须设置：flask-socketio polling transport 与未来 Flask session
     # 都依赖；优先读环境变量，开发期 fallback 到随机 key（重启后失效，符合 dev 预期）。
