@@ -70,11 +70,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopPolling()
   window.removeEventListener('keydown', onKey)
-  document.body.style.overflow = ''
-})
-
-watch(modalOpen, (v) => {
-  document.body.style.overflow = v ? 'hidden' : ''
 })
 
 function onKey(e: KeyboardEvent) {

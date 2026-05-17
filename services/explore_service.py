@@ -299,6 +299,7 @@ def undo_explore_action(db, pool_id) -> dict:
         raise ValueError("not found")
     item.action = None
     item.acted_at = None
+    item.paper_id = None
     db.commit()
     return {"pool_id": item.id, "action": None}
 

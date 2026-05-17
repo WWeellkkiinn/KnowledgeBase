@@ -24,6 +24,8 @@ const cardPrevRef = ref<HTMLDivElement>()
 const cardNextRef = ref<HTMLDivElement>()
 
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null, cachedW = 0
+let cardEl: HTMLElement | null = null
+let isLoadingMore = false
 
 function getCardW() {
   return (cardRef.value?.offsetWidth ?? 320) + CARD_GAP
@@ -117,14 +119,21 @@ async function doUndo() {
 }
 
 async function loadMoreCards() {
-  if (!sub.value) return
-  const res = await exploreApi.getCards(sub.value.id, 10)
-  const newCards = (res.data.items as ExploreCard[]).filter(
-    c => !cards.value.some(existing => existing.id === c.id)
-  )
-  cards.value = [...cards.value, ...newCards]
-  if (cardNextRef.value && cards.value[1]) {
-    cardNextRef.value.innerHTML = cards.value[1].card_html
+  if (!sub.value || isLoadingMore) return
+  isLoadingMore = true
+  try {
+    const res = await exploreApi.getCards(sub.value.id, 10)
+    const newCards = (res.data.items as ExploreCard[]).filter(
+      c => !cards.value.some(existing => existing.id === c.id)
+    )
+    if (newCards.length > 0) {
+      cards.value = [...cards.value, ...newCards]
+      if (!cardNextRef.value?.innerHTML && cards.value[1]) {
+        cardNextRef.value!.innerHTML = cards.value[1].card_html
+      }
+    }
+  } finally {
+    isLoadingMore = false
   }
 }
 
@@ -167,6 +176,7 @@ async function triggerRefill() {
 }
 
 function onTouchStart(e: TouchEvent) {
+  if (animating.value) return
   sx = e.touches[0].clientX
   sy = e.touches[0].clientY
   swipeDir = null
@@ -218,11 +228,13 @@ function onTouchCancel() {
 onMounted(async () => {
   await loadSubscription()
   await loadCards()
-  cardRef.value?.addEventListener('touchmove', onTouchMove, { passive: false })
+  cardEl = cardRef.value ?? null
+  cardEl?.addEventListener('touchmove', onTouchMove, { passive: false })
 })
 
 onBeforeUnmount(() => {
-  cardRef.value?.removeEventListener('touchmove', onTouchMove)
+  cardEl?.removeEventListener('touchmove', onTouchMove)
+  cardEl = null
 })
 </script>
 

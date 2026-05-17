@@ -7,7 +7,7 @@ const nav = [
   { to: '/papers', label: '论文库' },
   { to: '/network', label: '引用图' },
   { to: '/review', label: '综述' },
-{ to: '/explore', label: '探索' },
+  { to: '/explore', label: '探索' },
   { to: '/failures', label: '失败诊断' },
 ]
 </script>
