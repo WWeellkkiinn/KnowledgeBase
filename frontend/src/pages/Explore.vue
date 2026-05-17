@@ -11,7 +11,6 @@ const busy = ref(false)
 const refillStatus = ref('')
 const exiting = ref<'left' | 'right' | 'down' | null>(null)
 const touchStartX = ref(0)
-const touchStartY = ref(0)
 
 const currentCard = computed(() => cards.value[0] ?? null)
 const prevCard = computed(() => cards.value[1] ?? null)
@@ -83,19 +82,13 @@ async function triggerRefill() {
 }
 
 function onTouchStart(event: TouchEvent) {
-  const touch = event.touches[0]
-  touchStartX.value = touch.clientX
-  touchStartY.value = touch.clientY
+  touchStartX.value = event.touches[0].clientX
 }
 
 function onTouchEnd(event: TouchEvent) {
-  const touch = event.changedTouches[0]
-  const dx = touch.clientX - touchStartX.value
-  const dy = touch.clientY - touchStartY.value
-  if (Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy)) {
+  const dx = event.changedTouches[0].clientX - touchStartX.value
+  if (Math.abs(dx) > 80) {
     doAction(dx > 0 ? 'saved' : 'skipped')
-  } else if (dy > 80) {
-    doAction('passed')
   }
 }
 

@@ -210,6 +210,7 @@ def get_explore_cards(db, sub_id, limit=10) -> list[dict]:
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
+            models.ExplorePool.scored_at.isnot(None),
         ).order_by(models.ExplorePool.llm_score.desc().nulls_last(), models.ExplorePool.found_at.desc())
         .limit(max(int(limit) * 5, 50))
     ).scalars().all())
