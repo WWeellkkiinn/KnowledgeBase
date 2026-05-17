@@ -1410,7 +1410,10 @@ def refill_explore_pool():
 
     fill_result = fill_explore_pool(g.db, sub)
 
-    # LLM 打分 + embedding 耗时较长，放后台线程，立即返回
+    # 先同步打分第一批（10篇），让用户立刻看到卡片
+    first_batch = score_and_embed_pending(g.db, sub_id, max_items=10)
+
+    # 剩余卡片放后台线程继续处理
     import threading
     from database import SessionLocal as _SL
 
@@ -1422,6 +1425,6 @@ def refill_explore_pool():
             s.close()
 
     threading.Thread(target=_bg, args=(sub_id,), daemon=True).start()
-    return jsonify({**fill_result, "status": "scoring_in_background"})
+    return jsonify({**fill_result, **first_batch, "status": "first_batch_ready"})
 
 

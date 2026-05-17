@@ -65,12 +65,16 @@ async function triggerRefill() {
   refillStatus.value = '正在从 OpenAlex 拉取论文…'
   try {
     await exploreApi.refill(sub.value.id)
-    refillStatus.value = 'AI 分析中，稍后自动刷新…'
-    // 后台处理中，轮询直到有卡片可用（最多等 3 分钟）
-    for (let i = 0; i < 18; i++) {
-      await new Promise(r => setTimeout(r, 10000))
-      await loadCards()
-      if (cards.value.length > 0) break
+    refillStatus.value = 'AI 分析中…'
+    // 第一批已同步完成，立刻加载；后台继续处理剩余
+    await loadCards()
+    if (cards.value.length === 0) {
+      // 若仍无卡片，轮询等待（最多 3 分钟）
+      for (let i = 0; i < 18; i++) {
+        await new Promise(r => setTimeout(r, 10000))
+        await loadCards()
+        if (cards.value.length > 0) break
+      }
     }
   } catch (e: any) {
     if (e?.response?.status !== 409) throw e

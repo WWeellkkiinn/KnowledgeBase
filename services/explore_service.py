@@ -145,7 +145,7 @@ def fill_explore_pool(db, sub, target=50) -> dict:
     return {"added": added, "existing": current}
 
 
-def score_and_embed_pending(db, sub_id) -> dict:
+def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     stmt = (
         select(models.ExplorePool, models.Subscription.description)
         .join(models.Subscription, models.ExplorePool.subscription_id == models.Subscription.id)
@@ -153,7 +153,7 @@ def score_and_embed_pending(db, sub_id) -> dict:
         .where(models.ExplorePool.action.is_(None))
         .where((models.ExplorePool.scored_at.is_(None)) | (models.ExplorePool.embedding.is_(None)))
         .order_by(models.ExplorePool.found_at.desc())
-        .limit(120)
+        .limit(max_items)
     )
     rows = list(db.execute(stmt).all())
     if not rows:
