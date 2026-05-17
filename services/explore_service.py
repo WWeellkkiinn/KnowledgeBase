@@ -293,6 +293,16 @@ def record_explore_action(db, pool_id, action) -> dict:
     return {"pool_id": item.id, "action": action, "paper_id": paper_id or item.paper_id, "query_refresh": refreshed}
 
 
+def undo_explore_action(db, pool_id) -> dict:
+    item = db.get(models.ExplorePool, pool_id)
+    if item is None:
+        raise ValueError("not found")
+    item.action = None
+    item.acted_at = None
+    db.commit()
+    return {"pool_id": item.id, "action": None}
+
+
 def _import_explore_to_paper(db, item) -> Optional[int]:
     meta = item.raw_metadata_json or {}
     title = (meta.get("title") or "").strip()

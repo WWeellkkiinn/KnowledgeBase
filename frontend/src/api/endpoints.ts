@@ -135,6 +135,8 @@ export const exploreApi = {
     client.post<{ ok: boolean; paper_id: number | null }>('/explore/' + poolId + '/action', { action }),
   refill: (subId: number) =>
     client.post<{ added: number; scored: number; embedded: number }>('/explore/refill', null, { params: { sub_id: subId } }),
+  undo: (poolId: number) =>
+    client.post(`/explore/${poolId}/undo`),
 }
 
 

@@ -12,18 +12,14 @@ const routes: RouteRecordRaw[] = [
   },
   { path: '/network', name: 'network', component: () => import('@/pages/Network.vue') },
   { path: '/review', name: 'review', component: () => import('@/pages/Review.vue') },
-  {
-    path: '/subscriptions',
-    name: 'subscriptions',
-    component: () => import('@/pages/Subscriptions.vue'),
-  },
+  { path: '/subscriptions', redirect: '/explore' },
   {
     path: '/explore',
     component: () => import('../pages/Explore.vue'),
   },
   { path: '/failures', name: 'failures', component: () => import('@/pages/Failures.vue') },
-  { path: '/feed', redirect: '/subscriptions' },
-  { path: '/recommendations', redirect: '/subscriptions' },
+  { path: '/feed', redirect: '/explore' },
+  { path: '/recommendations', redirect: '/explore' },
   { path: '/login', name: 'login', component: () => import('@/pages/Login.vue'), meta: { public: true } },
 ]
 
