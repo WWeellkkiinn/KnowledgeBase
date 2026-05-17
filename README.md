@@ -344,7 +344,8 @@ KnowledgeBase/
     migrate_to_db.py            ← 一次性迁移脚本
   tests/                        ← pytest 测试套件（156 个用例）
   papers/                       ← 所有论文产物（人类可读副本）
-  kb.db                         ← SQLite 主数据库
+  data/
+    kb.db                       ← SQLite 主数据库
   alembic.ini
 ```
 
@@ -369,7 +370,7 @@ KnowledgeBase/
 
 Ollama 推理跑在独立主机上，本仓库不预设主机地址 / SSH 凭证。通过 `KB_OLLAMA_URL`
 环境变量配置端点（参考 `.env.example`）；若推理主机在内网，可用 frp 反向隧道
-把端口映射回应用主机（参考 `deploy/README.md` + `frpc.toml.example`）。
+把端口映射回应用主机（参考 `deploy/README.md` + `deploy/frpc.toml.example`）。
 
 ### Ollama 日常操作（示例 alias）
 

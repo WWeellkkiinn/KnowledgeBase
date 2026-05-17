@@ -1,7 +1,7 @@
 """KnowledgeBase 数据库模块。
 
 提供 SQLAlchemy engine / SessionLocal / Base，以及 session_scope 上下文。
-DB 路径默认在项目根 `kb.db`，可通过环境变量 `KB_DB_PATH` 覆盖（便于测试）。
+DB 路径默认在 `data/kb.db`，可通过环境变量 `KB_DB_PATH` 覆盖（便于测试）。
 
 SQLite 默认不执行外键约束；本模块在每次 connect 上注册 `PRAGMA foreign_keys=ON`，
 保证模型层声明的 ondelete=CASCADE/SET NULL 真正生效。
@@ -19,7 +19,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_PATH = ROOT / "kb.db"
+DEFAULT_DB_PATH = ROOT / "data" / "kb.db"
 
 
 def _db_url() -> str:
