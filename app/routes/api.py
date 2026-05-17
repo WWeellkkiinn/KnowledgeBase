@@ -1398,17 +1398,29 @@ def refill_explore_pool():
     if not sub:
         return jsonify({"error": "subscription not found"}), 404
 
-    # 检查未操作卡片数量，<10 才允许手动补充
-    pending_count = g.db.execute(
+    # 只有已打分的可用卡片 ≥ 10 才拒绝（防刷 OpenAlex）
+    scored_count = g.db.execute(
         select(func.count()).select_from(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
+            models.ExplorePool.scored_at.isnot(None),
         )
     ).scalar() or 0
-    if pending_count >= 10:
-        return jsonify({"error": "pool has enough cards", "pending": pending_count}), 409
+    if scored_count >= 10:
+        return jsonify({"error": "pool has enough cards", "pending": scored_count}), 409
 
-    fill_result = fill_explore_pool(g.db, sub)
+    # 有未打分的卡片时跳过 OpenAlex 拉取，直接打分
+    unscored_count = g.db.execute(
+        select(func.count()).select_from(models.ExplorePool).where(
+            models.ExplorePool.subscription_id == sub_id,
+            models.ExplorePool.action.is_(None),
+            models.ExplorePool.scored_at.is_(None),
+        )
+    ).scalar() or 0
+
+    fill_result = {"added": 0}
+    if unscored_count < 10:
+        fill_result = fill_explore_pool(g.db, sub)
 
     # 先同步打分第一批（10篇），让用户立刻看到卡片
     first_batch = score_and_embed_pending(g.db, sub_id, max_items=10)
