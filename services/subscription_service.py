@@ -943,16 +943,29 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         finally:
             session.close()
 
+    def _daily_easyscholar_backfill():
+        from services.easyscholar_service import backfill_stale
+        session = SessionLocal()
+        try:
+            result = backfill_stale(session)
+            _log.info("easyscholar_backfill done: %s", result)
+        except Exception:
+            _log.exception("easyscholar_backfill failed")
+        finally:
+            session.close()
+
     def _nightly_pipeline():
-        """北京02:00触发，全串行：拉取（含引用更新）→ 评分 → 发邮件 → 分析论文。"""
-        _log.info("nightly_pipeline: step 1/4 track_refresh")
+        """北京02:00触发，全串行：拉取（含引用更新）→ 评分 → 发邮件 → 分析论文 → 期刊等级刷新。"""
+        _log.info("nightly_pipeline: step 1/5 track_refresh")
         _daily_track_refresh()
-        _log.info("nightly_pipeline: step 2/4 llm_scoring")
+        _log.info("nightly_pipeline: step 2/5 llm_scoring")
         _daily_llm_scoring()
-        _log.info("nightly_pipeline: step 3/4 subscription_digest")
+        _log.info("nightly_pipeline: step 3/5 subscription_digest")
         _daily_subscription_digest()
-        _log.info("nightly_pipeline: step 4/4 ai_batch")
+        _log.info("nightly_pipeline: step 4/5 ai_batch")
         _daily_ai_batch()
+        _log.info("nightly_pipeline: step 5/5 easyscholar_backfill")
+        _daily_easyscholar_backfill()
         _log.info("nightly_pipeline: done")
 
     sched.add_job(

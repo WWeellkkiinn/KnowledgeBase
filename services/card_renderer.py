@@ -8,7 +8,6 @@ _env = Environment(
     autoescape=select_autoescape(['html', 'j2']),
     auto_reload=True,
 )
-_card_tpl = _env.get_template("subscription_card.html.j2")
 
 
 def _display_date(meta: dict) -> str:
@@ -21,8 +20,10 @@ def _display_date(meta: dict) -> str:
     return ""
 
 
-def render_subscription_card(result, subscription, card_index: int | None = None) -> str:
+def render_subscription_card(result, subscription, card_index: int | None = None, db_session=None) -> str:
     """渲染单个订阅推送卡片 HTML 片段。"""
+    from services.easyscholar_service import get_by_name, extract_badges
+
     meta = result.raw_metadata_json or {}
     authors_list = (meta.get("authors_json") or [])[:3]
     authors = ", ".join(a for a in authors_list if a)
@@ -30,7 +31,17 @@ def render_subscription_card(result, subscription, card_index: int | None = None
     desc = (subscription.description or "").strip() if subscription else ""
     sub_label = desc[:80] if desc else (subscription.type if subscription else "")
 
-    return _card_tpl.render(
+    venue_name = meta.get("venue_name") or ""
+    rank_badges: list[dict] = []
+    if venue_name and db_session is not None:
+        try:
+            raw = get_by_name(db_session, venue_name)
+            rank_badges = extract_badges(raw)
+        except Exception:
+            pass
+
+    tpl = _env.get_template("subscription_card.html.j2")
+    return tpl.render(
         card_index=card_index,
         result_id=result.id,
         paper_id=result.paper_id,
@@ -41,7 +52,8 @@ def render_subscription_card(result, subscription, card_index: int | None = None
         display_date=_display_date(meta),
         authors=authors,
         cited_by_count=meta.get("cited_by_count"),
-        venue_name=meta.get("venue_name") or "",
+        venue_name=venue_name,
+        rank_badges=rank_badges,
         tags=list(result.tags_json or [])[:4],
         research_question=result.research_question or "",
         methodology=result.methodology or "",

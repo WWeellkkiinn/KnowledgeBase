@@ -52,6 +52,8 @@ class Journal(Base):
     oa_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     source_dataset: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    easyscholar_json: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
+    easyscholar_fetched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Paper(Base):

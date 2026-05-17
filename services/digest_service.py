@@ -301,7 +301,7 @@ def send_digest(
     return result
 
 
-def _build_subscription_html(rows: list[tuple], date_str: str) -> str:
+def _build_subscription_html(rows: list[tuple], date_str: str, db_session=None) -> str:
     """rows: [(SubscriptionResult, Subscription)]，按 llm_score desc 已排序"""
     from services.card_renderer import render_subscription_card
 
@@ -321,7 +321,7 @@ def _build_subscription_html(rows: list[tuple], date_str: str) -> str:
             f'margin:28px 0 12px;font-size:14px;font-weight:600"><strong>{_e(label)}</strong></h3>'
         )
         for i, r in enumerate(results):
-            parts.append(render_subscription_card(r, sub, card_index=i + 1))
+            parts.append(render_subscription_card(r, sub, card_index=i + 1, db_session=db_session))
 
     body = "".join(parts) or '<p style="color:#64748b">无评分结果。</p>'
     return f"""<!DOCTYPE html>
@@ -364,7 +364,7 @@ def send_subscription_digest(
         return {"sent": False, "reason": "no_scored_results"}
 
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    html = _build_subscription_html(rows, date_str)
+    html = _build_subscription_html(rows, date_str, db_session=db)
 
     result = _send_html_mail(
         f"[KnowledgeBase] 订阅推送 · {date_str}（共 {len(rows)} 篇）", html,
