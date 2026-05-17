@@ -24,8 +24,8 @@
 
   {% if key_findings %}
   <p style="margin:12px 0 2px;color:#0f172a"><strong>有什么用</strong></p>
-  <ul style="margin:0;padding-left:20px">
-    {% for f in key_findings %}<li>{{ f }}</li>{% endfor %}
+  <ul style="margin:0;padding-left:20px;list-style-type:disc">
+    {% for f in key_findings %}<li style="list-style-type:disc">{{ f }}</li>{% endfor %}
   </ul>
   {% endif %}
 
