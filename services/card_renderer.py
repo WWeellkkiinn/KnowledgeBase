@@ -32,6 +32,8 @@ def render_subscription_card(result, subscription, card_index: int | None = None
 
     return _card_tpl.render(
         card_index=card_index,
+        result_id=result.id,
+        paper_id=result.paper_id,
         title=meta.get("title") or "",
         url=meta.get("url") or "",
         title_zh=result.title_zh or "",

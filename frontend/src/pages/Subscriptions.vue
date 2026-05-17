@@ -203,12 +203,21 @@ async function runNow(id: number) {
   }
 }
 
-async function importToLibrary(item: Record<string, unknown>) {
+async function handleCardClick(e: MouseEvent) {
+  const btn = (e.target as Element).closest('[data-import-id]') as HTMLElement | null
+  if (!btn || btn.hasAttribute('disabled')) return
+  const resultId = parseInt(btn.dataset.importId!)
+  btn.setAttribute('disabled', 'true')
+  btn.textContent = '入库中…'
   try {
-    const r = await axios.post(`/api/inbox/${item.id}/import`)
-    item.paper_id = r.data.paper_id
-  } catch (e) {
-    error.value = '入库失败：' + (e instanceof Error ? e.message : String(e))
+    const r = await axios.post(`/api/inbox/${resultId}/import`)
+    const item = store.inbox.find((i: Record<string, unknown>) => i.id === resultId)
+    if (item) item.paper_id = r.data.paper_id
+    btn.outerHTML = '<span style="font-size:13px;color:#16a34a;background:#f0fdf4;padding:5px 14px;border-radius:9999px;border:1px solid #bbf7d0;font-weight:500">✓ 已入库</span>'
+  } catch {
+    btn.removeAttribute('disabled')
+    btn.textContent = '+ 入库'
+    error.value = '入库失败，请重试'
   }
 }
 </script>
@@ -290,18 +299,8 @@ async function importToLibrary(item: Record<string, unknown>) {
       <h2 class="text-xl font-bold">推送结果</h2>
       <p v-if="store.loading && store.inbox.length === 0" class="text-sm text-slate-500">加载中…</p>
       <p v-else-if="store.inbox.length === 0" class="text-sm text-slate-500">暂无推送结果。</p>
-      <div v-else class="space-y-3">
-        <div v-for="item in visibleInbox" :key="item.id">
-          <div v-html="item.card_html"></div>
-          <div class="flex justify-end mt-1 pr-1">
-            <button
-              v-if="!item.paper_id"
-              @click="importToLibrary(item)"
-              class="text-xs text-blue-600 hover:text-blue-800 hover:underline"
-            >+ 入库</button>
-            <span v-else class="text-xs text-green-600">✓ 已入库</span>
-          </div>
-        </div>
+      <div v-else class="space-y-3" @click="handleCardClick">
+        <div v-for="item in visibleInbox" :key="item.id" v-html="item.card_html"></div>
       </div>
 
       <div v-if="sortedInbox.length > 10" class="text-center">

@@ -39,5 +39,12 @@
   <p style="margin:0">{{ llm_reason }}</p>
   {% endif %}
 
-  <p style="margin:10px 0 0;font-size:11px;color:#94a3b8">订阅：{{ subscription_label }}</p>
+  <div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between">
+    <p style="margin:0;font-size:11px;color:#94a3b8">订阅：{{ subscription_label }}</p>
+    {% if paper_id %}
+    <span style="font-size:13px;color:#16a34a;background:#f0fdf4;padding:5px 14px;border-radius:9999px;border:1px solid #bbf7d0;font-weight:500">✓ 已入库</span>
+    {% else %}
+    <button data-import-id="{{ result_id }}" style="font-size:13px;color:#2563eb;background:#eff6ff;padding:5px 14px;border-radius:9999px;border:1px solid #bfdbfe;cursor:pointer;font-weight:500">+ 入库</button>
+    {% endif %}
+  </div>
 </div>
