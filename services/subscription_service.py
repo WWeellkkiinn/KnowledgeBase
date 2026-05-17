@@ -996,6 +996,65 @@ def stop_scheduler() -> None:
         _tick_busy = False
 
 
+def import_result_to_paper(db: Session, result_id: int) -> dict:
+    """把一条 SubscriptionResult 入库为 Paper（stub），复用已有 LLM 分析结果。"""
+    import re as _re, hashlib as _hashlib
+    from datetime import datetime, timezone
+
+    r = db.get(models.SubscriptionResult, result_id)
+    if r is None:
+        raise ValueError("not found")
+
+    if r.paper_id:
+        return {"paper_id": r.paper_id, "already_imported": True}
+
+    meta = r.raw_metadata_json or {}
+    title = (meta.get("title") or "").strip()
+    doi = (meta.get("doi") or "").strip() or None
+
+    # DOI 去重：已有相同 DOI 的论文直接关联
+    if doi:
+        existing = db.execute(
+            select(models.Paper).where(models.Paper.doi == doi)
+        ).scalar_one_or_none()
+        if existing:
+            r.paper_id = existing.id
+            db.commit()
+            return {"paper_id": existing.id, "already_imported": True}
+
+    # 生成唯一 stem：title slug + result_id 后缀
+    base = _re.sub(r"[^\w]+", "_", title.lower())[:40].strip("_") or "sub"
+    suffix = _hashlib.md5(str(result_id).encode()).hexdigest()[:8]
+    stem = f"{base}_{suffix}"
+
+    ai_summary = {}
+    if r.title_zh:          ai_summary["title_zh"] = r.title_zh
+    if r.research_question: ai_summary["research_question"] = r.research_question
+    if r.methodology:       ai_summary["methodology"] = r.methodology
+    if r.key_findings_json: ai_summary["key_findings"] = r.key_findings_json
+
+    paper = models.Paper(
+        stem=stem,
+        title=title or None,
+        abstract=meta.get("abstract") or None,
+        doi=doi,
+        year=meta.get("year"),
+        authors_json=meta.get("authors_json") or [],
+        tags=r.tags_json or [],
+        ai_summary=ai_summary or None,
+        ai_analyzed_at=r.scored_at,
+        is_core=False,
+        status="analyzed",
+        source="subscription",
+        added_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    db.add(paper)
+    db.flush()
+    r.paper_id = paper.id
+    db.commit()
+    return {"paper_id": paper.id, "already_imported": False}
+
+
 def score_pending_results(db: Session, max_score: int = 120) -> dict:
     """对 scored_at IS NULL 的 results LLM 评分。每条按其订阅的 description 评分。"""
     pdate_expr = func.json_extract(models.SubscriptionResult.raw_metadata_json, "$.publication_date")

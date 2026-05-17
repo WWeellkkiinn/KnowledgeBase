@@ -878,6 +878,17 @@ def list_inbox():
     return jsonify({"items": [_result_to_dict(r, subs.get(r.subscription_id)) for r in rows]})
 
 
+@bp.post("/inbox/<int:result_id>/import")
+def import_inbox_to_library(result_id: int):
+    """把订阅结果入库为 Paper stub，复用 LLM 分析结果。"""
+    from services.subscription_service import import_result_to_paper
+    try:
+        result = import_result_to_paper(g.db, result_id)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
+
 @bp.post("/inbox/<int:result_id>/read")
 def mark_inbox_read(result_id: int):
     r = g.db.get(models.SubscriptionResult, result_id)

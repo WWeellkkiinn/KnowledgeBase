@@ -202,6 +202,15 @@ async function runNow(id: number) {
     runningNow[id] = false
   }
 }
+
+async function importToLibrary(item: Record<string, unknown>) {
+  try {
+    const r = await axios.post(`/api/inbox/${item.id}/import`)
+    item.paper_id = r.data.paper_id
+  } catch (e) {
+    error.value = '入库失败：' + (e instanceof Error ? e.message : String(e))
+  }
+}
 </script>
 
 <template>
@@ -282,7 +291,17 @@ async function runNow(id: number) {
       <p v-if="store.loading && store.inbox.length === 0" class="text-sm text-slate-500">加载中…</p>
       <p v-else-if="store.inbox.length === 0" class="text-sm text-slate-500">暂无推送结果。</p>
       <div v-else class="space-y-3">
-        <div v-for="item in visibleInbox" :key="item.id" v-html="item.card_html"></div>
+        <div v-for="item in visibleInbox" :key="item.id">
+          <div v-html="item.card_html"></div>
+          <div class="flex justify-end mt-1 pr-1">
+            <button
+              v-if="!item.paper_id"
+              @click="importToLibrary(item)"
+              class="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+            >+ 入库</button>
+            <span v-else class="text-xs text-green-600">✓ 已入库</span>
+          </div>
+        </div>
       </div>
 
       <div v-if="sortedInbox.length > 10" class="text-center">
