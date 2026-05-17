@@ -17,6 +17,10 @@ const routes: RouteRecordRaw[] = [
     name: 'subscriptions',
     component: () => import('@/pages/Subscriptions.vue'),
   },
+  {
+    path: '/explore',
+    component: () => import('../pages/Explore.vue'),
+  },
   { path: '/failures', name: 'failures', component: () => import('@/pages/Failures.vue') },
   { path: '/feed', redirect: '/subscriptions' },
   { path: '/recommendations', redirect: '/subscriptions' },

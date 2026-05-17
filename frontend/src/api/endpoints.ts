@@ -2,6 +2,8 @@ import client, { API_BASE_URL } from './client'
 import type {
   BackwardTrackResult,
   DigestResult,
+  ExploreCardsResponse,
+  ExploreCard,
   FailuresResponse,
   ForwardTrackResult,
   InboxItem,
@@ -124,6 +126,15 @@ export const healthApi = {
 
 export const failuresApi = {
   list: () => client.get<FailuresResponse>('/failures').then((r) => r.data),
+}
+
+export const exploreApi = {
+  getCards: (subId: number, limit = 10) =>
+    client.get<ExploreCardsResponse>('/explore/cards', { params: { sub_id: subId, limit } }),
+  recordAction: (poolId: number, action: 'saved' | 'skipped' | 'passed') =>
+    client.post<{ ok: boolean; paper_id: number | null }>('/explore/' + poolId + '/action', { action }),
+  refill: (subId: number) =>
+    client.post<{ added: number; scored: number; embedded: number }>('/explore/refill', null, { params: { sub_id: subId } }),
 }
 
 

@@ -8,6 +8,7 @@ const nav = [
   { to: '/network', label: '引用图' },
   { to: '/review', label: '综述' },
   { to: '/subscriptions', label: '订阅' },
+  { to: '/explore', label: '探索' },
   { to: '/failures', label: '失败诊断' },
 ]
 </script>

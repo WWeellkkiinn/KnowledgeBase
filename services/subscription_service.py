@@ -977,21 +977,44 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         finally:
             session.close()
 
+    def _daily_explore_refill() -> None:
+        """每日补充探索池到50张，并对新卡片跑 LLM 分析 + Embedding。"""
+        from services.explore_service import fill_explore_pool, score_and_embed_pending
+        session = SessionLocal()
+        try:
+            subs = session.execute(
+                select(models.Subscription).where(
+                    models.Subscription.active.is_(True),
+                    models.Subscription.type == "topic_search",
+                )
+            ).scalars().all()
+            for sub in subs:
+                try:
+                    fill_result = fill_explore_pool(session, sub)
+                    embed_result = score_and_embed_pending(session, sub.id)
+                    _log.info("explore_refill sub=%d: fill=%s embed=%s", sub.id, fill_result, embed_result)
+                except Exception as exc:
+                    _log.warning("explore_refill sub=%d error: %s", sub.id, exc)
+        finally:
+            session.close()
+
     def _nightly_pipeline():
-        """北京02:00触发，全串行：拉取（含引用更新）→ 评分 → 发邮件 → 分析论文 → 期刊等级刷新 → 检索词刷新。"""
-        _log.info('nightly_pipeline: step 1/6 track_refresh')
+        """北京02:00触发，全串行：拉取→评分→发邮件→分析→期刊→检索词刷新→探索池补充。"""
+        _log.info("nightly_pipeline: step 1/7 track_refresh")
         _daily_track_refresh()
-        _log.info('nightly_pipeline: step 2/6 llm_scoring')
+        _log.info("nightly_pipeline: step 2/7 llm_scoring")
         _daily_llm_scoring()
-        _log.info('nightly_pipeline: step 3/6 subscription_digest')
+        _log.info("nightly_pipeline: step 3/7 subscription_digest")
         _daily_subscription_digest()
-        _log.info('nightly_pipeline: step 4/6 ai_batch')
+        _log.info("nightly_pipeline: step 4/7 ai_batch")
         _daily_ai_batch()
-        _log.info('nightly_pipeline: step 5/6 easyscholar_backfill')
+        _log.info("nightly_pipeline: step 5/7 easyscholar_backfill")
         _daily_easyscholar_backfill()
-        _log.info('nightly_pipeline: step 6/6 query_refresh')
+        _log.info("nightly_pipeline: step 6/7 query_refresh")
         _daily_query_refresh()
-        _log.info('nightly_pipeline: done')
+        _log.info("nightly_pipeline: step 7/7 explore_refill")
+        _daily_explore_refill()
+        _log.info("nightly_pipeline: done")
 
     sched.add_job(
         _nightly_pipeline,

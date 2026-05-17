@@ -1361,3 +1361,56 @@ def send_digest_now():
         return jsonify({"error": "digest failed"}), 502
 
 
+# ── 探索池 ──────────────────────────────────────────────────────────────
+@bp.get("/explore/cards")
+def get_explore_cards():
+    """获取探索池待评卡片列表，按 embedding 得分排序。"""
+    from services.explore_service import get_explore_cards
+    sub_id = request.args.get("sub_id", type=int)
+    limit = request.args.get("limit", 10, type=int)
+    if not sub_id:
+        return jsonify({"error": "sub_id required"}), 400
+    cards = get_explore_cards(g.db, sub_id, limit=min(limit, 30))
+    return jsonify({"items": cards, "count": len(cards)})
+
+
+@bp.post("/explore/<int:pool_id>/action")
+def record_explore_action(pool_id: int):
+    """记录用户对探索池卡片的操作：saved / skipped / passed。"""
+    from services.explore_service import record_explore_action
+    body = request.get_json(silent=True) or {}
+    action = body.get("action", "")
+    try:
+        result = record_explore_action(g.db, pool_id, action)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@bp.post("/explore/refill")
+def refill_explore_pool():
+    """手动触发探索池补充。"""
+    from services.explore_service import fill_explore_pool, score_and_embed_pending
+    sub_id = request.args.get("sub_id", type=int)
+    if not sub_id:
+        return jsonify({"error": "sub_id required"}), 400
+    sub = g.db.get(models.Subscription, sub_id)
+    if not sub:
+        return jsonify({"error": "subscription not found"}), 404
+
+    # 检查未操作卡片数量，<10 才允许手动补充
+    from sqlalchemy import select as sa_select, func as sa_func
+    pending_count = g.db.execute(
+        sa_select(sa_func.count()).select_from(models.ExplorePool).where(
+            models.ExplorePool.subscription_id == sub_id,
+            models.ExplorePool.action.is_(None),
+        )
+    ).scalar() or 0
+    if pending_count >= 10:
+        return jsonify({"error": "pool has enough cards", "pending": pending_count}), 409
+
+    fill_result = fill_explore_pool(g.db, sub)
+    embed_result = score_and_embed_pending(g.db, sub_id)
+    return jsonify({**fill_result, **embed_result})
+
+

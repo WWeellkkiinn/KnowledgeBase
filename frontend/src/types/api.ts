@@ -200,3 +200,15 @@ export interface FailuresResponse {
   by_category: Record<string, number>
   items: FailureItem[]
 }
+
+export interface ExploreCard {
+  id: number
+  card_html: string
+  score: number | null
+  action: string | null
+}
+
+export interface ExploreCardsResponse {
+  items: ExploreCard[]
+  count: number
+}

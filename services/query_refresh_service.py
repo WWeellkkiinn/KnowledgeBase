@@ -28,6 +28,29 @@ def refresh_subscription_queries(db: Session, sub) -> dict:
                 positive_titles.append(title)
             if len(positive_titles) >= 10:
                 break
+        saved_explore = db.execute(
+            select(models.ExplorePool).where(
+                models.ExplorePool.subscription_id == sub.id,
+                models.ExplorePool.action == "saved",
+                models.ExplorePool.found_at >= since,
+            ).order_by(models.ExplorePool.acted_at.desc().nulls_last()).limit(10)
+        ).scalars().all()
+        for item in saved_explore:
+            title = (item.raw_metadata_json or {}).get("title")
+            if title:
+                positive_titles.append(title)
+        skipped_explore = db.execute(
+            select(models.ExplorePool).where(
+                models.ExplorePool.subscription_id == sub.id,
+                models.ExplorePool.action == "skipped",
+                models.ExplorePool.found_at >= since,
+            ).order_by(models.ExplorePool.acted_at.desc().nulls_last()).limit(10)
+        ).scalars().all()
+        negative_titles = []
+        for item in skipped_explore:
+            title = (item.raw_metadata_json or {}).get("title")
+            if title:
+                negative_titles.append(title)
 
         if len(positive_results) < 3:
             return {"refreshed": False, "reason": "insufficient_signal", "added": [], "removed": []}
@@ -82,7 +105,7 @@ def refresh_subscription_queries(db: Session, sub) -> dict:
             }
             for q in existing_queries
         ]
-        user_prompt = f"Research interest: {sub.description}\n\nCurrent queries and hit rates:\n{json.dumps(query_info, ensure_ascii=False)}\n\nPositive signal paper titles (imported or highly relevant):\n{json.dumps(positive_titles, ensure_ascii=False)}\n\nOutput JSON now."
+        user_prompt = f"Research interest: {sub.description}\n\nCurrent queries and hit rates:\n{json.dumps(query_info, ensure_ascii=False)}\n\nPositive signal paper titles (imported or highly relevant):\n{json.dumps(positive_titles, ensure_ascii=False)}\n\nNegative signal paper titles (user marked as irrelevant):\n{json.dumps(negative_titles, ensure_ascii=False)}\n\nOutput JSON now."
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
         response = _call_ollama(messages, num_predict=8192)
 

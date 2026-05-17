@@ -24,6 +24,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -199,6 +200,33 @@ class SubscriptionResult(Base):
     key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
 
+class ExplorePool(Base):
+    __tablename__ = "explore_pool"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subscription_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    paper_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="SET NULL"), nullable=True
+    )
+    raw_metadata_json: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
+    action: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
+    acted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    found_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+    llm_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    llm_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    scored_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    title_zh: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tags_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    research_question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+
+
 class Citation(Base):
     __tablename__ = "citations"
 
@@ -271,6 +299,7 @@ __all__ = [
     "Task",
     "Subscription",
     "SubscriptionResult",
+    "ExplorePool",
     "Citation",
     "SessionRecord",
     "ForwardTrackCache",
