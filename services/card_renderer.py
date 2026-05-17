@@ -41,6 +41,7 @@ def render_subscription_card(result, subscription, card_index: int | None = None
         display_date=_display_date(meta),
         authors=authors,
         cited_by_count=meta.get("cited_by_count"),
+        venue_name=meta.get("venue_name") or "",
         tags=list(result.tags_json or [])[:4],
         research_question=result.research_question or "",
         methodology=result.methodology or "",

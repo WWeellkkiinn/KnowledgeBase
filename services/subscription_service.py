@@ -637,6 +637,8 @@ class SubscriptionService:
                 or (f"https://doi.org/{doi}" if doi and not doi.startswith("http") else doi)
                 or eid
             )
+            venue = (primary.get("source") or {})
+            venue_name = (venue.get("display_name") or "").strip() or None
             meta = {
                 "external_id": eid,
                 "source": "openalex",
@@ -649,6 +651,7 @@ class SubscriptionService:
                 "cited_by_count": work.get("cited_by_count"),
                 "doi": doi or None,
                 "url": url or None,
+                "venue_name": venue_name,
             }
             session.add(models.SubscriptionResult(
                 subscription_id=sub.id,
