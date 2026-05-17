@@ -1,4 +1,5 @@
 <div style="border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:16px;background:#fff;font-size:13px;line-height:1.6;color:#334155">
+  {% if card_index is not none %}<p style="margin:0 0 8px;font-size:11px;color:#94a3b8;font-weight:600">No.{{ card_index }}</p>{% endif %}
   <p style="margin:0;font-size:15px;color:#1e293b">
     {% if url %}<a href="{{ url }}" style="color:#1e293b;text-decoration:none"><strong>{{ title }}</strong></a>{% else %}<strong>{{ title }}</strong>{% endif %}
     {% if llm_score is not none %}<span style="background:#f0fdf4;color:#16a34a;border-radius:9999px;padding:1px 8px;font-size:11px;margin-left:6px;font-weight:normal">相关度 {{ "%.2f"|format(llm_score) }}</span>{% endif %}
@@ -17,24 +18,24 @@
   {% endif %}
 
   {% if research_question %}
-  <p style="margin:12px 0 2px;color:#0f172a"><strong>研究问题</strong></p>
+  <p style="margin:12px 0 2px;color:#0f172a"><strong>一句话</strong></p>
   <p style="margin:0">{{ research_question }}</p>
   {% endif %}
 
-  {% if methodology %}
-  <p style="margin:12px 0 2px;color:#0f172a"><strong>方法</strong></p>
-  <p style="margin:0">{{ methodology }}</p>
-  {% endif %}
-
   {% if key_findings %}
-  <p style="margin:12px 0 2px;color:#0f172a"><strong>关键发现</strong></p>
+  <p style="margin:12px 0 2px;color:#0f172a"><strong>有什么用</strong></p>
   <ul style="margin:0;padding-left:20px">
     {% for f in key_findings %}<li>{{ f }}</li>{% endfor %}
   </ul>
   {% endif %}
 
+  {% if methodology %}
+  <p style="margin:12px 0 2px;color:#0f172a"><strong>怎么做</strong></p>
+  <p style="margin:0">{{ methodology }}</p>
+  {% endif %}
+
   {% if llm_reason %}
-  <p style="margin:12px 0 2px;color:#0f172a"><strong>LLM 推荐理由</strong></p>
+  <p style="margin:12px 0 2px;color:#0f172a"><strong>为什么推给你</strong></p>
   <p style="margin:0">{{ llm_reason }}</p>
   {% endif %}
 

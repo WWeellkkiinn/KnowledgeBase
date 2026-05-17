@@ -393,9 +393,9 @@ class SubscriptionService:
                     queries = [legacy_query]
             if not queries:
                 return 0
-            # raw 总上限 20，按 query 数量平摊
-            per_query = max(1, 20 // len(queries))
-            since_iso = (_utcnow() - timedelta(days=14)).date().isoformat()
+            # raw 总上限 80，按 query 数量平摊
+            per_query = max(5, 80 // len(queries))
+            since_iso = (_utcnow() - timedelta(days=30)).date().isoformat()
             import httpx
             mailto = _openalex_mailto()
 
@@ -421,6 +421,8 @@ class SubscriptionService:
                 with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as ex:
                     for works in ex.map(lambda q: _fetch(c, q), queries):
                         all_works.extend(works)
+            # 过滤无摘要的 work，避免 LLM 因信息不足误判相关性
+            all_works = [w for w in all_works if w.get("abstract_inverted_index")]
             return self._materialize_openalex_works(session, sub, all_works)
 
         if sub.type == "author_works":
@@ -431,7 +433,7 @@ class SubscriptionService:
             import httpx
             params = {
                 "filter": f"author.id:{author_id},from_publication_date:{since_iso}",
-                "per_page": 20,
+                "per_page": 50,
                 "sort": "publication_date:desc",
                 "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
             }
@@ -453,7 +455,7 @@ class SubscriptionService:
             categories = tgt.get("categories") or ["cs.AI"]
             hours = int(tgt.get("hours") or 24)
             papers = arxiv_service.fetch_arxiv_recent(
-                categories=categories, hours=hours, max_per_category=30,
+                categories=categories, hours=hours, max_per_category=50,
             )
             return self._materialize_arxiv(session, sub, papers)
         return 0
@@ -916,15 +918,6 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
             if any_enqueued:
                 wake_worker()
 
-    sched.add_job(
-        _daily_track_refresh,
-        trigger="cron",
-        hour=2, minute=0,
-        id="kb-daily-track-refresh",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
-
     def _daily_ai_batch():
         from services.ai_service import run_batch_analysis
         session = SessionLocal()
@@ -936,41 +929,34 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         finally:
             session.close()
 
-    sched.add_job(
-        _daily_ai_batch,
-        trigger="cron",
-        hour=3, minute=30,
-        id="kb-daily-ai-batch",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
-
-    def _daily_digest():
-        from services.digest_service import send_digest
+    def _daily_subscription_digest():
+        from services.digest_service import send_subscription_digest
         session = SessionLocal()
         try:
-            result = send_digest(session)
-            _log.info("daily_digest done: %s", result)
+            result = send_subscription_digest(session)
+            _log.info("daily_subscription_digest done: %s", result)
         except Exception:
-            _log.exception("daily_digest failed")
+            _log.exception("daily_subscription_digest failed")
         finally:
             session.close()
 
-    sched.add_job(
-        _daily_digest,
-        trigger="cron",
-        # minute=30 错峰：max_workers=1 下避免与 daily-track-refresh(hour=2,minute=0) 同时触发
-        hour=2, minute=30,
-        id="kb-daily-digest",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
+    def _nightly_pipeline():
+        """北京02:00触发，全串行：拉取（含引用更新）→ 评分 → 发邮件 → 分析论文。"""
+        _log.info("nightly_pipeline: step 1/4 track_refresh")
+        _daily_track_refresh()
+        _log.info("nightly_pipeline: step 2/4 llm_scoring")
+        _daily_llm_scoring()
+        _log.info("nightly_pipeline: step 3/4 subscription_digest")
+        _daily_subscription_digest()
+        _log.info("nightly_pipeline: step 4/4 ai_batch")
+        _daily_ai_batch()
+        _log.info("nightly_pipeline: done")
 
     sched.add_job(
-        _daily_llm_scoring,
+        _nightly_pipeline,
         trigger="cron",
-        hour=4, minute=0,
-        id="kb-daily-llm-scoring",
+        hour=18, minute=0,  # UTC 18:00 = 北京时间 02:00
+        id="kb-nightly-pipeline",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -1010,7 +996,7 @@ def stop_scheduler() -> None:
         _tick_busy = False
 
 
-def score_pending_results(db: Session, max_score: int = 30) -> dict:
+def score_pending_results(db: Session, max_score: int = 120) -> dict:
     """对 scored_at IS NULL 的 results LLM 评分。每条按其订阅的 description 评分。"""
     pdate_expr = func.json_extract(models.SubscriptionResult.raw_metadata_json, "$.publication_date")
     cited_expr = func.coalesce(
@@ -1069,15 +1055,20 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
             "abstract": (meta.get("abstract") or "")[:600],
         })
     sys_prompt = (
-        "你是学术论文评分+精炼助手。对输入论文列表中的每篇，输出一个 JSON 数组项，包含：\n"
+        "你是学术论文晨报助手。目标读者是忙碌的研究者，需要在10秒内判断一篇论文是否值得打开。\n"
+        "对输入论文列表中的每篇，输出一个 JSON 数组项，包含：\n"
         "- idx: 输入论文的索引（int）\n"
-        "- score: 0.0-1.0 浮点，按用户研究兴趣评估的相关度\n"
-        "- reason: <=80 字简短中文理由\n"
+        "- score: 0.0-1.0 浮点，按用户研究兴趣评估相关度。评分标准：\n"
+        "  ≥0.80 = 直接相关（核心研究对象/方法高度吻合）\n"
+        "  0.65-0.79 = 间接相关（方法可借鉴，或背景相关）\n"
+        "  0.40-0.64 = 宽泛相关（仅关键词重合，研究对象/方法不符）\n"
+        "  <0.40 = 基本无关。注意：关键词碰巧重合但研究对象/方法与兴趣不符时，score 必须低于 0.65\n"
+        "- reason: <=80 字，说明为什么值得或不值得推送（不用学术语气）\n"
         "- title_zh: 中文翻译标题\n"
-        '- tags: 2-4 字中文标签数组，最多 8 个（如 ["机器学习", "宏观经济"]）\n'
-        "- research_question: 1-2 句中文，核心研究问题\n"
-        "- methodology: 中文简述方法/数据/模型\n"
-        "- key_findings: 中文要点数组，最多 5 条\n\n"
+        '- tags: 2-4 字中文标签数组，最多 4 个（如 ["机器学习", "宏观经济"]）\n'
+        "- research_question: ≤40 字，用普通中文说清楚【这篇文章在问什么】，不用学术语气，不写【本文】\n"
+        "- methodology: ≤50 字，说【它怎么做】，遇到专业术语立刻用括号解释\n"
+        "- key_findings: 中文数组，最多 3 条，每条≤35 字，说【能用它做什么/有什么用】，偏应用价值，不写【本文提出/本文研究】\n\n"
         "只输出 JSON 数组，无 markdown 围栏、无说明。"
     )
     messages = [

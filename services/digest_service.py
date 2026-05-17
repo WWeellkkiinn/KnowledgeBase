@@ -305,7 +305,24 @@ def _build_subscription_html(rows: list[tuple], date_str: str) -> str:
     """rows: [(SubscriptionResult, Subscription)]，按 llm_score desc 已排序"""
     from services.card_renderer import render_subscription_card
 
-    parts = [render_subscription_card(r, sub) for r, sub in rows]
+    # 按订阅分组，(sub, results) 保留首次出现顺序（dict 在 Python 3.7+ 已保序）
+    groups: dict[int, tuple] = {}
+    for r, sub in rows:
+        sid = sub.id if sub else 0
+        if sid not in groups:
+            groups[sid] = (sub, [])
+        groups[sid][1].append(r)
+
+    parts: list[str] = []
+    for sub, results in groups.values():
+        label = ((sub.description or "").strip() or (sub.type or "订阅")) if sub else "订阅"
+        parts.append(
+            f'<h3 style="color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:6px;'
+            f'margin:28px 0 12px;font-size:14px;font-weight:600">{_e(label)}</h3>'
+        )
+        for i, r in enumerate(results):
+            parts.append(render_subscription_card(r, sub, card_index=i + 1))
+
     body = "".join(parts) or '<p style="color:#64748b">无评分结果。</p>'
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
@@ -321,8 +338,8 @@ def send_subscription_digest(
     db: Session,
     *,
     subscription_id: Optional[int] = None,
-    limit: int = 10,
-    min_score: float = 0.0,
+    limit: int = 30,
+    min_score: float = 0.65,
 ) -> dict:
     """把 subscription_results 中已评分的 top-N（按 llm_score desc）打成邮件。
     subscription_id 不为空时只取该订阅的结果。
@@ -333,10 +350,14 @@ def send_subscription_digest(
         .where(models.SubscriptionResult.scored_at.isnot(None))
         .where(models.SubscriptionResult.llm_score.isnot(None))
         .where(models.SubscriptionResult.llm_score >= min_score)
+        .where(models.SubscriptionResult.notified.is_(False))
     )
     if subscription_id is not None:
         stmt = stmt.where(models.SubscriptionResult.subscription_id == subscription_id)
-    stmt = stmt.order_by(models.SubscriptionResult.llm_score.desc()).limit(limit)
+    stmt = stmt.order_by(
+        models.SubscriptionResult.llm_score.desc(),
+        models.SubscriptionResult.found_at.desc(),
+    ).limit(limit)
     rows = list(db.execute(stmt).all())
     if not rows:
         _log.info("subscription_digest: no scored rows")
