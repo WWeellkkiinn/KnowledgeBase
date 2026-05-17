@@ -4,23 +4,15 @@ import hashlib
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 import httpx
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import func, select
 
 from database import models
+from services.card_renderer import _env
 from services.embedding_service import embed_text, score_candidate
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
-
-_TPL_DIR = Path(__file__).parent.parent / "templates"
-_env = Environment(
-    loader=FileSystemLoader(str(_TPL_DIR)),
-    autoescape=select_autoescape(["html", "j2"]),
-    auto_reload=True,
-)
 
 _NORM_TITLE_RE = re.compile(r"[^\w一-鿿]+", flags=re.UNICODE)
 
@@ -184,14 +176,16 @@ def score_and_embed_pending(db, sub_id) -> dict:
             for item in batch:
                 item.scored_at = now
             errors += len(batch)
-    for item in items:
-        if item.embedding is not None:
-            continue
-        meta = item.raw_metadata_json or {}
-        emb = embed_text(f"{meta.get('title') or ''}\n\n{meta.get('abstract') or ''}"[:8000])
-        if emb is not None:
-            item.embedding = emb
-            embedded += 1
+    no_emb = [item for item in items if item.embedding is None]
+    if no_emb:
+        def _embed_item(item):
+            meta = item.raw_metadata_json or {}
+            return item, embed_text(f"{meta.get('title') or ''}\n\n{meta.get('abstract') or ''}"[:8000])
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            for item, emb in ex.map(_embed_item, no_emb):
+                if emb is not None:
+                    item.embedding = emb
+                    embedded += 1
     db.commit()
     return {"scored": scored, "embedded": embedded, "errors": errors}
 
@@ -210,36 +204,33 @@ def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
 
 def get_explore_cards(db, sub_id, limit=10) -> list[dict]:
     labeled = _get_labeled_embeddings(db, sub_id)
+    sub = db.get(models.Subscription, sub_id)
+    # 先按 llm_score 召回候选池（limit*5），再按 embedding_score 精排后截取
     items = list(db.execute(
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
         ).order_by(models.ExplorePool.llm_score.desc().nulls_last(), models.ExplorePool.found_at.desc())
-        .limit(max(int(limit) * 5, int(limit)))
+        .limit(max(int(limit) * 5, 50))
     ).scalars().all())
+    scored = sorted(
+        items,
+        key=lambda item: (score_candidate(item.embedding, labeled) if item.embedding else 0.0, item.llm_score or 0.0),
+        reverse=True,
+    )
     cards = []
-    for item in items:
-        meta = item.raw_metadata_json or {}
-        emb_score = score_candidate(item.embedding, labeled) if item.embedding else 0.0
+    for item in scored[:int(limit)]:
+        try:
+            card_html = render_explore_card(item, sub, db_session=db)
+        except Exception:
+            card_html = ""
         cards.append({
-            "pool_id": item.id,
-            "title": meta.get("title") or "",
-            "url": meta.get("url") or "",
-            "title_zh": item.title_zh or "",
-            "llm_score": item.llm_score,
-            "embedding_score": emb_score,
-            "display_date": meta.get("publication_date") or str(meta.get("year") or ""),
-            "authors": ", ".join((meta.get("authors_json") or [])[:3]),
-            "cited_by_count": meta.get("cited_by_count"),
-            "venue_name": meta.get("venue_name") or "",
-            "tags": list(item.tags_json or [])[:4],
-            "research_question": item.research_question or "",
-            "methodology": item.methodology or "",
-            "key_findings": list(item.key_findings_json or []),
-            "llm_reason": item.llm_reason or "",
+            "id": item.id,
+            "card_html": card_html,
+            "score": round(score_candidate(item.embedding, labeled) if item.embedding else 0.0, 4),
+            "action": item.action,
         })
-    cards.sort(key=lambda x: (x["embedding_score"], x["llm_score"] or 0.0), reverse=True)
-    return cards[:int(limit)]
+    return cards
 
 
 def render_explore_card(item, sub, db_session=None) -> str:

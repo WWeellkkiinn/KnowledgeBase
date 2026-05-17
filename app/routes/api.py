@@ -1399,9 +1399,8 @@ def refill_explore_pool():
         return jsonify({"error": "subscription not found"}), 404
 
     # 检查未操作卡片数量，<10 才允许手动补充
-    from sqlalchemy import select as sa_select, func as sa_func
     pending_count = g.db.execute(
-        sa_select(sa_func.count()).select_from(models.ExplorePool).where(
+        select(func.count()).select_from(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
         )

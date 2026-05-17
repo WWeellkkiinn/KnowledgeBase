@@ -62,9 +62,16 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
 async function triggerRefill() {
   if (!sub.value || busy.value) return
   busy.value = true
-  await exploreApi.refill(sub.value.id)
-  await loadCards()
-  busy.value = false
+  try {
+    await exploreApi.refill(sub.value.id)
+    await loadCards()
+  } catch (e: any) {
+    if (e?.response?.status !== 409) throw e
+    // 409 = 池子已足够，直接刷新当前卡片即可
+    await loadCards()
+  } finally {
+    busy.value = false
+  }
 }
 
 function onTouchStart(event: TouchEvent) {
