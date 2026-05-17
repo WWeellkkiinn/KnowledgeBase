@@ -395,14 +395,14 @@ class SubscriptionService:
                 return 0
             # raw 总上限 80，按 query 数量平摊
             per_query = max(5, 80 // len(queries))
-            since_iso = (_utcnow() - timedelta(days=30)).date().isoformat()
+            since_iso = (_utcnow() - timedelta(days=90)).date().isoformat()
             import httpx
             mailto = _openalex_mailto()
 
             # filter=title_and_abstract.search 严格匹配标题/摘要，支持 boolean
             def _fetch(c: httpx.Client, q: str) -> list[dict]:
                 params = {
-                    "filter": f"title_and_abstract.search:{q},from_publication_date:{since_iso},type:article",
+                    "filter": f"title_and_abstract.search:{q},from_publication_date:{since_iso},type:article,primary_location.source.type:journal",
                     "per_page": per_query,
                     "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
                 }
