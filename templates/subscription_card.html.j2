@@ -8,7 +8,7 @@
   {% if title_zh %}<p style="margin:4px 0 0;font-size:15px;color:#1e293b"><strong>{{ title_zh }}</strong></p>{% endif %}
 
   <p style="margin:6px 0 0;font-size:12px;color:#64748b">
-    {{ display_date }}{% if authors %} · {{ authors }}{% endif %}{% if venue_name %} · <em style="font-style:normal;color:#475569">{{ venue_name }}</em>{% endif %}{% if cited_by_count %} · cited {{ cited_by_count }}{% endif %}
+    {{ display_date }}{% if authors %} · {{ authors }}{% endif %}{% if venue_name %} (<em style="font-style:italic;color:#475569">{{ venue_name }}</em>){% endif %}{% if cited_by_count %} · cited {{ cited_by_count }}{% endif %}
   </p>
 
   {% if tags %}
