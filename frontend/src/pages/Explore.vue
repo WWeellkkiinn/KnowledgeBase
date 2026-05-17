@@ -8,6 +8,7 @@ const sub = ref<Subscription | null>(null)
 const cardRef = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const busy = ref(false)
+const refillStatus = ref('')
 const exiting = ref<'left' | 'right' | 'down' | null>(null)
 const touchStartX = ref(0)
 const touchStartY = ref(0)
@@ -62,15 +63,22 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
 async function triggerRefill() {
   if (!sub.value || busy.value) return
   busy.value = true
+  refillStatus.value = '正在从 OpenAlex 拉取论文…'
   try {
     await exploreApi.refill(sub.value.id)
-    await loadCards()
+    refillStatus.value = 'AI 分析中，稍后自动刷新…'
+    // 后台处理中，轮询直到有卡片可用（最多等 3 分钟）
+    for (let i = 0; i < 18; i++) {
+      await new Promise(r => setTimeout(r, 10000))
+      await loadCards()
+      if (cards.value.length > 0) break
+    }
   } catch (e: any) {
     if (e?.response?.status !== 409) throw e
-    // 409 = 池子已足够，直接刷新当前卡片即可
     await loadCards()
   } finally {
     busy.value = false
+    refillStatus.value = ''
   }
 }
 
@@ -109,8 +117,12 @@ onMounted(async () => {
       <button class="refill-btn" :disabled="busy || !sub" @click="triggerRefill">补充</button>
     </div>
 
+    <div v-if="refillStatus" class="refill-status">{{ refillStatus }}</div>
     <div v-if="loading" class="empty-state">加载中...</div>
-    <div v-else-if="!currentCard" class="empty-state">已完成</div>
+    <div v-else-if="!currentCard && !refillStatus" class="empty-state">
+      <div>今天已刷完</div>
+      <div style="font-size:13px;color:#94a3b8;margin-top:6px">点击右上角「补充」拉取新论文</div>
+    </div>
     <template v-else>
       <div class="card-stage" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
         <div v-if="prevCard" id="card-prev" class="card-prev" inert v-html="prevCard.card_html"></div>
@@ -142,6 +154,19 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.refill-status {
+  text-align: center;
+  font-size: 13px;
+  color: #2563eb;
+  padding: 8px 0 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .sub-label {

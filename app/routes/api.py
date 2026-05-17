@@ -1409,7 +1409,19 @@ def refill_explore_pool():
         return jsonify({"error": "pool has enough cards", "pending": pending_count}), 409
 
     fill_result = fill_explore_pool(g.db, sub)
-    embed_result = score_and_embed_pending(g.db, sub_id)
-    return jsonify({**fill_result, **embed_result})
+
+    # LLM 打分 + embedding 耗时较长，放后台线程，立即返回
+    import threading
+    from database import SessionLocal as _SL
+
+    def _bg(sid):
+        s = _SL()
+        try:
+            score_and_embed_pending(s, sid)
+        finally:
+            s.close()
+
+    threading.Thread(target=_bg, args=(sub_id,), daemon=True).start()
+    return jsonify({**fill_result, "status": "scoring_in_background"})
 
 
