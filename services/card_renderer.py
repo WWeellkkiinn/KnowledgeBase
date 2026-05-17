@@ -6,7 +6,7 @@ _TPL_DIR = Path(__file__).parent.parent / "templates"
 _env = Environment(
     loader=FileSystemLoader(str(_TPL_DIR)),
     autoescape=select_autoescape(['html', 'j2']),
-    auto_reload=False,
+    auto_reload=True,
 )
 _card_tpl = _env.get_template("subscription_card.html.j2")
 
