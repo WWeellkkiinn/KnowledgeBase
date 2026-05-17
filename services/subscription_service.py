@@ -402,7 +402,7 @@ class SubscriptionService:
             # filter=title_and_abstract.search 严格匹配标题/摘要，支持 boolean
             def _fetch(c: httpx.Client, q: str) -> list[dict]:
                 params = {
-                    "filter": f"title_and_abstract.search:{q},from_publication_date:{since_iso},type:article,primary_location.source.type:journal",
+                    "filter": f"title_and_abstract.search:{q},from_publication_date:{since_iso},type:article",
                     "per_page": per_query,
                     "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
                 }
