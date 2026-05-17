@@ -318,7 +318,7 @@ def _build_subscription_html(rows: list[tuple], date_str: str) -> str:
         label = ((sub.description or "").strip() or (sub.type or "订阅")) if sub else "订阅"
         parts.append(
             f'<h3 style="color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:6px;'
-            f'margin:28px 0 12px;font-size:14px;font-weight:600">{_e(label)}</h3>'
+            f'margin:28px 0 12px;font-size:14px;font-weight:600"><strong>{_e(label)}</strong></h3>'
         )
         for i, r in enumerate(results):
             parts.append(render_subscription_card(r, sub, card_index=i + 1))
