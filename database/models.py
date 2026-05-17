@@ -162,6 +162,7 @@ class Subscription(Base):
     )
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     generated_queries: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class SubscriptionResult(Base):

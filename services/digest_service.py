@@ -340,9 +340,15 @@ def send_subscription_digest(
     subscription_id: Optional[int] = None,
     limit: int = 30,
     min_score: float = 0.65,
+    min_papers: int = 3,
+    max_silence_days: int = 7,
 ) -> dict:
     """把 subscription_results 中已评分的 top-N（按 llm_score desc）打成邮件。
-    subscription_id 不为空时只取该订阅的结果。
+
+    积攒策略（B+D）：
+    - 合格文章数 >= min_papers 时发送
+    - 合格文章数不足，但距上次发送 >= max_silence_days 天时强制发送
+    - 否则静默跳过，返回 {"sent": False, "reason": "accumulating"}
     """
     stmt = (
         select(models.SubscriptionResult, models.Subscription)
@@ -359,11 +365,34 @@ def send_subscription_digest(
         models.SubscriptionResult.found_at.desc(),
     ).limit(limit)
     rows = list(db.execute(stmt).all())
+
     if not rows:
         _log.info("subscription_digest: no scored rows")
         return {"sent": False, "reason": "no_scored_results"}
 
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # 积攒判断：收集涉及的所有订阅，检查每个订阅的 last_notified_at
+    subs_in_rows: dict[int, models.Subscription] = {}
+    for _r, sub in rows:
+        if sub and sub.id not in subs_in_rows:
+            subs_in_rows[sub.id] = sub
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    should_send = len(rows) >= min_papers
+    if not should_send:
+        for sub in subs_in_rows.values():
+            last = sub.last_notified_at
+            if last is None or (now - last).days >= max_silence_days:
+                should_send = True
+                break
+
+    if not should_send:
+        _log.info(
+            "subscription_digest: accumulating (%d/%d papers, silence < %d days)",
+            len(rows), min_papers, max_silence_days,
+        )
+        return {"sent": False, "reason": "accumulating", "count": len(rows)}
+
+    date_str = now.strftime("%Y-%m-%d")
     html = _build_subscription_html(rows, date_str, db_session=db)
 
     result = _send_html_mail(
@@ -373,6 +402,8 @@ def send_subscription_digest(
         _log.info("subscription_digest sent: %d papers", len(rows))
         for r, _sub in rows:
             r.notified = True
+        for sub in subs_in_rows.values():
+            sub.last_notified_at = now
         db.commit()
         result["paper_count"] = len(rows)
     return result
