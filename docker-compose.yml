@@ -24,6 +24,12 @@ services:
     # 不会因为单文件 bind-mount 的 inode 漂移导致写丢失。
     volumes:
       - ./data:/app/data
+      # 代码目录直接挂宿主机文件，git pull + restart 即可生效，无需重建镜像
+      # 注意：frontend/dist 仍在镜像内，前端 JS 变更还需 --build
+      - ./app:/app/app
+      - ./services:/app/services
+      - ./database:/app/database
+      - ./templates:/app/templates
     # 让容器内能解析宿主：app -> http://host.docker.internal:13813 = ECS 本机 frps 转出的 Ollama。
     # Linux Docker 23+ 通过 host-gateway 把这个名字指到宿主的 docker0 / iptables 转发回环。
     extra_hosts:
