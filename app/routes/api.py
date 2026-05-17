@@ -731,7 +731,7 @@ def _result_to_dict(r: models.SubscriptionResult, sub: Optional[models.Subscript
         "research_question": r.research_question,
         "methodology": r.methodology,
         "key_findings": r.key_findings_json or [],
-        "card_html": render_subscription_card(r, sub),
+        "card_html": render_subscription_card(r, sub, db_session=g.db),
     }
 
 
