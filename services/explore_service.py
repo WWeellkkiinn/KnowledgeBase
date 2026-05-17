@@ -221,20 +221,18 @@ def get_explore_cards(db, sub_id, limit=10) -> list[dict]:
     )
     cards = []
     for item in scored[:int(limit)]:
-        try:
-            card_html = render_explore_card(item, sub, db_session=db)
-        except Exception:
-            card_html = ""
+        embedding_score = score_candidate(item.embedding, labeled) if item.embedding else 0.0
+        card_html = render_explore_card(item, sub, embedding_score=embedding_score, db_session=db)
         cards.append({
             "id": item.id,
             "card_html": card_html,
-            "score": round(score_candidate(item.embedding, labeled) if item.embedding else 0.0, 4),
+            "score": round(embedding_score, 4),
             "action": item.action,
         })
     return cards
 
 
-def render_explore_card(item, sub, db_session=None) -> str:
+def render_explore_card(item, sub, embedding_score: float | None = None, db_session=None) -> str:
     from services.easyscholar_service import extract_badges, get_by_name
 
     meta = item.raw_metadata_json or {}
@@ -247,11 +245,13 @@ def render_explore_card(item, sub, db_session=None) -> str:
             pass
     tpl = _env.get_template("explore_card.html.j2")
     return tpl.render(
+        card_index=None,
         pool_id=item.id,
         title=meta.get("title") or "",
         url=meta.get("url") or "",
         title_zh=item.title_zh or "",
         llm_score=item.llm_score,
+        embedding_score=embedding_score,
         display_date=meta.get("publication_date") or str(meta.get("year") or ""),
         authors=", ".join((meta.get("authors_json") or [])[:3]),
         cited_by_count=meta.get("cited_by_count"),
