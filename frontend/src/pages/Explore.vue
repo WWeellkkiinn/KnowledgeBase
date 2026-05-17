@@ -114,7 +114,9 @@ onMounted(async () => {
         <div class="sub-label">{{ subLabel }}</div>
         <div class="pool-count">{{ poolCount }} 张卡片</div>
       </div>
-      <button class="refill-btn" :disabled="busy || !sub" @click="triggerRefill">补充</button>
+      <button class="refill-btn" :class="{ 'refill-busy': busy }" :disabled="busy || !sub" @click="triggerRefill">
+        {{ busy ? '补充中…' : '+ 补充' }}
+      </button>
     </div>
 
     <div v-if="refillStatus" class="refill-status">{{ refillStatus }}</div>
@@ -193,6 +195,15 @@ onMounted(async () => {
   padding: 8px 14px;
   color: #0f172a;
   background: #e2e8f0;
+  transition: background 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+
+.refill-btn.refill-busy {
+  background: #dbeafe;
+  color: #2563eb;
+  cursor: not-allowed;
+  animation: pulse 1.5s ease-in-out infinite;
 }
 
 .card-stage {
