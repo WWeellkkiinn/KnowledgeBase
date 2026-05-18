@@ -22,6 +22,7 @@ const sub = ref<Subscription | null>(null)
 const cardRef = ref<HTMLDivElement>()
 const cardPrevRef = ref<HTMLDivElement>()
 const cardNextRef = ref<HTMLDivElement>()
+const cardContentRef = ref<HTMLDivElement>()
 
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null, cachedW = 0
 let cardEl: HTMLElement | null = null
@@ -41,8 +42,11 @@ function resetCardPositions() {
   if (cardNextRef.value) cardNextRef.value.style.transform = `translateX(${W}px) translateY(-50%)`
 }
 
+const EMPTY_HTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center"><div>今天已刷完</div><div style="font-size:13px;color:#94a3b8;margin-top:6px">点击右上角「补充」拉取新论文</div></div>`
+
 function stageCards() {
-  if (cardRef.value) cardRef.value.innerHTML = cards.value[0]?.card_html ?? ''
+  if (cardContentRef.value)
+    cardContentRef.value.innerHTML = cards.value[0]?.card_html ?? EMPTY_HTML
   if (cardNextRef.value) cardNextRef.value.innerHTML = cards.value[1]?.card_html ?? ''
   if (cardPrevRef.value) cardPrevRef.value.innerHTML = prevCard.value?.card_html ?? ''
   resetCardPositions()
@@ -138,7 +142,7 @@ async function loadMoreCards() {
 }
 
 async function loadCards() {
-  if (!sub.value) { cards.value = []; loading.value = false; return }
+  if (!sub.value) { cards.value = []; loading.value = false; nextTick(() => stageCards()); return }
   loading.value = true
   const res = await exploreApi.getCards(sub.value.id, 10)
   cards.value = res.data.items
@@ -259,11 +263,6 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="refillStatus" class="refill-status">{{ refillStatus }}</div>
-    <div v-if="loading" class="empty-state">加载中...</div>
-    <div v-else-if="cards.length === 0 && !refillStatus" class="empty-state">
-      <div>今天已刷完</div>
-      <div style="font-size:13px;color:#94a3b8;margin-top:6px">点击右上角「补充」拉取新论文</div>
-    </div>
 
     <div
       class="card-stage"
@@ -273,17 +272,16 @@ onBeforeUnmount(() => {
     >
       <div ref="cardPrevRef" class="card-offstage card-prev"></div>
       <div ref="cardNextRef" class="card-offstage card-next"></div>
-      <div ref="cardRef" class="card-current"></div>
+      <div ref="cardRef" class="card-current">
+        <div ref="cardContentRef" class="card-content-area"></div>
+        <div class="card-action-bar" v-if="!loading && cards.length > 0">
+          <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
+          <button class="btn-pass" :disabled="animating" @click="doAction('passed')">已读</button>
+          <button class="btn-save" :disabled="animating" @click="doAction('saved')">收藏</button>
+        </div>
+      </div>
     </div>
   </div>
-
-  <Teleport to="body">
-    <div class="action-bar" v-if="!loading">
-      <button class="btn-skip" :disabled="animating || cards.length === 0" @click="doAction('skipped')">跳过</button>
-      <button class="btn-pass" :disabled="animating || cards.length === 0" @click="doAction('passed')">稍后</button>
-      <button class="btn-save" :disabled="animating || cards.length === 0" @click="doAction('saved')">保存</button>
-    </div>
-  </Teleport>
 
   <Teleport to="body">
     <div v-if="settingsOpen" class="sheet-overlay" @click.self="settingsOpen = false">
@@ -302,7 +300,7 @@ onBeforeUnmount(() => {
   height: calc(100dvh - 56px);
   margin: 0 auto;
   gap: 12px;
-  padding-bottom: 80px;
+  overflow: hidden;
 }
 
 .explore-header {
@@ -378,13 +376,37 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   z-index: 3;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  will-change: transform;
+  cursor: grab;
+}
+
+.card-content-area {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   padding: 22px;
-  will-change: transform;
-  cursor: grab;
 }
+
+.card-action-bar {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 0 0 20px 20px;
+}
+
+.card-action-bar .btn-skip { background: #dc2626; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
+.card-action-bar .btn-pass { background: #64748b; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
+.card-action-bar .btn-save { background: #16a34a; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
+.card-action-bar button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .card-offstage {
   position: absolute;
@@ -399,15 +421,6 @@ onBeforeUnmount(() => {
 
 .card-prev { z-index: 1; }
 .card-next { z-index: 2; }
-
-.empty-state {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #64748b;
-}
 
 .sheet-overlay {
   position: fixed;
@@ -428,26 +441,3 @@ onBeforeUnmount(() => {
 }
 </style>
 
-<style>
-.action-bar {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 100%;
-  max-width: 480px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  padding: 12px 16px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom));
-  background: #fff;
-  border-top: 1px solid #e2e8f0;
-  z-index: 10;
-}
-
-.action-bar .btn-skip { background: #dc2626; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; }
-.action-bar .btn-pass { background: #64748b; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; }
-.action-bar .btn-save { background: #16a34a; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; }
-.action-bar button:disabled { opacity: 0.55; cursor: not-allowed; }
-</style>
