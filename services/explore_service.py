@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -55,7 +56,7 @@ def _openalex_work_to_meta(work: dict) -> dict:
     }
 
 
-def fill_explore_pool(db, sub, target=50) -> dict:
+def fill_explore_pool(db, sub, target=200) -> dict:
     current = db.execute(
         select(func.count(models.ExplorePool.id)).where(
             models.ExplorePool.subscription_id == sub.id,
@@ -95,14 +96,15 @@ def fill_explore_pool(db, sub, target=50) -> dict:
         if doi
     }
 
-    per_query = max(10, (needed * 2) // len(queries))
-    since_iso = (_utcnow() - timedelta(days=180)).date().isoformat()
+    per_query = min(200, max(10, math.ceil(target * 1.5 / len(queries))))
+    since_iso = (_utcnow() - timedelta(days=1825)).date().isoformat()
     mailto = _openalex_mailto()
 
-    def _fetch(c: httpx.Client, q: str) -> list[dict]:
+    def _fetch_page(c, q, page=1):
         params = {
             "filter": f"title_and_abstract.search:{q},from_publication_date:{since_iso},type:article,primary_location.source.type:journal",
             "per_page": per_query,
+            "page": page,
             "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
             "sort": "cited_by_count:desc",
         }
@@ -118,11 +120,23 @@ def fill_explore_pool(db, sub, target=50) -> dict:
         except Exception:
             return []
 
-    works: list[dict] = []
+    works = []
+    page1_counts = {}
     with httpx.Client(timeout=20.0) as c:
         with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as ex:
-            for batch in ex.map(lambda q: _fetch(c, q), queries):
+            futures = {q: ex.submit(_fetch_page, c, q, 1) for q in queries}
+            for q, fut in futures.items():
+                batch = fut.result()
+                page1_counts[q] = len(batch)
                 works.extend(batch)
+
+    if len(works) < needed:
+        full_queries = [q for q in queries if page1_counts.get(q, 0) >= per_query]
+        if full_queries:
+            with httpx.Client(timeout=20.0) as c:
+                with ThreadPoolExecutor(max_workers=min(len(full_queries), 4)) as ex:
+                    for batch in ex.map(lambda q: _fetch_page(c, q, 2), full_queries):
+                        works.extend(batch)
 
     added = 0
     for work in works:
@@ -178,16 +192,43 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
             errors += len(batch)
     no_emb = [item for item in items if item.embedding is None]
     if no_emb:
-        def _embed_item(item):
-            meta = item.raw_metadata_json or {}
-            return item, embed_text(f"{meta.get('title') or ''}\n\n{meta.get('abstract') or ''}"[:8000])
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            for item, emb in ex.map(_embed_item, no_emb):
-                if emb is not None:
-                    item.embedding = emb
-                    embedded += 1
+        from services.embedding_service import embed_texts_batch
+        texts = [
+            f"{(item.raw_metadata_json or {}).get('title') or ''}\n\n{(item.raw_metadata_json or {}).get('abstract') or ''}"[:8000]
+            for item in no_emb
+        ]
+        embs = embed_texts_batch(texts)
+        for item, emb in zip(no_emb, embs):
+            if emb is not None:
+                item.embedding = emb
+                embedded += 1
     db.commit()
+    _compute_pre_scores(db, sub_id)
     return {"scored": scored, "embedded": embedded, "errors": errors}
+
+
+def _compute_pre_scores(db, sub_id):
+    from services.embedding_service import embed_text, score_candidates_matrix
+    labeled = _get_labeled_embeddings(db, sub_id)
+    if not labeled:
+        sub = db.get(models.Subscription, sub_id)
+        if sub and sub.description:
+            desc_emb = embed_text(sub.description)
+            if desc_emb:
+                labeled = [(desc_emb, 1.0)]
+    items = list(db.execute(
+        select(models.ExplorePool).where(
+            models.ExplorePool.subscription_id == sub_id,
+            models.ExplorePool.action.is_(None),
+            models.ExplorePool.embedding.isnot(None),
+        )
+    ).scalars().all())
+    if not items:
+        return
+    scores = score_candidates_matrix([item.embedding for item in items], labeled)
+    for item, score in zip(items, scores):
+        item.pre_score = score
+    db.commit()
 
 
 def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
@@ -202,34 +243,48 @@ def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
     return [(emb, weights[action]) for emb, action in rows if action in weights]
 
 
-def get_explore_cards(db, sub_id, limit=10) -> list[dict]:
-    labeled = _get_labeled_embeddings(db, sub_id)
+def get_explore_cards(db, sub_id, limit=10):
     sub = db.get(models.Subscription, sub_id)
-    # 先按 llm_score 召回候选池（limit*5），再按 embedding_score 精排后截取
     items = list(db.execute(
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
             models.ExplorePool.scored_at.isnot(None),
-        ).order_by(models.ExplorePool.llm_score.desc().nulls_last(), models.ExplorePool.found_at.desc())
-        .limit(max(int(limit) * 5, 50))
+        ).order_by(
+            models.ExplorePool.pre_score.desc().nulls_last(),
+            models.ExplorePool.llm_score.desc().nulls_last(),
+        ).limit(int(limit))
     ).scalars().all())
-    scored = sorted(
-        items,
-        key=lambda item: (score_candidate(item.embedding, labeled) if item.embedding else 0.0, item.llm_score or 0.0),
-        reverse=True,
-    )
-    cards = []
-    for item in scored[:int(limit)]:
-        embedding_score = score_candidate(item.embedding, labeled) if item.embedding else 0.0
-        card_html = render_explore_card(item, sub, embedding_score=embedding_score, db_session=db)
-        cards.append({
+
+    unacted = db.execute(
+        select(func.count(models.ExplorePool.id)).where(
+            models.ExplorePool.subscription_id == sub_id,
+            models.ExplorePool.action.is_(None),
+        )
+    ).scalar_one()
+    if unacted < 100:
+        import threading
+        from database import SessionLocal as _SL
+        def _bg_fill(sid):
+            s = _SL()
+            try:
+                sub_ = s.get(models.Subscription, sid)
+                if sub_:
+                    fill_explore_pool(s, sub_)
+                    score_and_embed_pending(s, sid)
+            finally:
+                s.close()
+        threading.Thread(target=_bg_fill, args=(sub_id,), daemon=True).start()
+
+    return [
+        {
             "id": item.id,
-            "card_html": card_html,
-            "score": round(embedding_score, 4),
+            "card_html": render_explore_card(item, sub, embedding_score=item.pre_score, db_session=db),
+            "score": round(item.pre_score or 0.0, 4),
             "action": item.action,
-        })
-    return cards
+        }
+        for item in items
+    ]
 
 
 def render_explore_card(item, sub, embedding_score: float | None = None, db_session=None) -> str:
@@ -290,6 +345,16 @@ def record_explore_action(db, pool_id, action) -> dict:
         sub = db.get(models.Subscription, item.subscription_id)
         if sub is not None:
             refreshed = refresh_subscription_queries(db, sub)
+        import threading
+        from database import SessionLocal as _SL
+        _sid = item.subscription_id
+        def _bg_rescore(sid_):
+            s = _SL()
+            try:
+                _compute_pre_scores(s, sid_)
+            finally:
+                s.close()
+        threading.Thread(target=_bg_rescore, args=(_sid,), daemon=True).start()
     return {"pool_id": item.id, "action": action, "paper_id": paper_id or item.paper_id, "query_refresh": refreshed}
 
 

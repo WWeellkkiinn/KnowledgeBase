@@ -8,3 +8,4 @@ flask-socketio>=5.3
 apscheduler>=3.10
 flask-limiter>=3.8
 flask-compress>=1.15
+numpy>=1.26

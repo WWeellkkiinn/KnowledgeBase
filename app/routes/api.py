@@ -456,21 +456,14 @@ def _parse_track_body() -> tuple[bool, int, int, Optional[int]]:
     except (TypeError, ValueError):
         raise ValueError("invalid offset")
 
-    raw_fetch_limit = body.get("limit")
-    if raw_fetch_limit is None:
+    raw_limit = body.get("limit")
+    if raw_limit is None:
         fetch_limit = None
     else:
         try:
-            n = int(raw_fetch_limit)
+            fetch_limit = max(1, int(raw_limit))
         except (TypeError, ValueError):
             raise ValueError("invalid limit")
-        # 0 视为"不限"（拉全量）；负数与超大值拒绝
-        if n == 0:
-            fetch_limit = None
-        elif n < 0:
-            raise ValueError("invalid limit")
-        else:
-            fetch_limit = min(n, 10000)
 
     return refresh, page_limit, offset, fetch_limit
 
@@ -1416,7 +1409,7 @@ def refill_explore_pool():
             models.ExplorePool.scored_at.isnot(None),
         )
     ).scalar() or 0
-    if scored_count >= 10:
+    if scored_count >= 100:
         return jsonify({"error": "pool has enough cards", "pending": scored_count}), 409
 
     # 有未打分的卡片时跳过 OpenAlex 拉取，直接打分
@@ -1429,7 +1422,7 @@ def refill_explore_pool():
     ).scalar() or 0
 
     fill_result = {"added": 0}
-    if unscored_count < 10:
+    if unscored_count < 100:
         fill_result = fill_explore_pool(g.db, sub)
 
     # 先同步打分第一批（10篇），让用户立刻看到卡片

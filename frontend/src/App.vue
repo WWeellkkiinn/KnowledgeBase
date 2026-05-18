@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 import ProgressToast from '@/components/ProgressToast.vue'
+
+const route = useRoute()
 
 const nav = [
   { to: '/', label: '概览' },
@@ -30,7 +32,7 @@ const nav = [
         </ul>
       </nav>
     </header>
-    <main class="flex-1 max-w-6xl mx-auto w-full px-4 py-6">
+    <main :class="['flex-1 max-w-6xl mx-auto w-full px-4', route.path !== '/explore' ? 'py-6' : 'h-full']">
       <RouterView />
     </main>
     <ProgressToast />

@@ -15,8 +15,6 @@ const prevCard = ref<ExploreCard | null>(null)
 const animating = ref(false)
 const settingsOpen = ref(false)
 const loading = ref(true)
-const busy = ref(false)
-const refillStatus = ref('')
 const sub = ref<Subscription | null>(null)
 
 const cardRef = ref<HTMLDivElement>()
@@ -42,7 +40,7 @@ function resetCardPositions() {
   if (cardNextRef.value) cardNextRef.value.style.transform = `translateX(${W}px) translateY(-50%)`
 }
 
-const EMPTY_HTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center"><div>今天已刷完</div><div style="font-size:13px;color:#94a3b8;margin-top:6px">点击右上角「补充」拉取新论文</div></div>`
+const EMPTY_HTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center"><div>暂时没有新内容</div><div style="font-size:13px;color:#94a3b8;margin-top:6px">稍后自动更新</div></div>`
 
 function stageCards() {
   if (cardContentRef.value)
@@ -92,7 +90,7 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   stageCards()
   animating.value = false
   exploreApi.recordAction(card.id, action).catch(() => {})
-  if (cards.value.length < 3) loadMoreCards()
+  if (cards.value.length < 12) loadMoreCards()
 }
 
 async function doUndo() {
@@ -126,7 +124,7 @@ async function loadMoreCards() {
   if (!sub.value || isLoadingMore) return
   isLoadingMore = true
   try {
-    const res = await exploreApi.getCards(sub.value.id, 10)
+    const res = await exploreApi.getCards(sub.value.id, 20)
     const newCards = (res.data.items as ExploreCard[]).filter(
       c => !cards.value.some(existing => existing.id === c.id)
     )
@@ -144,7 +142,7 @@ async function loadMoreCards() {
 async function loadCards() {
   if (!sub.value) { cards.value = []; loading.value = false; nextTick(() => stageCards()); return }
   loading.value = true
-  const res = await exploreApi.getCards(sub.value.id, 10)
+  const res = await exploreApi.getCards(sub.value.id, 20)
   cards.value = res.data.items
   loading.value = false
   nextTick(() => stageCards())
@@ -153,30 +151,6 @@ async function loadCards() {
 async function loadSubscription() {
   const items = await subscriptionsApi.list({ active: true })
   sub.value = items.find((item: Subscription) => item.active && item.type === 'topic_search') ?? null
-}
-
-async function triggerRefill() {
-  if (!sub.value || busy.value) return
-  busy.value = true
-  refillStatus.value = '正在从 OpenAlex 拉取论文…'
-  try {
-    await exploreApi.refill(sub.value.id)
-    refillStatus.value = 'AI 分析中…'
-    await loadCards()
-    if (cards.value.length === 0) {
-      for (let i = 0; i < 18; i++) {
-        await new Promise(r => setTimeout(r, 10000))
-        await loadCards()
-        if (cards.value.length > 0) break
-      }
-    }
-  } catch (e: any) {
-    if (e?.response?.status !== 409) throw e
-    await loadCards()
-  } finally {
-    busy.value = false
-    refillStatus.value = ''
-  }
 }
 
 function onTouchStart(e: TouchEvent) {
@@ -250,19 +224,9 @@ onBeforeUnmount(() => {
         <div class="pool-count">{{ cards.length }} 张卡片</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <button
-          class="refill-btn"
-          :class="{ 'refill-busy': busy }"
-          :disabled="busy || !sub"
-          @click="triggerRefill"
-        >
-          {{ busy ? '补充中…' : '+ 补充' }}
-        </button>
         <button class="settings-btn" @click="settingsOpen = true">⚙</button>
       </div>
     </div>
-
-    <div v-if="refillStatus" class="refill-status">{{ refillStatus }}</div>
 
     <div
       class="card-stage"
@@ -296,11 +260,12 @@ onBeforeUnmount(() => {
 .explore-root {
   display: flex;
   flex-direction: column;
-  max-width: 480px;
-  height: calc(100dvh - 56px);
+  max-width: 640px;
+  height: 100%;
   margin: 0 auto;
   gap: 12px;
-  overflow: hidden;
+  overflow: clip;
+  padding: 16px 0 0;
 }
 
 .explore-header {
@@ -314,7 +279,6 @@ onBeforeUnmount(() => {
 .sub-label { font-size: 18px; font-weight: 700; color: #0f172a; }
 .pool-count { margin-top: 2px; font-size: 13px; color: #64748b; }
 
-.refill-btn,
 .settings-btn {
   border: 0;
   border-radius: 999px;
@@ -322,39 +286,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   padding: 8px 14px;
   white-space: nowrap;
-}
-
-.refill-btn {
-  color: #0f172a;
-  background: #e2e8f0;
-  transition: background 0.2s, color 0.2s;
-}
-
-.refill-btn.refill-busy {
-  background: #dbeafe;
-  color: #2563eb;
-  cursor: not-allowed;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.settings-btn {
   background: #f1f5f9;
   color: #475569;
   font-size: 16px;
-}
-
-.refill-status {
-  text-align: center;
-  font-size: 13px;
-  color: #2563eb;
-  padding: 4px 0;
-  animation: pulse 1.5s ease-in-out infinite;
-  flex-shrink: 0;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
 }
 
 .card-stage {
@@ -362,6 +296,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow-x: clip;
+  padding: 8px;
 }
 
 .card-current,
@@ -373,9 +308,11 @@ onBeforeUnmount(() => {
 }
 
 .card-current {
-  position: absolute;
-  inset: 0;
+  position: relative;
   z-index: 3;
+  width: 100%;
+  height: auto;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -398,6 +335,7 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
   border-top: 1px solid #e2e8f0;
   background: #fff;
   border-radius: 0 0 20px 20px;
@@ -411,8 +349,8 @@ onBeforeUnmount(() => {
 .card-offstage {
   position: absolute;
   top: 50%;
-  left: 0;
-  right: 0;
+  left: 8px;
+  right: 8px;
   z-index: 1;
   pointer-events: none;
   padding: 22px;
@@ -440,4 +378,3 @@ onBeforeUnmount(() => {
   padding: 16px;
 }
 </style>
-

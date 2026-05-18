@@ -225,6 +225,7 @@ class ExplorePool(Base):
     methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    pre_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
 
 
 class Citation(Base):
