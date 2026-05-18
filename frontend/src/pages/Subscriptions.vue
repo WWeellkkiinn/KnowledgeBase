@@ -57,7 +57,7 @@ function startPollingIfNeeded() {
   const hasPending = store.items.some(isPending)
   if (hasPending && !pollTimer) {
     pollTimer = setInterval(async () => {
-      await store.fetchAll()
+      await store.fetchAll(true)
       if (!store.items.some(isPending)) {
         stopPolling()
       }
@@ -154,7 +154,7 @@ async function submit() {
       })
     }
     close()
-    await store.fetchAll()
+    await store.fetchAll(true)
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -177,7 +177,7 @@ async function confirmDelete() {
     }
   }
   close()
-  await store.fetchAll()
+  await store.fetchAll(true)
 }
 
 async function runNow(id: number) {
@@ -188,7 +188,7 @@ async function runNow(id: number) {
   try {
     const r = await subscriptionsApi.runNow(id)
     lastRunMsg.value = `订阅 #${id}: 发现 ${r.found} 条新结果`
-    await store.fetchAll()
+    await store.fetchAll(true)
     inboxShowAll.value = false
   } catch (e: unknown) {
     if (axios.isAxiosError(e) && e.response?.status === 429) {

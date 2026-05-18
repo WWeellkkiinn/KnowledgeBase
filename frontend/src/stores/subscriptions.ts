@@ -22,7 +22,8 @@ export const useSubscriptionsStore = defineStore('subscriptions', {
     },
   },
   actions: {
-    async fetchAll() {
+    async fetchAll(force = false) {
+      if (!force && this.items.length > 0) return
       if (_fetchPromise) return _fetchPromise
       this.loading = true
       this.error = null
