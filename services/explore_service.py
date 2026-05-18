@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -15,8 +16,11 @@ from services.card_renderer import _env
 from services.embedding_service import embed_text, score_candidate
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
+_log = logging.getLogger(__name__)
+
 _NORM_TITLE_RE = re.compile(r"[^\w一-鿿]+", flags=re.UNICODE)
-_filling_subs: set[int] = set()  # 防止同一 sub_id 并发填充
+_filling_subs: set[int] = set()   # 防止同一 sub_id 并发填充
+_scoring_subs: set[int] = set()   # 防止同一 sub_id 并发 LLM 评分
 
 
 def _utcnow() -> datetime:
@@ -172,10 +176,11 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     )
     rows = list(db.execute(stmt).all())
     if not rows:
-        return {"scored": 0, "embedded": 0, "errors": 0}
+        return {"embedded": 0, "llm_queued": 0, "errors": 0}
 
     items = [item for item, _ in rows]
-    description = rows[0][1] or ""
+    # Truncate description to prevent prompt injection via user-controlled input
+    description = (rows[0][1] or "")[:500]
     embedded = 0
 
     # Step 1: embed first so cards can appear quickly
@@ -197,8 +202,12 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     _compute_pre_scores(db, sub_id)
 
     # Step 3: LLM scoring in background (slow — don't block the caller)
+    # _scoring_subs guards against concurrent LLM threads for the same subscription
     needs_scoring = [item.id for item in items if item.scored_at is None]
-    if needs_scoring:
+    llm_queued = 0
+    if needs_scoring and sub_id not in _scoring_subs:
+        _scoring_subs.add(sub_id)
+        llm_queued = len(needs_scoring)
         import threading
         from database import SessionLocal as _SL
         def _bg_llm(sid, desc, ids):
@@ -215,16 +224,20 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
                     batch = pending[i:i + 5]
                     try:
                         _score_batch(s, desc, batch)
-                    except Exception:
+                    except Exception as exc:
+                        _log.warning("_bg_llm _score_batch failed sub=%d: %s", sid, exc)
                         now = _utcnow()
                         for it in batch:
                             it.scored_at = now
-                s.commit()
+                    s.commit()  # commit each batch immediately, survive partial restart
+            except Exception as exc:
+                _log.error("_bg_llm failed sub=%d: %s", sid, exc)
             finally:
                 s.close()
+                _scoring_subs.discard(sid)
         threading.Thread(target=_bg_llm, args=(sub_id, description, needs_scoring), daemon=True).start()
 
-    return {"scored": 0, "embedded": embedded, "errors": 0}
+    return {"embedded": embedded, "llm_queued": llm_queued, "errors": 0}
 
 
 def _compute_pre_scores(db, sub_id):
@@ -236,12 +249,14 @@ def _compute_pre_scores(db, sub_id):
             desc_emb = embed_text(sub.description)
             if desc_emb:
                 labeled = [(desc_emb, 1.0)]
+    if not labeled:
+        return
     items = list(db.execute(
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
             models.ExplorePool.embedding.isnot(None),
-        )
+        ).order_by(models.ExplorePool.found_at.desc()).limit(2000)
     ).scalars().all())
     if not items:
         return
@@ -276,6 +291,16 @@ def get_explore_cards(db, sub_id, limit=10):
         ).limit(int(limit))
     ).scalars().all())
 
+    # Batch-fetch journals for all venue_names in one query (avoids N+1)
+    venue_names = {(item.raw_metadata_json or {}).get("venue_name") or "" for item in items}
+    venue_names.discard("")
+    journal_cache: dict = {}
+    if venue_names:
+        journal_rows = db.execute(
+            select(models.Journal).where(models.Journal.name.in_(list(venue_names)))
+        ).scalars().all()
+        journal_cache = {j.name: j for j in journal_rows}
+
     unacted = db.execute(
         select(func.count(models.ExplorePool.id)).where(
             models.ExplorePool.subscription_id == sub_id,
@@ -303,7 +328,7 @@ def get_explore_cards(db, sub_id, limit=10):
     return [
         {
             "id": item.id,
-            "card_html": render_explore_card(item, sub, embedding_score=item.pre_score, db_session=db),
+            "card_html": render_explore_card(item, sub, embedding_score=item.pre_score, journal_cache=journal_cache),
             "score": round(item.pre_score or 0.0, 4),
             "action": item.action,
         }
@@ -311,18 +336,23 @@ def get_explore_cards(db, sub_id, limit=10):
     ]
 
 
-def render_explore_card(item, sub, embedding_score: float | None = None, db_session=None) -> str:
+def render_explore_card(item, sub, embedding_score: float | None = None,
+                        db_session=None, journal_cache: dict | None = None) -> str:
     from services.easyscholar_service import extract_badges
-    from database.models import Journal
 
     meta = item.raw_metadata_json or {}
     venue_name = meta.get("venue_name") or ""
     rank_badges: list[dict] = []
-    if venue_name and db_session is not None:
+    if venue_name:
         try:
-            journal = db_session.execute(
-                select(Journal).where(Journal.name == venue_name)
-            ).scalar_one_or_none()
+            if journal_cache is not None:
+                journal = journal_cache.get(venue_name)
+            elif db_session is not None:
+                journal = db_session.execute(
+                    select(models.Journal).where(models.Journal.name == venue_name)
+                ).scalar_one_or_none()
+            else:
+                journal = None
             if journal and journal.easyscholar_json:
                 rank_badges = extract_badges(journal.easyscholar_json)
         except Exception:
@@ -346,6 +376,7 @@ def render_explore_card(item, sub, embedding_score: float | None = None, db_sess
         methodology=item.methodology or "",
         key_findings=list(item.key_findings_json or []),
         llm_reason=item.llm_reason or "",
+        llm_pending=item.scored_at is None,
     )
 
 
@@ -391,6 +422,12 @@ def undo_explore_action(db, pool_id) -> dict:
     item = db.get(models.ExplorePool, pool_id)
     if item is None:
         raise ValueError("not found")
+    # Delete Paper only if it was created specifically for this explore item (not a pre-existing paper matched by DOI)
+    if item.paper_id:
+        expected_suffix = hashlib.md5(f"explore:{item.id}".encode()).hexdigest()[:8]
+        paper = db.get(models.Paper, item.paper_id)
+        if paper and (paper.stem or "").endswith(expected_suffix):
+            db.delete(paper)
     item.action = None
     item.acted_at = None
     item.paper_id = None
