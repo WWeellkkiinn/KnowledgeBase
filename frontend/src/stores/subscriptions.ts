@@ -24,14 +24,13 @@ export const useSubscriptionsStore = defineStore('subscriptions', {
       this.loading = true
       this.error = null
       try {
-        const [subs, inbox] = await Promise.all([
+        const [subsResult, inboxResult] = await Promise.allSettled([
           subscriptionsApi.list(),
           inboxApi.list(),
         ])
-        this.items = subs
-        this.inbox = inbox
-      } catch (e: unknown) {
-        this.error = e instanceof Error ? e.message : String(e)
+        if (subsResult.status === 'fulfilled') this.items = subsResult.value
+        else this.error = subsResult.reason instanceof Error ? subsResult.reason.message : String(subsResult.reason)
+        if (inboxResult.status === 'fulfilled') this.inbox = inboxResult.value
       } finally {
         this.loading = false
       }
