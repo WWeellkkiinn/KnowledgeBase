@@ -174,23 +174,11 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     if not rows:
         return {"scored": 0, "embedded": 0, "errors": 0}
 
-    from services.subscription_service import _score_batch
-
     items = [item for item, _ in rows]
     description = rows[0][1] or ""
-    scored = embedded = errors = 0
-    for i in range(0, len(items), 5):
-        batch = [item for item in items[i:i + 5] if item.scored_at is None]
-        if not batch:
-            continue
-        try:
-            _score_batch(db, description, batch)
-            scored += len(batch)
-        except Exception:
-            now = _utcnow()
-            for item in batch:
-                item.scored_at = now
-            errors += len(batch)
+    embedded = 0
+
+    # Step 1: embed first so cards can appear quickly
     no_emb = [item for item in items if item.embedding is None]
     if no_emb:
         from services.embedding_service import embed_texts_batch
@@ -204,8 +192,39 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
                 item.embedding = emb
                 embedded += 1
     db.commit()
+
+    # Step 2: compute pre_scores immediately so GET /cards can return results
     _compute_pre_scores(db, sub_id)
-    return {"scored": scored, "embedded": embedded, "errors": errors}
+
+    # Step 3: LLM scoring in background (slow — don't block the caller)
+    needs_scoring = [item.id for item in items if item.scored_at is None]
+    if needs_scoring:
+        import threading
+        from database import SessionLocal as _SL
+        def _bg_llm(sid, desc, ids):
+            s = _SL()
+            try:
+                from services.subscription_service import _score_batch
+                pending = list(s.execute(
+                    select(models.ExplorePool).where(
+                        models.ExplorePool.id.in_(ids),
+                        models.ExplorePool.scored_at.is_(None),
+                    )
+                ).scalars().all())
+                for i in range(0, len(pending), 5):
+                    batch = pending[i:i + 5]
+                    try:
+                        _score_batch(s, desc, batch)
+                    except Exception:
+                        now = _utcnow()
+                        for it in batch:
+                            it.scored_at = now
+                s.commit()
+            finally:
+                s.close()
+        threading.Thread(target=_bg_llm, args=(sub_id, description, needs_scoring), daemon=True).start()
+
+    return {"scored": 0, "embedded": embedded, "errors": 0}
 
 
 def _compute_pre_scores(db, sub_id):
@@ -250,7 +269,7 @@ def get_explore_cards(db, sub_id, limit=10):
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
-            models.ExplorePool.scored_at.isnot(None),
+            (models.ExplorePool.pre_score.isnot(None)) | (models.ExplorePool.scored_at.isnot(None)),
         ).order_by(
             models.ExplorePool.pre_score.desc().nulls_last(),
             models.ExplorePool.llm_score.desc().nulls_last(),
@@ -293,14 +312,19 @@ def get_explore_cards(db, sub_id, limit=10):
 
 
 def render_explore_card(item, sub, embedding_score: float | None = None, db_session=None) -> str:
-    from services.easyscholar_service import extract_badges, get_by_name
+    from services.easyscholar_service import extract_badges
+    from database.models import Journal
 
     meta = item.raw_metadata_json or {}
     venue_name = meta.get("venue_name") or ""
     rank_badges: list[dict] = []
     if venue_name and db_session is not None:
         try:
-            rank_badges = extract_badges(get_by_name(db_session, venue_name))
+            journal = db_session.execute(
+                select(Journal).where(Journal.name == venue_name)
+            ).scalar_one_or_none()
+            if journal and journal.easyscholar_json:
+                rank_badges = extract_badges(journal.easyscholar_json)
         except Exception:
             pass
     tpl = _env.get_template("explore_card.html.j2")
