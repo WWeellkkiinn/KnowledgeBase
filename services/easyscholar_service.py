@@ -111,6 +111,29 @@ def get_by_name(session: Session, venue_name: str) -> Optional[dict]:
     return get_or_fetch(session, journal)
 
 
+def get_or_cache_by_name(session: Session, venue_name: str) -> Optional[dict]:
+    """按期刊名查独立缓存（或调 API），缓存未命中结果。"""
+    if not venue_name:
+        return None
+    row = session.execute(
+        select(models.VenueEasyscholarCache).where(models.VenueEasyscholarCache.name == venue_name)
+    ).scalar_one_or_none()
+    if row is not None and row.fetched_at is not None and _utcnow() - row.fetched_at <= timedelta(days=30):
+        return row.easyscholar_json
+
+    result = fetch_from_api(venue_name)
+    if row is None:
+        row = models.VenueEasyscholarCache(name=venue_name)
+        session.add(row)
+    row.easyscholar_json = result
+    row.fetched_at = _utcnow()
+    try:
+        session.flush()
+    except Exception as exc:
+        _log.warning("[easyscholar] venue cache flush failed: %s", exc)
+    return result
+
+
 def extract_badges(raw: Optional[dict]) -> list[dict]:
     """从 officialRank.all 提取要展示的字段，返回 [{label, value}]。"""
     if not raw:

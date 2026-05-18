@@ -286,6 +286,14 @@ class BackwardTrackCache(Base):
     )
 
 
+class VenueEasyscholarCache(Base):
+    __tablename__ = "venue_easyscholar_cache"
+
+    name: Mapped[str] = mapped_column(String(512), primary_key=True)
+    easyscholar_json: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
+    fetched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 Index("ix_tasks_status_type", Task.status, Task.type)
 Index("ix_subscriptions_active_next", Subscription.active, Subscription.next_run_at)
 # /api/papers?status=&source= 常见过滤路径
@@ -305,6 +313,7 @@ __all__ = [
     "SessionRecord",
     "ForwardTrackCache",
     "BackwardTrackCache",
+    "VenueEasyscholarCache",
 ]
 
 # 触发 SQLAlchemy 注册 UserProfile / Recommendation 到同一个 Base.metadata，

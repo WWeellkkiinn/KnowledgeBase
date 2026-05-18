@@ -20,9 +20,10 @@ def _display_date(meta: dict) -> str:
     return ""
 
 
-def render_subscription_card(result, subscription, card_index: int | None = None, db_session=None) -> str:
+def render_subscription_card(result, subscription, card_index: int | None = None,
+                             db_session=None, venue_cache: dict | None = None) -> str:
     """渲染单个订阅推送卡片 HTML 片段。"""
-    from services.easyscholar_service import get_by_name, extract_badges
+    from services.easyscholar_service import extract_badges
 
     meta = result.raw_metadata_json or {}
     authors_list = (meta.get("authors_json") or [])[:3]
@@ -33,9 +34,15 @@ def render_subscription_card(result, subscription, card_index: int | None = None
 
     venue_name = meta.get("venue_name") or ""
     rank_badges: list[dict] = []
-    if venue_name and db_session is not None:
+    if venue_name:
         try:
-            raw = get_by_name(db_session, venue_name)
+            if venue_cache is not None:
+                raw = venue_cache.get(venue_name)
+            elif db_session is not None:
+                from services.easyscholar_service import get_or_cache_by_name
+                raw = get_or_cache_by_name(db_session, venue_name)
+            else:
+                raw = None
             rank_badges = extract_badges(raw)
         except Exception:
             pass

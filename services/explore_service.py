@@ -341,6 +341,14 @@ def get_explore_cards(db, sub_id, limit=10):
             select(models.Journal).where(models.Journal.name.in_(list(venue_names)))
         ).scalars().all()
         journal_cache = {j.name: j for j in journal_rows}
+    venue_cache_extra: dict = {}
+    missing_journal_names = venue_names - set(journal_cache.keys())
+    if missing_journal_names:
+        cache_rows = db.execute(
+            select(models.VenueEasyscholarCache)
+            .where(models.VenueEasyscholarCache.name.in_(list(missing_journal_names)))
+        ).scalars().all()
+        venue_cache_extra = {row.name: row.easyscholar_json for row in cache_rows}
 
     unacted = db.execute(
         select(func.count(models.ExplorePool.id)).where(
@@ -366,10 +374,28 @@ def get_explore_cards(db, sub_id, limit=10):
                 _filling_subs.discard(sid)
         threading.Thread(target=_bg_fill, args=(sub_id,), daemon=True).start()
 
+    uncached = venue_names - set(venue_cache_extra.keys()) - set(journal_cache.keys())
+    if uncached:
+        import threading
+        from database import SessionLocal as _SL
+        from services.easyscholar_service import get_or_cache_by_name
+        def _bg_prefetch(names):
+            s = _SL()
+            try:
+                for name in names:
+                    get_or_cache_by_name(s, name)
+                    s.commit()
+            finally:
+                s.close()
+        threading.Thread(target=_bg_prefetch, args=(list(uncached),), daemon=True).start()
+
     return [
         {
             "id": item.id,
-            "card_html": render_explore_card(item, sub, embedding_score=item.pre_score, journal_cache=journal_cache),
+            "card_html": render_explore_card(
+                item, sub, embedding_score=item.pre_score,
+                journal_cache=journal_cache, venue_cache=venue_cache_extra,
+            ),
             "score": round(item.pre_score or 0.0, 4),
             "action": item.action,
         }
@@ -378,7 +404,8 @@ def get_explore_cards(db, sub_id, limit=10):
 
 
 def render_explore_card(item, sub, embedding_score: float | None = None,
-                        db_session=None, journal_cache: dict | None = None) -> str:
+                        db_session=None, journal_cache: dict | None = None,
+                        venue_cache: dict | None = None) -> str:
     from services.easyscholar_service import extract_badges
 
     meta = item.raw_metadata_json or {}
@@ -396,6 +423,8 @@ def render_explore_card(item, sub, embedding_score: float | None = None,
                 journal = None
             if journal and journal.easyscholar_json:
                 rank_badges = extract_badges(journal.easyscholar_json)
+            elif venue_cache is not None:
+                rank_badges = extract_badges(venue_cache.get(venue_name))
         except Exception:
             pass
     tpl = _env.get_template("explore_card.html.j2")

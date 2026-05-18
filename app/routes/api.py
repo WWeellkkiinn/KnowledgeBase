@@ -706,7 +706,8 @@ def _sub_to_dict(s: models.Subscription) -> dict:
     }
 
 
-def _result_to_dict(r: models.SubscriptionResult, sub: Optional[models.Subscription] = None) -> dict:
+def _result_to_dict(r: models.SubscriptionResult, sub: Optional[models.Subscription] = None,
+                    venue_cache: dict | None = None) -> dict:
     if sub is None:
         sub = g.db.get(models.Subscription, r.subscription_id)
     return {
@@ -724,7 +725,7 @@ def _result_to_dict(r: models.SubscriptionResult, sub: Optional[models.Subscript
         "research_question": r.research_question,
         "methodology": r.methodology,
         "key_findings": r.key_findings_json or [],
-        "card_html": render_subscription_card(r, sub, db_session=g.db),
+        "card_html": render_subscription_card(r, sub, db_session=g.db, venue_cache=venue_cache),
     }
 
 
@@ -862,13 +863,21 @@ def list_inbox():
         stmt = stmt.where(models.SubscriptionResult.notified.is_(False))
     stmt = stmt.limit(limit)
     rows = g.db.execute(stmt).scalars().all()
+    venue_names = {(r.raw_metadata_json or {}).get("venue_name") or "" for r in rows}
+    venue_names.discard("")
+    venue_cache = {}
+    if venue_names:
+        cache_rows = g.db.execute(
+            select(models.VenueEasyscholarCache).where(models.VenueEasyscholarCache.name.in_(list(venue_names)))
+        ).scalars().all()
+        venue_cache = {row.name: row.easyscholar_json for row in cache_rows}
     sub_ids = {r.subscription_id for r in rows}
     subs = {} if not sub_ids else {
         s.id: s for s in g.db.execute(
             select(models.Subscription).where(models.Subscription.id.in_(sub_ids))
         ).scalars()
     }
-    return jsonify({"items": [_result_to_dict(r, subs.get(r.subscription_id)) for r in rows]})
+    return jsonify({"items": [_result_to_dict(r, subs.get(r.subscription_id), venue_cache) for r in rows]})
 
 
 @bp.post("/inbox/<int:result_id>/import")

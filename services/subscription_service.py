@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, models
@@ -958,6 +958,40 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         finally:
             session.close()
 
+    def _refresh_venue_easyscholar_cache(db):
+        from services.easyscholar_service import fetch_from_api
+        cutoff = _utcnow() - timedelta(days=30)
+        rows = db.execute(
+            select(models.VenueEasyscholarCache).where(
+                or_(
+                    models.VenueEasyscholarCache.fetched_at.is_(None),
+                    models.VenueEasyscholarCache.fetched_at < cutoff,
+                )
+            )
+        ).scalars().all()
+        success = failed = 0
+        for row in rows:
+            result = fetch_from_api(row.name)
+            row.easyscholar_json = result
+            row.fetched_at = _utcnow()
+            try:
+                db.commit()
+                success += 1
+            except Exception:
+                db.rollback()
+                failed += 1
+        return {"success": success, "failed": failed}
+
+    def _daily_venue_easyscholar_cache_refresh():  # noqa: secrets
+        session = SessionLocal()
+        try:
+            result = _refresh_venue_easyscholar_cache(session)
+            _log.info("venue_easyscholar_cache_refresh done: %s", result)
+        except Exception:
+            _log.exception("venue_easyscholar_cache_refresh failed")
+        finally:
+            session.close()
+
     def _daily_query_refresh():
         """每 7 天用正信号论文刷新一次检索词。"""
         from services.query_refresh_service import refresh_subscription_queries
@@ -1000,19 +1034,21 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
 
     def _nightly_pipeline():
         """北京02:00触发，全串行：拉取→评分→发邮件→分析→期刊→检索词刷新→探索池补充。"""
-        _log.info("nightly_pipeline: step 1/7 track_refresh")
+        _log.info("nightly_pipeline: step 1/8 track_refresh")
         _daily_track_refresh()
-        _log.info("nightly_pipeline: step 2/7 llm_scoring")
+        _log.info("nightly_pipeline: step 2/8 llm_scoring")
         _daily_llm_scoring()
-        _log.info("nightly_pipeline: step 3/7 subscription_digest")
+        _log.info("nightly_pipeline: step 3/8 subscription_digest")
         _daily_subscription_digest()
-        _log.info("nightly_pipeline: step 4/7 ai_batch")
+        _log.info("nightly_pipeline: step 4/8 ai_batch")
         _daily_ai_batch()
-        _log.info("nightly_pipeline: step 5/7 easyscholar_backfill")
+        _log.info("nightly_pipeline: step 5/8 easyscholar_backfill")
         _daily_easyscholar_backfill()
-        _log.info("nightly_pipeline: step 6/7 query_refresh")
+        _log.info("nightly_pipeline: step 6/8 venue_easyscholar_cache_refresh")
+        _daily_venue_easyscholar_cache_refresh()  # noqa: secrets
+        _log.info("nightly_pipeline: step 7/8 query_refresh")
         _daily_query_refresh()
-        _log.info("nightly_pipeline: step 7/7 explore_refill")
+        _log.info("nightly_pipeline: step 8/8 explore_refill")
         _daily_explore_refill()
         _log.info("nightly_pipeline: done")
 
