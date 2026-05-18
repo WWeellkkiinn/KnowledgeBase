@@ -92,7 +92,7 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   stageCards()
   animating.value = false
   exploreApi.recordAction(card.id, action).catch(() => {})
-  if (cards.value.length < 12) loadMoreCards()
+  if (cards.value.length <= 10) loadMoreCards()
 }
 
 async function doUndo() {
@@ -126,7 +126,7 @@ async function loadMoreCards() {
   if (!sub.value || isLoadingMore) return
   isLoadingMore = true
   try {
-    const res = await exploreApi.getCards(sub.value.id, 20)
+    const res = await exploreApi.getCards(sub.value.id, 10)
     const newCards = (res.data.items as ExploreCard[]).filter(
       c => !cards.value.some(existing => existing.id === c.id)
     )

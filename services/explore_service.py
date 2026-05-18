@@ -240,17 +240,35 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     return {"embedded": embedded, "llm_queued": llm_queued, "errors": 0}
 
 
+_query_emb_cache: dict[int, list] = {}  # sub_id -> list[Optional[bytes]]
+
+
 def _compute_pre_scores(db, sub_id):
-    from services.embedding_service import embed_text, score_candidates_matrix
-    labeled = _get_labeled_embeddings(db, sub_id)
-    if not labeled:
-        sub = db.get(models.Subscription, sub_id)
+    from services.embedding_service import embed_texts_batch, score_candidates_matrix
+    sub = db.get(models.Subscription, sub_id)
+
+    # 查询锚点：始终占 40% 权重，防止用户行为完全主导方向
+    query_labeled: list[tuple[bytes, float]] = []
+    queries = list(sub.generated_queries or []) if sub else []
+    if queries:
+        if sub_id not in _query_emb_cache:
+            _query_emb_cache[sub_id] = embed_texts_batch(queries)
+        q_embs = _query_emb_cache[sub_id]
+        query_labeled = [(e, 1.0) for e in q_embs if e]
+
+    # 用户行为（带时间衰减），占 60% 权重
+    user_labeled = _get_labeled_embeddings(db, sub_id)
+
+    # 冷启动：两者都没有时用描述 embedding
+    if not query_labeled and not user_labeled:
         if sub and sub.description:
+            from services.embedding_service import embed_text
             desc_emb = embed_text(sub.description)
             if desc_emb:
-                labeled = [(desc_emb, 1.0)]
-    if not labeled:
-        return
+                user_labeled = [(desc_emb, 1.0)]
+        if not user_labeled:
+            return
+
     items = list(db.execute(
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
@@ -260,7 +278,18 @@ def _compute_pre_scores(db, sub_id):
     ).scalars().all())
     if not items:
         return
-    scores = score_candidates_matrix([item.embedding for item in items], labeled)
+
+    cand_embs = [item.embedding for item in items]
+
+    if query_labeled and user_labeled:
+        q_scores = score_candidates_matrix(cand_embs, query_labeled)
+        u_scores = score_candidates_matrix(cand_embs, user_labeled)
+        scores = [0.4 * q + 0.6 * u for q, u in zip(q_scores, u_scores)]
+    elif query_labeled:
+        scores = score_candidates_matrix(cand_embs, query_labeled)
+    else:
+        scores = score_candidates_matrix(cand_embs, user_labeled)
+
     for item, score in zip(items, scores):
         item.pre_score = score
     db.commit()
@@ -268,14 +297,26 @@ def _compute_pre_scores(db, sub_id):
 
 def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
     rows = db.execute(
-        select(models.ExplorePool.embedding, models.ExplorePool.action).where(
+        select(models.ExplorePool.embedding, models.ExplorePool.action, models.ExplorePool.acted_at).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.isnot(None),
             models.ExplorePool.embedding.isnot(None),
         )
     ).all()
     weights = {"saved": 1.0, "skipped": -1.0, "passed": -0.25}
-    return [(emb, weights[action]) for emb, action in rows if action in weights]
+    now = _utcnow()
+    result = []
+    for emb, action, acted_at in rows:
+        if action not in weights:
+            continue
+        base = weights[action]
+        if acted_at:
+            days = max(0.0, (now - acted_at).total_seconds() / 86400)
+            # 半衰期 30 天：30天前的行为权重衰减到原来的一半
+            decay = 0.5 ** (days / 30)
+            base *= decay
+        result.append((emb, base))
+    return result
 
 
 def get_explore_cards(db, sub_id, limit=10):
