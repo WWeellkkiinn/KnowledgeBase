@@ -16,6 +16,7 @@ from services.embedding_service import embed_text, score_candidate
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
 _NORM_TITLE_RE = re.compile(r"[^\w一-鿿]+", flags=re.UNICODE)
+_filling_subs: set[int] = set()  # 防止同一 sub_id 并发填充
 
 
 def _utcnow() -> datetime:
@@ -262,18 +263,22 @@ def get_explore_cards(db, sub_id, limit=10):
             models.ExplorePool.action.is_(None),
         )
     ).scalar_one()
-    if unacted < 100:
+    if unacted < 100 and sub_id not in _filling_subs:
+        _filling_subs.add(sub_id)
         import threading
         from database import SessionLocal as _SL
         def _bg_fill(sid):
-            s = _SL()
             try:
-                sub_ = s.get(models.Subscription, sid)
-                if sub_:
-                    fill_explore_pool(s, sub_)
-                    score_and_embed_pending(s, sid)
+                s = _SL()
+                try:
+                    sub_ = s.get(models.Subscription, sid)
+                    if sub_:
+                        fill_explore_pool(s, sub_)
+                        score_and_embed_pending(s, sid)
+                finally:
+                    s.close()
             finally:
-                s.close()
+                _filling_subs.discard(sid)
         threading.Thread(target=_bg_fill, args=(sub_id,), daemon=True).start()
 
     return [

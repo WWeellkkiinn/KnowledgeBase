@@ -1025,6 +1025,15 @@ def start_scheduler(*, poll_seconds: int = 60) -> object:
         misfire_grace_time=3600,
     )
 
+    # 启动后 30 秒触发一次探索池补充（确保部署后池子不为空）
+    sched.add_job(
+        _daily_explore_refill,
+        trigger="date",
+        run_date=_utcnow() + timedelta(seconds=30),
+        id="kb-explore-refill-startup",
+        replace_existing=True,
+    )
+
     sched.start()
     _scheduler = sched
     _log.info("subscription scheduler started (poll %ds)", poll_seconds)

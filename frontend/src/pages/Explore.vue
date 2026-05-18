@@ -25,6 +25,7 @@ const cardContentRef = ref<HTMLDivElement>()
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null, cachedW = 0
 let cardEl: HTMLElement | null = null
 let isLoadingMore = false
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 function getCardW() {
   return (cardRef.value?.offsetWidth ?? 320) + CARD_GAP
@@ -40,11 +41,12 @@ function resetCardPositions() {
   if (cardNextRef.value) cardNextRef.value.style.transform = `translateX(${W}px) translateY(-50%)`
 }
 
-const EMPTY_HTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center"><div>暂时没有新内容</div><div style="font-size:13px;color:#94a3b8;margin-top:6px">稍后自动更新</div></div>`
+const EMPTY_HTML = `<div style="padding:60px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center"><div style="font-size:15px">暂时没有新内容</div><div style="font-size:13px;color:#94a3b8;margin-top:8px">正在后台为你准备，请稍后…</div></div>`
+const LOADING_HTML = `<div style="padding:60px 24px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:14px">加载中…</div>`
 
 function stageCards() {
   if (cardContentRef.value)
-    cardContentRef.value.innerHTML = cards.value[0]?.card_html ?? EMPTY_HTML
+    cardContentRef.value.innerHTML = loading.value ? LOADING_HTML : (cards.value[0]?.card_html ?? EMPTY_HTML)
   if (cardNextRef.value) cardNextRef.value.innerHTML = cards.value[1]?.card_html ?? ''
   if (cardPrevRef.value) cardPrevRef.value.innerHTML = prevCard.value?.card_html ?? ''
   resetCardPositions()
@@ -139,13 +141,25 @@ async function loadMoreCards() {
   }
 }
 
+function scheduleRetry() {
+  if (retryTimer) return
+  retryTimer = setTimeout(async () => {
+    retryTimer = null
+    if (cards.value.length === 0 && !loading.value && sub.value) {
+      await loadCards()
+    }
+  }, 8000)
+}
+
 async function loadCards() {
   if (!sub.value) { cards.value = []; loading.value = false; nextTick(() => stageCards()); return }
   loading.value = true
+  nextTick(() => stageCards())
   const res = await exploreApi.getCards(sub.value.id, 20)
   cards.value = res.data.items
   loading.value = false
   nextTick(() => stageCards())
+  if (cards.value.length === 0) scheduleRetry()
 }
 
 async function loadSubscription() {
@@ -211,6 +225,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
   cardEl?.removeEventListener('touchmove', onTouchMove)
   cardEl = null
 })
