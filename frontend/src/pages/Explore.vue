@@ -3,6 +3,9 @@ import { nextTick, onMounted, onBeforeUnmount, ref } from 'vue'
 import { exploreApi, subscriptionsApi } from '@/api/endpoints'
 import type { ExploreCard, Subscription } from '@/types/api'
 import SubscriptionSheet from '@/components/SubscriptionSheet.vue'
+import { useSubscriptionsStore } from '@/stores/subscriptions'
+
+const subsStore = useSubscriptionsStore()
 
 const RAIL_EASING = 'ease-in-out'
 const ENTER_EASING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
@@ -218,6 +221,7 @@ function onTouchCancel() {
 }
 
 onMounted(async () => {
+  subsStore.fetchAll()  // 预热 store，不 await，与页面加载并行
   await loadSubscription()
   await loadCards()
   cardEl = cardRef.value ?? null
