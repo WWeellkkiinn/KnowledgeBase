@@ -9,6 +9,8 @@ interface State {
   error: string | null
 }
 
+let _fetchPromise: Promise<void> | null = null
+
 export const useSubscriptionsStore = defineStore('subscriptions', {
   state: (): State => ({ items: [], inbox: [], loading: false, error: null }),
   getters: {
@@ -21,19 +23,24 @@ export const useSubscriptionsStore = defineStore('subscriptions', {
   },
   actions: {
     async fetchAll() {
+      if (_fetchPromise) return _fetchPromise
       this.loading = true
       this.error = null
-      try {
-        const [subsResult, inboxResult] = await Promise.allSettled([
-          subscriptionsApi.list(),
-          inboxApi.list(),
-        ])
-        if (subsResult.status === 'fulfilled') this.items = subsResult.value
-        else this.error = subsResult.reason instanceof Error ? subsResult.reason.message : String(subsResult.reason)
-        if (inboxResult.status === 'fulfilled') this.inbox = inboxResult.value
-      } finally {
-        this.loading = false
-      }
+      _fetchPromise = (async () => {
+        try {
+          const [subsResult, inboxResult] = await Promise.allSettled([
+            subscriptionsApi.list(),
+            inboxApi.list(),
+          ])
+          if (subsResult.status === 'fulfilled') this.items = subsResult.value
+          else this.error = subsResult.reason instanceof Error ? subsResult.reason.message : String(subsResult.reason)
+          if (inboxResult.status === 'fulfilled') this.inbox = inboxResult.value
+        } finally {
+          this.loading = false
+          _fetchPromise = null
+        }
+      })()
+      return _fetchPromise
     },
     async markRead(id: number) {
       const updated = await inboxApi.markRead(id)
