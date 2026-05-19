@@ -324,8 +324,8 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
     conditions = [
         models.ExplorePool.subscription_id == sub_id,
         models.ExplorePool.action.is_(None),
-        (models.ExplorePool.pre_score.is_(None) & models.ExplorePool.scored_at.isnot(None))
-        | (models.ExplorePool.pre_score >= 0),
+        models.ExplorePool.scored_at.isnot(None),
+        models.ExplorePool.pre_score >= 0,
     ]
     if exclude_ids:
         conditions.append(models.ExplorePool.id.notin_(exclude_ids))
@@ -445,7 +445,6 @@ def render_explore_card(item, sub, embedding_score: float | None = None,
         cited_by_count=meta.get("cited_by_count"),
         venue_name=venue_name,
         rank_badges=rank_badges,
-        abstract=meta.get("abstract") or "",
         tags=list(item.tags_json or [])[:4],
         research_question=item.research_question or "",
         methodology=item.methodology or "",
