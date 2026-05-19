@@ -23,17 +23,10 @@ _CHAT_MODEL = os.environ["YINLI_CHAT_MODEL"]
 _EMBED_MODEL = os.environ["YINLI_EMBED_MODEL"]
 
 _HEADERS = {"Authorization": f"Bearer {_KEY}", "Content-Type": "application/json"}
+_TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0)
 
-_client: Optional[httpx.Client] = None
-
-
-def _get_client() -> httpx.Client:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.Client(
-            timeout=httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0),
-        )
-    return _client
+# 注：yinli 上游对 keep-alive 连接复用有 bug，复用同一 Client 时
+# 第一个请求后续会 502/429。所以每次请求新建 Client（用 with 自动关闭）。
 
 
 def chat_completion(
@@ -41,17 +34,18 @@ def chat_completion(
     max_tokens: int = 8192,
     temperature: float = 0.1,
 ) -> str:
-    resp = _get_client().post(
-        f"{_BASE}/chat/completions",
-        headers=_HEADERS,
-        json={
-            "model": _CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": False,
-        },
-    )
+    with httpx.Client(timeout=_TIMEOUT) as c:
+        resp = c.post(
+            f"{_BASE}/chat/completions",
+            headers=_HEADERS,
+            json={
+                "model": _CHAT_MODEL,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": False,
+            },
+        )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -63,33 +57,34 @@ def chat_completion_stream(
     """SSE 流式调用，yield content delta 字符串块。"""
     import json as _json
 
-    with _get_client().stream(
-        "POST",
-        f"{_BASE}/chat/completions",
-        headers=_HEADERS,
-        json={
-            "model": _CHAT_MODEL,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.1,
-            "stream": True,
-        },
-    ) as resp:
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if not line or not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            try:
-                obj = _json.loads(payload)
-            except _json.JSONDecodeError:
-                continue
-            delta = obj.get("choices", [{}])[0].get("delta", {})
-            content = delta.get("content")
-            if content:
-                yield content
+    with httpx.Client(timeout=_TIMEOUT) as c:
+        with c.stream(
+            "POST",
+            f"{_BASE}/chat/completions",
+            headers=_HEADERS,
+            json={
+                "model": _CHAT_MODEL,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.1,
+                "stream": True,
+            },
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    obj = _json.loads(payload)
+                except _json.JSONDecodeError:
+                    continue
+                delta = obj.get("choices", [{}])[0].get("delta", {})
+                content = delta.get("content")
+                if content:
+                    yield content
 
 
 def embed_texts_batch(texts: list[str]) -> list[Optional[bytes]]:
@@ -98,12 +93,12 @@ def embed_texts_batch(texts: list[str]) -> list[Optional[bytes]]:
     result: list[Optional[bytes]] = [None] * len(texts)
     if not non_empty:
         return result
-    resp = _get_client().post(
-        f"{_BASE}/embeddings",
-        headers=_HEADERS,
-        json={"model": _EMBED_MODEL, "input": [t for _, t in non_empty]},
-        timeout=120.0,
-    )
+    with httpx.Client(timeout=_TIMEOUT) as c:
+        resp = c.post(
+            f"{_BASE}/embeddings",
+            headers=_HEADERS,
+            json={"model": _EMBED_MODEL, "input": [t for _, t in non_empty]},
+        )
     resp.raise_for_status()
     data = resp.json().get("data") or []
     for (orig_idx, _), item in zip(non_empty, data):
