@@ -47,10 +47,12 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   animating.value = true
   const card = cards.value[0]
   const W = (cardRef.value.offsetWidth ?? 320) + 16
-  await cardRef.value.animate(
+  const anim = cardRef.value.animate(
     [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
     { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-  ).finished
+  )
+  await anim.finished
+  anim.cancel()
   prevCard.value = card
   cards.value = cards.value.slice(1)
   stageCards()
@@ -66,10 +68,12 @@ async function doUndo() {
   const W = (cardRef.value.offsetWidth ?? 320) + 16
   const m = cardRef.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
   const curDx = m ? parseFloat(m[1]) : 0
-  await cardRef.value.animate(
+  const anim = cardRef.value.animate(
     [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
     { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-  ).finished
+  )
+  await anim.finished
+  anim.cancel()
   cards.value = [undoCard, ...cards.value]
   prevCard.value = null
   stageCards()
@@ -200,7 +204,7 @@ onBeforeUnmount(() => {
       @touchend.passive="onTouchEnd"
       @touchcancel.passive="onTouchCancel"
     >
-      <div ref="cardRef" class="card-current">
+      <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current">
         <div ref="cardContentRef" class="card-content-area"></div>
         <div class="card-action-bar" v-if="!loading && cards.length > 0">
           <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
@@ -260,6 +264,7 @@ onBeforeUnmount(() => {
 .card-stage {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
