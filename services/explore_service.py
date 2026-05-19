@@ -13,9 +13,19 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
 from database import models
-from services.card_renderer import _env
 from services.embedding_service import embed_text, score_candidate
+
+_TPL_DIR = Path(__file__).parent.parent / "templates"
+_env = Environment(
+    loader=FileSystemLoader(str(_TPL_DIR)),
+    autoescape=select_autoescape(["html", "j2"]),
+    auto_reload=True,
+)
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
 _log = logging.getLogger(__name__)
