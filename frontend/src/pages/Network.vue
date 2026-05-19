@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 import { useRouter } from 'vue-router'
 import cytoscape, { type Core } from 'cytoscape'
 import { networkApi } from '@/api/endpoints'
@@ -12,8 +13,23 @@ import ErrorState from '@/components/ui/ErrorState.vue'
 const router = useRouter()
 const container = ref<HTMLDivElement | null>(null)
 const cy = shallowRef<Core | null>(null)
-const loading = ref(false)
+const loading = ref(true)
+const showSkeleton = ref(false)
+let skeletonTimer: ReturnType<typeof setTimeout> | null = null
+const loaded = ref(false)
 const error = ref<string | null>(null)
+
+function startLoading() {
+  if (skeletonTimer) clearTimeout(skeletonTimer)
+  skeletonTimer = setTimeout(() => {
+    if (loading.value) showSkeleton.value = true
+  }, 200)
+}
+
+function stopLoading() {
+  if (skeletonTimer) { clearTimeout(skeletonTimer); skeletonTimer = null }
+  showSkeleton.value = false
+}
 const stats = ref<{ nodes: number; edges: number; total: number; truncated: boolean }>({
   nodes: 0,
   edges: 0,
@@ -40,6 +56,8 @@ function colorFor(tier: number | null): string {
 
 async function render() {
   loading.value = true
+  loaded.value = false
+  startLoading()
   error.value = null
   try {
     const data = await networkApi.get(1000) as Omit<NetworkGraph, 'nodes'> & {
@@ -141,12 +159,15 @@ async function render() {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
+    loaded.value = true
+    stopLoading()
   }
 }
 
 onMounted(render)
 onBeforeUnmount(() => {
   disposed = true
+  if (skeletonTimer) clearTimeout(skeletonTimer)
   cy.value?.destroy()
   cy.value = null
 })
@@ -160,38 +181,41 @@ onBeforeUnmount(() => {
       </template>
     </PageHeader>
 
-    <ErrorState v-if="error" :message="error" @retry="render" />
+    <LoadingSkeleton v-if="showSkeleton" variant="card" :count="1" />
+    <ErrorState v-else-if="error" :message="error" @retry="render" />
+    <EmptyState
+      v-else-if="loaded && stats.nodes === 0"
+      title="还没有引用网络"
+      description="先在论文库里启动引用追踪"
+    />
+    <template v-else>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-3 w-3 rounded-full" style="background:#1E40AF"></span>
+          一级期刊
+        </span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-3 w-3 rounded-full" style="background:#3B82F6"></span>
+          二级期刊
+        </span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-3 w-3 rounded-full" style="background:#93C5FD"></span>
+          三级期刊
+        </span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-3 w-3 rounded-full" style="background:#CBD5E1"></span>
+          未知 / 无期刊
+        </span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-3 w-3 rounded-full border-[2.5px]" style="background:#fff;border-color:#D97706"></span>
+          高被引
+        </span>
+      </div>
 
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
-      <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#1E40AF"></span>
-        一级期刊
-      </span>
-      <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#3B82F6"></span>
-        二级期刊
-      </span>
-      <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#93C5FD"></span>
-        三级期刊
-      </span>
-      <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full" style="background:#CBD5E1"></span>
-        未知 / 无期刊
-      </span>
-      <span class="flex items-center gap-1">
-        <span class="inline-block h-3 w-3 rounded-full border-[2.5px]" style="background:#fff;border-color:#D97706"></span>
-        高被引
-      </span>
-    </div>
-
-    <div class="relative">
-      <LoadingSkeleton v-if="loading" variant="card" :count="1" />
       <div
-        v-show="!loading"
         ref="container"
         class="h-[calc(100dvh-12rem)] min-h-[480px] w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
       ></div>
-    </div>
+    </template>
   </section>
 </template>

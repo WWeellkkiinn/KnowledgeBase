@@ -16,7 +16,7 @@ const route = useRoute()
 const router = useRouter()
 
 const items = ref<Paper[]>([])
-const loading = ref(false)
+const loading = ref(true)
 const showSkeleton = ref(false)
 let skeletonTimer: ReturnType<typeof setTimeout> | null = null
 const error = ref<string | null>(null)
@@ -345,8 +345,6 @@ function tierClass(tier: number | null | undefined) {
       </ul>
     </nav>
 
-    <ErrorState v-if="error" :message="error" @retry="fetchPage" />
-
     <div class="flex h-10 items-center justify-between text-sm">
       <div class="flex items-center gap-2">
         <template v-if="selectedCount > 0">
@@ -430,13 +428,13 @@ function tierClass(tier: number | null | undefined) {
       </div>
     </div>
 
-    <LoadingSkeleton v-if="showSkeleton && items.length === 0" variant="row" :count="8" />
+    <LoadingSkeleton v-if="showSkeleton" variant="row" :count="8" />
+    <ErrorState v-else-if="error" :message="error" @retry="fetchPage" />
     <EmptyState
-      v-else-if="items.length === 0 && !loading"
+      v-else-if="!loading && items.length === 0"
       title="还没有论文"
       description="点击上方上传按钮添加你的第一篇 PDF"
     />
-
     <div v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <table class="w-full text-sm">
         <thead class="sticky top-0 bg-white/95 backdrop-blur z-10 text-left text-xs uppercase text-slate-500">
