@@ -10,6 +10,7 @@ const route = useRoute()
 
 const showLayout = computed(() => route.meta.sidebar !== false)
 const isExplore = computed(() => route.path === '/explore')
+const isWide = computed(() => route.path === '/network' || route.path === '/papers')
 </script>
 
 <template>
@@ -26,7 +27,9 @@ const isExplore = computed(() => route.path === '/explore')
           'flex-1 w-full overflow-y-auto',
           isExplore
             ? 'flex flex-col min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)] pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0'
-            : 'max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 py-6 pb-20 md:pb-6'
+            : isWide
+              ? 'w-full px-4 sm:px-6 lg:px-10 py-6 pb-20 md:pb-6'
+              : 'max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 py-6 pb-20 md:pb-6'
         ]"
       >
         <RouterView />
