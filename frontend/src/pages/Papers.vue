@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { papersApi } from '@/api/endpoints'
 import { useProgressStore } from '@/stores/progress'
@@ -17,7 +17,21 @@ const router = useRouter()
 
 const items = ref<Paper[]>([])
 const loading = ref(false)
+const showSkeleton = ref(false)
+let skeletonTimer: ReturnType<typeof setTimeout> | null = null
 const error = ref<string | null>(null)
+
+function startLoading() {
+  if (skeletonTimer) clearTimeout(skeletonTimer)
+  skeletonTimer = setTimeout(() => {
+    if (loading.value) showSkeleton.value = true
+  }, 200)
+}
+
+function stopLoading() {
+  if (skeletonTimer) { clearTimeout(skeletonTimer); skeletonTimer = null }
+  showSkeleton.value = false
+}
 const hasMore = ref(false)
 const total = ref(0)
 
@@ -84,6 +98,7 @@ async function fetchPage() {
   const requestedTier = tier.value
   const requestedOffset = offset.value
   loading.value = true
+  startLoading()
   error.value = null
   try {
     const resp = await papersApi.list({
@@ -99,12 +114,15 @@ async function fetchPage() {
     if (tier.value === requestedTier && offset.value === requestedOffset)
       error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    if (tier.value === requestedTier && offset.value === requestedOffset)
+    if (tier.value === requestedTier && offset.value === requestedOffset) {
       loading.value = false
+      stopLoading()
+    }
   }
 }
 
 onMounted(fetchPage)
+onBeforeUnmount(() => { if (skeletonTimer) clearTimeout(skeletonTimer) })
 
 let _syncingFromRoute = false
 watch(tier, () => {
@@ -412,7 +430,7 @@ function tierClass(tier: number | null | undefined) {
       </div>
     </div>
 
-    <LoadingSkeleton v-if="loading && items.length === 0" variant="row" :count="8" />
+    <LoadingSkeleton v-if="showSkeleton && items.length === 0" variant="row" :count="8" />
     <EmptyState
       v-else-if="items.length === 0 && !loading"
       title="还没有论文"

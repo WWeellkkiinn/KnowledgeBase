@@ -286,6 +286,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   overflow: clip;
   padding: 16px 0 0;
+  background: var(--color-bg-subtle);
 }
 
 .explore-header {

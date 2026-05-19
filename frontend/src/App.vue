@@ -10,7 +10,6 @@ const nav = [
   { to: '/network', label: '引用图' },
   { to: '/review', label: '综述' },
   { to: '/explore', label: '探索' },
-  { to: '/failures', label: '失败诊断' },
 ]
 </script>
 
@@ -34,7 +33,7 @@ const nav = [
         </div>
       </nav>
     </header>
-    <main :class="['flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 lg:px-8', route.path !== '/explore' ? 'py-6' : 'h-full']">
+    <main :class="['flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 lg:px-8', route.path !== '/explore' ? 'py-6' : 'h-[calc(100dvh-3.25rem)] min-h-0 overflow-hidden']">
       <RouterView />
     </main>
     <ProgressToast />

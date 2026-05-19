@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { papersApi } from '@/api/endpoints'
 import { useProgressStore } from '@/stores/progress'
@@ -44,7 +44,6 @@ const backLabel = computed(() => {
   if (b === '/' || b.startsWith('/?')) return '← 返回主页'
   if (b.startsWith('/review')) return '← 返回审阅'
   if (b.startsWith('/subscriptions')) return '← 返回订阅'
-  if (b.startsWith('/failures')) return '← 返回失败列表'
   return '← 返回上一页'
 })
 
@@ -55,7 +54,21 @@ function goBack() {
 
 const detail = ref<PaperDetail | null>(null)
 const loading = ref(false)
+const showSkeleton = ref(false)
+let skeletonTimer: ReturnType<typeof setTimeout> | null = null
 const error = ref<string | null>(null)
+
+function startLoading() {
+  if (skeletonTimer) clearTimeout(skeletonTimer)
+  skeletonTimer = setTimeout(() => {
+    if (loading.value) showSkeleton.value = true
+  }, 200)
+}
+
+function stopLoading() {
+  if (skeletonTimer) { clearTimeout(skeletonTimer); skeletonTimer = null }
+  showSkeleton.value = false
+}
 
 const tab = ref<'refs' | 'cited'>('refs')
 
@@ -76,6 +89,7 @@ const btLoadMoreLoading = ref(false)
 async function load() {
   const requestedId = paperId.value  // 捕获当前 id，防止主请求竞态
   loading.value = true
+  startLoading()
   error.value = null
   detail.value = null
   btResult.value = null
@@ -108,7 +122,10 @@ async function load() {
     if (paperId.value === requestedId)
       error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    if (paperId.value === requestedId) loading.value = false
+    if (paperId.value === requestedId) {
+      loading.value = false
+      stopLoading()
+    }
   }
 }
 
@@ -116,6 +133,7 @@ onMounted(() => {
   refreshBackHref()
   load()
 })
+onBeforeUnmount(() => { if (skeletonTimer) clearTimeout(skeletonTimer) })
 watch(() => route.params.id, () => {
   refreshBackHref()
   load()
@@ -360,7 +378,7 @@ async function runAiAnalyze() {
     </PageHeader>
 
     <ErrorState v-if="error" :message="error" />
-    <LoadingSkeleton v-if="loading" variant="text" :count="6" />
+    <LoadingSkeleton v-if="showSkeleton" variant="text" :count="6" />
 
     <article v-if="detail" class="space-y-6">
       <!-- ── 头部：结构化元数据 ── -->

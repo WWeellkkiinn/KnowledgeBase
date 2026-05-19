@@ -17,8 +17,7 @@ const routes: RouteRecordRaw[] = [
     path: '/explore',
     component: () => import('../pages/Explore.vue'),
   },
-  { path: '/failures', name: 'failures', component: () => import('@/pages/Failures.vue') },
-  { path: '/feed', redirect: '/explore' },
+{ path: '/feed', redirect: '/explore' },
   { path: '/recommendations', redirect: '/explore' },
   { path: '/login', name: 'login', component: () => import('@/pages/Login.vue'), meta: { public: true } },
 ]
