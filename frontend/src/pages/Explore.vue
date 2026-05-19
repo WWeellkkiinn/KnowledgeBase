@@ -265,6 +265,8 @@ onBeforeUnmount(() => {
   gap: 12px;
   flex-shrink: 0;
   width: 100%;
+  max-width: 1024px;
+  margin: 0 auto;
 }
 
 .sub-label { font-size: 18px; font-weight: 700; color: #0f172a; }
@@ -286,7 +288,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 24px;
   width: 100%;
   max-width: 1024px;
