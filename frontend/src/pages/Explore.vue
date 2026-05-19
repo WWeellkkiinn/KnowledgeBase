@@ -129,7 +129,8 @@ async function loadMoreCards() {
   if (!sub.value || isLoadingMore) return
   isLoadingMore = true
   try {
-    const res = await exploreApi.getCards(sub.value.id, 10)
+    const existingIds = cards.value.map(c => c.id)
+    const res = await exploreApi.getCards(sub.value.id, 10, existingIds)
     const newCards = (res.data.items as ExploreCard[]).filter(
       c => !cards.value.some(existing => existing.id === c.id)
     )

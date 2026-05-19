@@ -1370,9 +1370,11 @@ def get_explore_cards():
     from services.explore_service import get_explore_cards
     sub_id = request.args.get("sub_id", type=int)
     limit = request.args.get("limit", 10, type=int)
+    exclude_raw = request.args.get("exclude", "")
+    exclude_ids = [int(x) for x in exclude_raw.split(",") if x.strip().isdigit()]
     if not sub_id:
         return jsonify({"error": "sub_id required"}), 400
-    cards = get_explore_cards(g.db, sub_id, limit=min(limit, 30))
+    cards = get_explore_cards(g.db, sub_id, limit=min(limit, 30), exclude_ids=exclude_ids)
     return jsonify({"items": cards, "count": len(cards)})
 
 

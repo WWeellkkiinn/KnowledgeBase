@@ -129,8 +129,10 @@ export const failuresApi = {
 }
 
 export const exploreApi = {
-  getCards: (subId: number, limit = 10) =>
-    client.get<ExploreCardsResponse>('/explore/cards', { params: { sub_id: subId, limit } }),
+  getCards: (subId: number, limit = 10, excludeIds: number[] = []) =>
+    client.get<ExploreCardsResponse>('/explore/cards', {
+      params: { sub_id: subId, limit, ...(excludeIds.length ? { exclude: excludeIds.join(',') } : {}) },
+    }),
   recordAction: (poolId: number, action: 'saved' | 'skipped' | 'passed') =>
     client.post<{ ok: boolean; paper_id: number | null }>('/explore/' + poolId + '/action', { action }),
   refill: (subId: number) =>

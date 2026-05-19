@@ -319,15 +319,18 @@ def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
     return result
 
 
-def get_explore_cards(db, sub_id, limit=10):
+def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None):
     sub = db.get(models.Subscription, sub_id)
+    conditions = [
+        models.ExplorePool.subscription_id == sub_id,
+        models.ExplorePool.action.is_(None),
+        (models.ExplorePool.pre_score.is_(None) & models.ExplorePool.scored_at.isnot(None))
+        | (models.ExplorePool.pre_score >= 0),
+    ]
+    if exclude_ids:
+        conditions.append(models.ExplorePool.id.notin_(exclude_ids))
     items = list(db.execute(
-        select(models.ExplorePool).where(
-            models.ExplorePool.subscription_id == sub_id,
-            models.ExplorePool.action.is_(None),
-            (models.ExplorePool.pre_score.is_(None) & models.ExplorePool.scored_at.isnot(None))
-            | (models.ExplorePool.pre_score >= 0),
-        ).order_by(
+        select(models.ExplorePool).where(*conditions).order_by(
             models.ExplorePool.pre_score.desc().nulls_last(),
             models.ExplorePool.llm_score.desc().nulls_last(),
         ).limit(int(limit))
