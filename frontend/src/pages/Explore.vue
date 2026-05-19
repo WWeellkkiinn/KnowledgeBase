@@ -280,10 +280,9 @@ onBeforeUnmount(() => {
 .explore-root {
   display: flex;
   flex-direction: column;
-  max-width: 640px;
-  height: 100%;
-  min-height: 100%;
-  margin: 0 auto;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
   gap: 12px;
   overflow: clip;
   padding: 16px 16px 16px;
@@ -295,6 +294,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   flex-shrink: 0;
+  max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .sub-label { font-size: 18px; font-weight: 700; color: #0f172a; }
@@ -320,6 +322,9 @@ onBeforeUnmount(() => {
   padding: 8px;
   display: flex;
   align-items: center;
+  max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .card-current,
