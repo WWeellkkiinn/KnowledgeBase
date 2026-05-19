@@ -110,9 +110,6 @@ async function sendDigest() {
       <div class="rounded-lg border border-slate-200 bg-white p-4">
         <div class="mb-3 flex items-center justify-between">
           <h2 class="font-semibold">最近任务</h2>
-          <span class="text-xs text-slate-400">
-            实时连接：{{ progress.connected ? '已连接' : '空闲' }}
-          </span>
         </div>
         <p v-if="tasks.items.length === 0" class="text-sm text-slate-500">
           暂无任务。
