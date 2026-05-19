@@ -10,11 +10,7 @@ services 类委托给 `scripts/` 中既有的纯函数，CLI 行为字节级保�
 """
 from __future__ import annotations
 
-from .search_service import SearchService
-from .download_service import DownloadService
 from .pdf2md_service import Pdf2MdService
-from .analysis_service import AnalysisService
-from .expand_service import ExpandService
 from .forward_track_service import ForwardTrackService
 from .backward_track_service import BackwardTrackService
 from .journal_service import JournalService
@@ -23,11 +19,7 @@ from .citation_service import CitationService
 from .review_service import ReviewService
 
 __all__ = [
-    "SearchService",
-    "DownloadService",
     "Pdf2MdService",
-    "AnalysisService",
-    "ExpandService",
     "ForwardTrackService",
     "BackwardTrackService",
     "JournalService",
