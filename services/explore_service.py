@@ -13,19 +13,8 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
 from database import models
 from services.embedding_service import embed_text, score_candidate
-
-_TPL_DIR = Path(__file__).parent.parent / "templates"
-_env = Environment(
-    loader=FileSystemLoader(str(_TPL_DIR)),
-    autoescape=select_autoescape(["html", "j2"]),
-    auto_reload=True,
-)
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
 _log = logging.getLogger(__name__)
@@ -488,7 +477,7 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
     return [
         {
             "id": item.id,
-            "card_html": render_explore_card(
+            "card": build_explore_card_data(
                 item, sub, embedding_score=item.pre_score,
                 journal_cache=journal_cache, venue_cache=venue_cache_extra,
             ),
@@ -499,9 +488,9 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
     ]
 
 
-def render_explore_card(item, sub, embedding_score: float | None = None,
-                        db_session=None, journal_cache: dict | None = None,
-                        venue_cache: dict | None = None) -> str:
+def build_explore_card_data(item, sub, embedding_score: float | None = None,
+                            db_session=None, journal_cache: dict | None = None,
+                            venue_cache: dict | None = None) -> dict:
     from services.easyscholar_service import extract_badges
 
     meta = item.raw_metadata_json or {}
@@ -523,27 +512,28 @@ def render_explore_card(item, sub, embedding_score: float | None = None,
                 rank_badges = extract_badges(venue_cache.get(venue_name))
         except Exception:
             pass
-    tpl = _env.get_template("explore_card.html.j2")
-    return tpl.render(
-        card_index=None,
-        pool_id=item.id,
-        title=meta.get("title") or "",
-        url=(_u if (_u := meta.get("url") or "").lower().startswith(("http://", "https://")) else ""),
-        title_zh=item.title_zh or "",
-        llm_score=item.llm_score,
-        embedding_score=embedding_score,
-        display_date=meta.get("publication_date") or str(meta.get("year") or ""),
-        authors=", ".join((meta.get("authors_json") or [])[:3]),
-        cited_by_count=meta.get("cited_by_count"),
-        venue_name=venue_name,
-        rank_badges=rank_badges,
-        tags=list(item.tags_json or [])[:4],
-        research_question=item.research_question or "",
-        methodology=item.methodology or "",
-        key_findings=list(item.key_findings_json or []),
-        llm_reason=item.llm_reason or "",
-        llm_pending=item.scored_at is None,
-    )
+    _u = (meta.get("url") or "")
+    url = _u if _u.lower().startswith(("http://", "https://")) else ""
+    return {
+        "card_index": None,
+        "pool_id": item.id,
+        "title": meta.get("title") or "",
+        "url": url,
+        "title_zh": item.title_zh or "",
+        "llm_score": item.llm_score,
+        "embedding_score": embedding_score,
+        "display_date": meta.get("publication_date") or str(meta.get("year") or ""),
+        "authors": ", ".join((meta.get("authors_json") or [])[:3]),
+        "cited_by_count": meta.get("cited_by_count"),
+        "venue_name": venue_name,
+        "rank_badges": rank_badges,
+        "tags": list(item.tags_json or [])[:4],
+        "research_question": item.research_question or "",
+        "methodology": item.methodology or "",
+        "key_findings": list(item.key_findings_json or []),
+        "llm_reason": item.llm_reason or "",
+        "llm_pending": item.scored_at is None,
+    }
 
 
 def record_explore_action(db, pool_id, action) -> dict:

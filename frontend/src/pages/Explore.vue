@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, reactive } from 'vue'
 import { exploreApi, subscriptionsApi } from '@/api/endpoints'
-import type { ExploreCard, Subscription } from '@/types/api'
+import type { ExploreCard as ExploreCardItem, Subscription } from '@/types/api'
 import SubscriptionSheet from '@/components/SubscriptionSheet.vue'
 import ExploreSidePanel from '@/components/explore/ExploreSidePanel.vue'
+import ExploreCard from '@/components/explore/ExploreCard.vue'
+import ExploreLoading from '@/components/explore/ExploreLoading.vue'
+import ExploreEmpty from '@/components/explore/ExploreEmpty.vue'
 import { useSubscriptionsStore } from '@/stores/subscriptions'
 
 const subsStore = useSubscriptionsStore()
@@ -12,8 +15,8 @@ const ENTER_EASING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
 const SLIDE_DUR = 240
 const UNDO_THRESHOLD = 80
 
-const cards = ref<ExploreCard[]>([])
-const prevCard = ref<ExploreCard | null>(null)
+const cards = ref<ExploreCardItem[]>([])
+const prevCard = ref<ExploreCardItem | null>(null)
 const prevAction = ref<'saved' | 'skipped' | 'passed' | null>(null)
 const sessionStats = reactive({ saved: 0, skipped: 0, passed: 0 })
 const animating = ref(false)
@@ -31,9 +34,6 @@ let actionQueue: Promise<unknown> = Promise.resolve()
 function queueRecord(fn: () => Promise<unknown>) {
   actionQueue = actionQueue.then(fn).catch(() => {})
 }
-
-const EMPTY_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center;font-family:Inter,'Noto Sans SC',sans-serif"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"><circle cx="20" cy="20" r="16"/></svg><div style="font-size:14px;font-weight:500;color:#334155;margin-top:14px">暂时没有新内容</div><div style="font-size:12px;color:#94a3b8;margin-top:6px">正在后台为你准备，请稍后</div></div>`
-const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div>`
 
 function snapAllBack() {
   if (snapAnim) { snapAnim.cancel(); snapAnim = null }
@@ -105,7 +105,7 @@ async function loadMoreCards() {
   try {
     const existingIds = cards.value.map(c => c.id)
     const res = await exploreApi.getCards(sub.value.id, 10, existingIds)
-    const newCards = (res.data.items as ExploreCard[]).filter(
+    const newCards = (res.data.items as ExploreCardItem[]).filter(
       c => !cards.value.some(existing => existing.id === c.id)
     )
     if (newCards.length > 0) {
@@ -225,7 +225,11 @@ onBeforeUnmount(() => {
         @touchcancel.passive="onTouchCancel"
       >
         <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current" @touchmove="onTouchMove">
-          <div class="card-content-area" v-html="loading ? LOADING_HTML : (cards[0]?.card_html ?? EMPTY_HTML)"></div>
+          <div class="card-content-area">
+            <ExploreLoading v-if="loading" />
+            <ExploreEmpty v-else-if="!cards[0]" />
+            <ExploreCard v-else :card="cards[0].card" />
+          </div>
           <div class="card-action-bar" v-if="!loading && cards.length > 0">
             <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
             <button class="btn-pass" :disabled="animating" @click="doAction('passed')">已读</button>
@@ -368,11 +372,6 @@ onBeforeUnmount(() => {
 .card-action-bar .btn-pass { background: #64748b; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
 .card-action-bar .btn-save { background: #16a34a; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
 .card-action-bar button:disabled { opacity: 0.55; cursor: not-allowed; }
-
-@keyframes kb-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .5; }
-}
 
 .sheet-overlay {
   position: fixed;

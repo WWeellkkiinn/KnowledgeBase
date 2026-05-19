@@ -180,9 +180,27 @@ export interface FailuresResponse {
   items: FailureItem[]
 }
 
+export interface ExploreCardData {
+  pool_id: number
+  title: string
+  url: string | null
+  title_zh: string | null
+  embedding_score: number | null
+  display_date: string
+  authors: string
+  venue_name: string | null
+  rank_badges: Array<{ label: string; value: string }>
+  cited_by_count: number | null
+  tags: string[]
+  llm_reason: string | null
+  research_question: string | null
+  methodology: string | null
+  key_findings: string[]
+}
+
 export interface ExploreCard {
   id: number
-  card_html: string
+  card: ExploreCardData
   score: number | null
   action: string | null
 }
