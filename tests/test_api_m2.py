@@ -99,21 +99,6 @@ def test_delete_subscription(client):
     assert r2.status_code == 404
 
 
-def test_delete_subscription_blocked_when_unread(client):
-    """有未读 inbox 结果时，DELETE 应 409 要求 ?force=1 确认。"""
-    sid = client.post("/api/subscriptions", json={
-        "type": "paper_citations", "target": {"doi": "10.1/x"},
-        "cron_expr": "every 7d",
-    }).get_json()["id"]
-    _seed_result(client, sid, doi="10.1/cite", notified=False)
-
-    r = client.delete(f"/api/subscriptions/{sid}")
-    assert r.status_code == 409
-
-    r2 = client.delete(f"/api/subscriptions/{sid}?force=1")
-    assert r2.status_code == 204
-
-
 def test_create_subscription_rejects_oversize_target(client):
     """target_json 单值超过 1024 字符应被拒绝（DoS 防御）。"""
     r = client.post("/api/subscriptions", json={
@@ -122,57 +107,6 @@ def test_create_subscription_rejects_oversize_target(client):
         "cron_expr": "every 7d",
     })
     assert r.status_code == 400
-
-
-# ─── inbox ──────────────────────────────────────────────────────────
-
-
-def _seed_result(client, sub_id, doi="10.1/c1", notified=False):
-    # 直接通过 SessionLocal 注入 SubscriptionResult
-    import app as app_pkg
-    with app_pkg.SessionLocal() as s:
-        s.add(models.SubscriptionResult(
-            subscription_id=sub_id,
-            paper_id=None,
-            raw_metadata_json={"doi": doi, "title": "T"},
-            notified=notified,
-        ))
-        s.commit()
-
-
-def test_inbox_lists_results(client):
-    sid = client.post("/api/subscriptions", json={
-        "type": "paper_citations", "target": {"doi": "10.1/r"},
-        "cron_expr": "every 7d",
-    }).get_json()["id"]
-    _seed_result(client, sid, doi="10.1/c1", notified=False)
-    _seed_result(client, sid, doi="10.1/c2", notified=True)
-
-    r = client.get("/api/inbox")
-    assert len(r.get_json()["items"]) == 2
-
-    r2 = client.get("/api/inbox?unread=1")
-    items = r2.get_json()["items"]
-    assert len(items) == 1
-    assert items[0]["notified"] is False
-
-
-def test_inbox_mark_read(client):
-    sid = client.post("/api/subscriptions", json={
-        "type": "paper_citations", "target": {"doi": "10.1/r"},
-        "cron_expr": "every 7d",
-    }).get_json()["id"]
-    _seed_result(client, sid, doi="10.1/c1", notified=False)
-
-    rid = client.get("/api/inbox").get_json()["items"][0]["id"]
-    r = client.post(f"/api/inbox/{rid}/read")
-    assert r.status_code == 200
-    assert r.get_json()["notified"] is True
-
-
-def test_inbox_mark_read_404(client):
-    r = client.post("/api/inbox/99999/read")
-    assert r.status_code == 404
 
 
 # ─── citations / bibtex ─────────────────────────────────────────────

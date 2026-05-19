@@ -6,7 +6,6 @@ import type {
   ExploreCard,
   FailuresResponse,
   ForwardTrackResult,
-  InboxItem,
   ListResponse,
   NetworkGraph,
   Paper,
@@ -90,34 +89,13 @@ export const subscriptionsApi = {
       })
       .then((r) => r.data.items),
   create: (body: {
-    type: string
-    target: Record<string, unknown>
-    cron_expr: string
     description?: string
     active?: boolean
   }) => client.post<Subscription>('/subscriptions', body).then((r) => r.data),
-  update: (id: number, body: Partial<{ active: boolean; cron_expr: string; target: Record<string, unknown>; description: string }>) =>
+  update: (id: number, body: Partial<{ active: boolean; description: string }>) =>
     client.patch<Subscription>(`/subscriptions/${id}`, body).then((r) => r.data),
   delete: (id: number, force = false) =>
     client.delete(`/subscriptions/${id}`, { params: force ? { force: 1 } : undefined }),
-  runNow: (id: number) =>
-    client.post<{ ran: number; found: number; errors: number; next_run_at: string | null }>(
-      `/subscriptions/${id}/run-now`,
-    ).then((r) => r.data),
-}
-
-export const inboxApi = {
-  list: (params?: { unread?: boolean; limit?: number }) =>
-    client
-      .get<ListResponse<InboxItem>>('/inbox', {
-        params: {
-          ...(params?.unread ? { unread: 1 } : undefined),
-          ...(params?.limit != null ? { limit: params.limit } : undefined),
-        },
-      })
-      .then((r) => r.data.items),
-  markRead: (id: number) =>
-    client.post<InboxItem>(`/inbox/${id}/read`).then((r) => r.data),
 }
 
 export const healthApi = {

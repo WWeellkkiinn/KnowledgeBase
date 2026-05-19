@@ -11,6 +11,7 @@ from typing import Optional
 
 import httpx
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from database import models
 from services.card_renderer import _env
@@ -209,8 +210,6 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
         llm_queued = len(needs_scoring)
         from database import SessionLocal as _SL
         def _bg_llm(sid, desc, ids):
-            from services.subscription_service import _score_batch
-
             def _run_batch(batch_ids):
                 s = _SL()
                 try:
@@ -564,6 +563,63 @@ def undo_explore_action(db, pool_id) -> dict:
     item.paper_id = None
     db.commit()
     return {"pool_id": item.id, "action": None}
+
+
+def _score_batch(db: Session, description: str, batch: list) -> None:
+    """5 篇/批 LLM 内容生成（title_zh / tags / reason 等）。失败整批抛异常，由调用方决定重试。"""
+    import json
+    import re as _re
+    from services.ai_service import _sanitize_tags, _sanitize_text, _sanitize_findings
+    from services.llm_client import chat_completion as _call_llm
+    from datetime import datetime as _dt, timezone as _tz
+
+    payload = []
+    for idx, r in enumerate(batch):
+        meta = r.raw_metadata_json or {}
+        payload.append({
+            "idx": idx,
+            "title": (meta.get("title") or "")[:200],
+            "abstract": (meta.get("abstract") or "")[:600],
+        })
+    sys_prompt = (
+        "你是学术论文晨报助手。目标读者是忙碌的研究者，需要在10秒内判断一篇论文是否值得打开。\n"
+        "对输入论文列表中的每篇，输出一个 JSON 数组项，包含：\n"
+        "- idx: 输入论文的索引（int）\n"
+        "- reason: <=80 字，说明为什么值得或不值得推送（不用学术语气）\n"
+        "- title_zh: 中文翻译标题\n"
+        '- tags: 2-4 字中文标签数组，最多 4 个（如 ["机器学习", "宏观经济"]）\n'
+        "- research_question: ≤40 字，用普通中文说清楚【这篇文章在问什么】，不用学术语气，不写【本文】\n"
+        "- methodology: ≤50 字，说【它怎么做】，遇到专业术语立刻用括号解释\n"
+        "- key_findings: 中文数组，最多 3 条，每条≤35 字，说【能用它做什么/有什么用】，偏应用价值，不写【本文提出/本文研究】\n\n"
+        "只输出 JSON 数组，无 markdown 围栏、无说明。"
+    )
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": (
+            f"用户研究兴趣：\n{description}\n\n"
+            f"论文列表：\n{json.dumps(payload, ensure_ascii=False)}"
+        )},
+    ]
+    raw = _call_llm(messages, max_tokens=4096)
+    match = _re.search(r"\[[\s\S]*\]", raw)
+    if not match:
+        raise ValueError("no JSON array")
+    arr = json.loads(match.group())
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    by_idx = {int(item["idx"]): item for item in arr if isinstance(item, dict) and "idx" in item}
+    for idx, r in enumerate(batch):
+        info = by_idx.get(idx, {})
+        reason = info.get("reason")
+        if isinstance(reason, str):
+            r.llm_reason = reason[:500]
+        r.title_zh = _sanitize_text(info.get("title_zh")) or None
+        tags = _sanitize_tags(info.get("tags"))
+        r.tags_json = tags if tags else None
+        r.research_question = _sanitize_text(info.get("research_question")) or None
+        r.methodology = _sanitize_text(info.get("methodology")) or None
+        findings = _sanitize_findings(info.get("key_findings"))
+        r.key_findings_json = findings if findings else None
+        r.scored_at = now
 
 
 def _import_explore_to_paper(db, item) -> Optional[int]:

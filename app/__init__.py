@@ -288,7 +288,7 @@ def create_app(config: dict | None = None) -> Flask:
     from .sockets import progress as _progress  # noqa: F401
 
     if app.config.get("KB_ENABLE_SCHEDULER"):
-        from services.subscription_service import start_scheduler
+        from services.scheduler_service import start_scheduler
         start_scheduler()
         _start_journal_backfill()
 

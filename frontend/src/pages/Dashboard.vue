@@ -1,25 +1,29 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import StatCard from '@/components/StatCard.vue'
 import { useTasksStore } from '@/stores/tasks'
 import { usePapersStore } from '@/stores/papers'
-import { useSubscriptionsStore } from '@/stores/subscriptions'
 import { useProgressStore } from '@/stores/progress'
-import { digestApi } from '@/api/endpoints'
+import { digestApi, subscriptionsApi } from '@/api/endpoints'
 
 const tasks = useTasksStore()
 const papers = usePapersStore()
-const subs = useSubscriptionsStore()
 const progress = useProgressStore()
 const refreshing = ref(false)
 const watched = ref<Set<string>>(new Set())
+const activeTopicCount = ref(0)
+const totalTopicCount = ref(0)
 
 async function refresh() {
   refreshing.value = true
   try {
-    // Dashboard 仅展示计数，不再拉 papers 全表（C2/X2 审查）
-    await Promise.all([tasks.fetch(), papers.fetchStats(), subs.fetchAll()])
+    const [, , allSubs] = await Promise.all([
+      tasks.fetch(),
+      papers.fetchStats(),
+      subscriptionsApi.list(),
+    ])
+    activeTopicCount.value = allSubs.filter((s: { active: boolean }) => s.active).length
+    totalTopicCount.value = allSubs.length
   } finally {
     refreshing.value = false
   }
@@ -31,7 +35,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  // 切走 Dashboard 时清理订阅，避免长期泄漏（C1 审查）
   for (const tid of watched.value) progress.unsubscribe(tid)
   watched.value.clear()
 })
@@ -84,7 +87,7 @@ async function sendDigest() {
       </div>
     </div>
 
-    <div class="grid grid-cols-2 gap-4 md:grid-cols-4">
+    <div class="grid grid-cols-2 gap-4 md:grid-cols-3">
       <StatCard
         label="论文总数"
         :value="papers.totalCount"
@@ -97,14 +100,9 @@ async function sendDigest() {
         :tone="(tasks.counts.failed ?? 0) > 0 ? 'warn' : 'default'"
       />
       <StatCard
-        label="活跃订阅"
-        :value="subs.activeCount"
-        :hint="`共 ${subs.items.length} 条`"
-      />
-      <StatCard
-        label="未读 Inbox"
-        :value="subs.unreadCount"
-        :tone="subs.unreadCount > 0 ? 'good' : 'default'"
+        label="关注话题"
+        :value="activeTopicCount"
+        :hint="`共 ${totalTopicCount} 条`"
       />
     </div>
 
@@ -151,31 +149,6 @@ async function sendDigest() {
             </button>
           </li>
         </ul>
-      </div>
-
-      <div class="rounded-lg border border-slate-200 bg-white p-4">
-        <div class="mb-3 flex items-center justify-between">
-          <h2 class="font-semibold">今日推送 Top 5</h2>
-          <RouterLink
-            to="/subscriptions"
-            class="text-xs text-blue-600 hover:underline"
-          >
-            查看全部 →
-          </RouterLink>
-        </div>
-        <p v-if="subs.loading && subs.inbox.length === 0" class="text-sm text-slate-500">
-          加载中…
-        </p>
-        <p v-else-if="subs.inbox.length === 0" class="text-sm text-slate-500">
-          暂无推送。
-        </p>
-        <div v-else class="space-y-2">
-          <div
-            v-for="item in [...subs.inbox].sort((a, b) => (b.llm_score ?? -1) - (a.llm_score ?? -1)).slice(0, 5)"
-            :key="item.id"
-            v-html="item.card_html"
-          ></div>
-        </div>
       </div>
     </section>
   </section>
