@@ -7,11 +7,9 @@ import { useSubscriptionsStore } from '@/stores/subscriptions'
 
 const subsStore = useSubscriptionsStore()
 
-const RAIL_EASING = 'ease-in-out'
 const ENTER_EASING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
 const SLIDE_DUR = 240
 const UNDO_THRESHOLD = 80
-const CARD_GAP = 16
 
 const cards = ref<ExploreCard[]>([])
 const prevCard = ref<ExploreCard | null>(null)
@@ -21,38 +19,20 @@ const loading = ref(true)
 const sub = ref<Subscription | null>(null)
 
 const cardRef = ref<HTMLDivElement>()
-const cardPrevRef = ref<HTMLDivElement>()
-const cardNextRef = ref<HTMLDivElement>()
 const cardContentRef = ref<HTMLDivElement>()
 
-let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null, cachedW = 0
+let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null
 let cardEl: HTMLElement | null = null
 let isLoadingMore = false
 let retryTimer: ReturnType<typeof setTimeout> | null = null
-
-function getCardW() {
-  return (cardRef.value?.offsetWidth ?? 320) + CARD_GAP
-}
-
-function resetCardPositions() {
-  ;[cardRef, cardPrevRef, cardNextRef].forEach(r =>
-    r.value?.getAnimations().forEach(a => a.cancel())
-  )
-  if (cardRef.value) cardRef.value.style.transform = ''
-  const W = getCardW()
-  if (cardPrevRef.value) cardPrevRef.value.style.transform = `translateX(${-W}px) translateY(-50%)`
-  if (cardNextRef.value) cardNextRef.value.style.transform = `translateX(${W}px) translateY(-50%)`
-}
 
 const EMPTY_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center;font-family:Inter,'Noto Sans SC',sans-serif"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"><circle cx="20" cy="20" r="16"/></svg><div style="font-size:14px;font-weight:500;color:#334155;margin-top:14px">暂时没有新内容</div><div style="font-size:12px;color:#94a3b8;margin-top:6px">正在后台为你准备，请稍后</div></div>`
 const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div><style>@keyframes kb-pulse{0%,100%{opacity:1}50%{opacity:.5}}</style>`
 
 function stageCards() {
+  if (cardRef.value) cardRef.value.style.transform = ''
   if (cardContentRef.value)
     cardContentRef.value.innerHTML = loading.value ? LOADING_HTML : (cards.value[0]?.card_html ?? EMPTY_HTML)
-  if (cardNextRef.value) cardNextRef.value.innerHTML = cards.value[1]?.card_html ?? ''
-  if (cardPrevRef.value) cardPrevRef.value.innerHTML = prevCard.value?.card_html ?? ''
-  resetCardPositions()
 }
 
 function snapAllBack() {
@@ -60,36 +40,17 @@ function snapAllBack() {
   const curDx = m ? parseFloat(m[1]) : 0
   const opts = { duration: 220, easing: ENTER_EASING }
   cardRef.value?.animate([{ transform: `translateX(${curDx}px)` }, { transform: 'none' }], opts)
-  if (prevCard.value && cardPrevRef.value) {
-    const W = cachedW || getCardW()
-    cardPrevRef.value.animate(
-      [
-        { transform: `translateX(${-W + curDx}px) translateY(-50%)` },
-        { transform: `translateX(${-W}px) translateY(-50%)` },
-      ],
-      opts
-    )
-  }
 }
 
 async function doAction(action: 'saved' | 'skipped' | 'passed') {
-  if (animating.value || !cards.value[0] || !cardRef.value || !cardNextRef.value) return
+  if (animating.value || !cards.value[0] || !cardRef.value) return
   animating.value = true
   const card = cards.value[0]
-  const W = getCardW()
-  await Promise.all([
-    cardRef.value.animate(
-      [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
-      { duration: SLIDE_DUR, easing: RAIL_EASING, fill: 'forwards' }
-    ).finished,
-    cardNextRef.value.animate(
-      [
-        { transform: `translateX(${W}px) translateY(-50%)` },
-        { transform: 'translateX(0) translateY(-50%)' },
-      ],
-      { duration: SLIDE_DUR, easing: RAIL_EASING, fill: 'forwards' }
-    ).finished,
-  ])
+  const W = (cardRef.value.offsetWidth ?? 320) + 16
+  await cardRef.value.animate(
+    [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
+    { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
+  ).finished
   prevCard.value = card
   cards.value = cards.value.slice(1)
   stageCards()
@@ -99,25 +60,16 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
 }
 
 async function doUndo() {
-  if (animating.value || !prevCard.value || !cardRef.value || !cardPrevRef.value) return
+  if (animating.value || !prevCard.value || !cardRef.value) return
   animating.value = true
   const undoCard = prevCard.value
-  const W = getCardW()
+  const W = (cardRef.value.offsetWidth ?? 320) + 16
   const m = cardRef.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
   const curDx = m ? parseFloat(m[1]) : 0
-  await Promise.all([
-    cardRef.value.animate(
-      [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
-      { duration: SLIDE_DUR, easing: RAIL_EASING, fill: 'forwards' }
-    ).finished,
-    cardPrevRef.value.animate(
-      [
-        { transform: `translateX(${-W + curDx}px) translateY(-50%)` },
-        { transform: 'translateX(0) translateY(-50%)' },
-      ],
-      { duration: SLIDE_DUR, easing: RAIL_EASING, fill: 'forwards' }
-    ).finished,
-  ])
+  await cardRef.value.animate(
+    [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
+    { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
+  ).finished
   cards.value = [undoCard, ...cards.value]
   prevCard.value = null
   stageCards()
@@ -136,9 +88,6 @@ async function loadMoreCards() {
     )
     if (newCards.length > 0) {
       cards.value = [...cards.value, ...newCards]
-      if (!cardNextRef.value?.innerHTML && cards.value[1]) {
-        cardNextRef.value!.innerHTML = cards.value[1].card_html
-      }
     }
   } finally {
     isLoadingMore = false
@@ -176,7 +125,6 @@ function onTouchStart(e: TouchEvent) {
   sx = e.touches[0].clientX
   sy = e.touches[0].clientY
   swipeDir = null
-  cachedW = getCardW()
 }
 
 function onTouchMove(e: TouchEvent) {
@@ -189,11 +137,9 @@ function onTouchMove(e: TouchEvent) {
   }
   if (swipeDir !== 'h') return
   e.preventDefault()
-  const W = cachedW
-  if (dx > 0 && prevCard.value && cardPrevRef.value) {
+  if (dx > 0 && prevCard.value) {
     const travel = dx <= UNDO_THRESHOLD ? dx : UNDO_THRESHOLD + (dx - UNDO_THRESHOLD) * 0.25
     if (cardRef.value) cardRef.value.style.transform = `translateX(${travel}px)`
-    cardPrevRef.value.style.transform = `translateX(${-W + travel}px) translateY(-50%)`
   } else if (dx > 0) {
     const travel = Math.min(dx * 0.12, 18)
     if (cardRef.value) cardRef.value.style.transform = `translateX(${travel}px)`
@@ -222,7 +168,7 @@ function onTouchCancel() {
 }
 
 onMounted(async () => {
-  subsStore.fetchAll()  // 预热 store，不 await，与页面加载并行
+  subsStore.fetchAll()
   await loadSubscription()
   await loadCards()
   cardEl = cardRef.value ?? null
@@ -254,8 +200,6 @@ onBeforeUnmount(() => {
       @touchend.passive="onTouchEnd"
       @touchcancel.passive="onTouchCancel"
     >
-      <div ref="cardPrevRef" class="card-offstage card-prev"></div>
-      <div ref="cardNextRef" class="card-offstage card-next"></div>
       <div ref="cardRef" class="card-current">
         <div ref="cardContentRef" class="card-content-area"></div>
         <div class="card-action-bar" v-if="!loading && cards.length > 0">
@@ -284,8 +228,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   gap: 12px;
-  overflow: clip;
-  padding: 16px 16px 16px;
+  padding: 16px;
 }
 
 .explore-header {
@@ -315,31 +258,22 @@ onBeforeUnmount(() => {
 }
 
 .card-stage {
-  position: relative;
   flex: 1;
   min-height: 0;
-  overflow-x: clip;
-  padding: 8px;
   display: flex;
   align-items: center;
+  justify-content: center;
   max-width: 640px;
   width: 100%;
   margin: 0 auto;
 }
 
-.card-current,
-.card-prev,
-.card-next {
+.card-current {
   background: #fff;
   border-radius: 20px;
   box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
-}
-
-.card-current {
   position: relative;
-  z-index: 3;
   width: 100%;
-  height: auto;
   max-height: 100%;
   display: flex;
   flex-direction: column;
@@ -373,20 +307,6 @@ onBeforeUnmount(() => {
 .card-action-bar .btn-pass { background: #64748b; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
 .card-action-bar .btn-save { background: #16a34a; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
 .card-action-bar button:disabled { opacity: 0.55; cursor: not-allowed; }
-
-.card-offstage {
-  position: absolute;
-  top: 50%;
-  left: 8px;
-  right: 8px;
-  z-index: 1;
-  pointer-events: none;
-  padding: 22px;
-  will-change: transform;
-}
-
-.card-prev { z-index: 1; }
-.card-next { z-index: 2; }
 
 .sheet-overlay {
   position: fixed;
