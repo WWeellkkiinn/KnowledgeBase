@@ -4,6 +4,10 @@ import { useRouter } from 'vue-router'
 import cytoscape, { type Core } from 'cytoscape'
 import { networkApi } from '@/api/endpoints'
 import type { NetworkGraph } from '@/types/api'
+import Button from '@/components/ui/Button.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton.vue'
+import ErrorState from '@/components/ui/ErrorState.vue'
 
 const router = useRouter()
 const container = ref<HTMLDivElement | null>(null)
@@ -150,28 +154,13 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="space-y-4">
-    <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">引用图</h1>
-      <div class="flex items-center gap-3 text-sm text-slate-500">
-        <span>
-          {{ stats.nodes }} 节点 · {{ stats.edges }} 边
-          <span v-if="stats.truncated" class="ml-1 text-amber-600">
-            (共 {{ stats.total }}，已截断)
-          </span>
-        </span>
-        <button
-          class="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50 disabled:opacity-50"
-          :disabled="loading"
-          @click="render"
-        >
-          {{ loading ? '加载中…' : '重绘' }}
-        </button>
-      </div>
-    </div>
+    <PageHeader title="引用图谱" :subtitle="`${stats.nodes} 节点 · ${stats.edges} 边${stats.truncated ? ` (共 ${stats.total}，已截断)` : ''}`">
+      <template #actions>
+        <Button variant="ghost" size="sm" :loading="loading" :disabled="loading" @click="render">重绘</Button>
+      </template>
+    </PageHeader>
 
-    <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
-      {{ error }}
-    </p>
+    <ErrorState v-if="error" :message="error" @retry="render" />
 
     <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
       <span class="flex items-center gap-1">
@@ -196,9 +185,13 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div
-      ref="container"
-      class="h-[640px] w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
-    ></div>
+    <div class="relative">
+      <LoadingSkeleton v-if="loading" variant="card" :count="1" />
+      <div
+        v-show="!loading"
+        ref="container"
+        class="h-[calc(100dvh-12rem)] min-h-[480px] w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
+      ></div>
+    </div>
   </section>
 </template>

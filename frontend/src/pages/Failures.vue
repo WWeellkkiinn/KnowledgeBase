@@ -3,6 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { failuresApi } from '@/api/endpoints'
 import type { FailureItem, FailuresResponse } from '@/types/api'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton.vue'
+import ErrorState from '@/components/ui/ErrorState.vue'
 
 const data = ref<FailuresResponse | null>(null)
 const loading = ref(false)
@@ -57,10 +61,10 @@ const filtered = computed<FailureItem[]>(() => {
 
 <template>
   <section class="space-y-5">
-    <h1 class="text-2xl font-bold">失败诊断</h1>
+    <PageHeader title="失败任务" :subtitle="data ? `共 ${data.total} 条失败记录` : ''" />
 
-    <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">{{ error }}</p>
-    <p v-if="loading" class="text-sm text-slate-500">加载中…</p>
+    <ErrorState v-if="error" :message="error" />
+    <LoadingSkeleton v-if="loading" variant="row" :count="5" />
 
     <template v-if="data">
       <!-- Stats cards -->
@@ -121,7 +125,9 @@ const filtered = computed<FailureItem[]>(() => {
           </thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-if="filtered.length === 0">
-              <td colspan="5" class="px-3 py-6 text-center text-slate-400">无失败记录。</td>
+              <td colspan="5" class="px-3 py-6">
+                <EmptyState title="没有失败任务" description="所有后台任务运行正常" />
+              </td>
             </tr>
             <tr v-for="(it, idx) in filtered" :key="idx" class="hover:bg-slate-50">
               <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">

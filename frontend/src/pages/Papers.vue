@@ -4,6 +4,11 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { papersApi } from '@/api/endpoints'
 import { useProgressStore } from '@/stores/progress'
 import type { Paper } from '@/types/api'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import Button from '@/components/ui/Button.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton.vue'
+import ErrorState from '@/components/ui/ErrorState.vue'
 
 const progress = useProgressStore()
 
@@ -275,9 +280,8 @@ function tierClass(tier: number | null | undefined) {
 
 <template>
   <section class="space-y-4">
-    <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">论文库</h1>
-      <div class="flex items-center gap-2">
+    <PageHeader title="论文库" :subtitle="`共 ${total} 篇论文`">
+      <template #actions>
         <input
           ref="uploadInput"
           type="file"
@@ -285,15 +289,16 @@ function tierClass(tier: number | null | undefined) {
           class="hidden"
           @change="onUploadChange"
         />
-        <button
-          class="rounded border border-blue-600 bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-          :disabled="uploading"
+        <Button
+          variant="primary"
+          size="sm"
+          :loading="uploading"
           @click="pickUpload"
         >
           {{ uploading ? '上传中…' : '上传 PDF' }}
-        </button>
-      </div>
-    </div>
+        </Button>
+      </template>
+    </PageHeader>
 
     <p
       v-if="uploadMsg"
@@ -322,46 +327,48 @@ function tierClass(tier: number | null | undefined) {
       </ul>
     </nav>
 
-    <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
-      {{ error }}
-    </p>
+    <ErrorState v-if="error" :message="error" @retry="fetchPage" />
 
     <div class="flex h-10 items-center justify-between text-sm">
       <div class="flex items-center gap-2">
         <template v-if="selectedCount > 0">
           <span class="text-slate-600">已选 {{ selectedCount }} 篇</span>
-          <button
+          <Button
             v-if="tier === 'stub'"
-            class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
+            variant="secondary"
+            size="sm"
             :disabled="batchLoading"
             @click="moveSelected(true)"
           >
             移至核心库
-          </button>
-          <button
+          </Button>
+          <Button
             v-if="tier === 'core'"
-            class="rounded border border-slate-300 px-3 py-1 disabled:opacity-50"
+            variant="secondary"
+            size="sm"
             :disabled="batchLoading"
             @click="moveSelected(false)"
           >
             移至探索库
-          </button>
-          <button
-            class="rounded border border-rose-300 px-3 py-1 text-rose-600 disabled:opacity-50"
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
             :disabled="batchLoading"
             @click="deleteSelected"
           >
             删除
-          </button>
+          </Button>
         </template>
         <span v-else class="text-slate-500">第 {{ currentPage }} / {{ totalPages }} 页（共 {{ total }} 条）</span>
       </div>
       <div class="flex items-center gap-1">
-        <button
-          class="rounded border border-slate-300 px-3 py-1 text-sm font-medium disabled:opacity-40"
+        <Button
+          variant="secondary"
+          size="sm"
           :disabled="!canPrev || loading"
           @click="prevPage"
-        >上一页</button>
+        >上一页</Button>
 
         <template v-for="(p, i) in pageItems" :key="typeof p === 'number' ? `p${p}` : p">
           <span
@@ -379,11 +386,12 @@ function tierClass(tier: number | null | undefined) {
           >{{ p }}</button>
         </template>
 
-        <button
-          class="rounded border border-slate-300 px-3 py-1 text-sm font-medium disabled:opacity-40"
+        <Button
+          variant="secondary"
+          size="sm"
           :disabled="!canNext || loading"
           @click="nextPage"
-        >下一页</button>
+        >下一页</Button>
 
         <span class="ml-3 text-slate-400">跳至</span>
         <input
@@ -395,20 +403,25 @@ function tierClass(tier: number | null | undefined) {
           class="w-16 rounded border border-slate-300 px-2 py-1 text-center text-sm"
           @keyup.enter="jumpToPage"
         />
-        <button
-          class="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+        <Button
+          variant="secondary"
+          size="sm"
           :disabled="loading || !jumpInput"
           @click="jumpToPage"
-        >GO</button>
+        >GO</Button>
       </div>
     </div>
 
-    <div v-if="loading && items.length === 0" class="text-sm text-slate-500">加载中…</div>
-    <p v-else-if="items.length === 0" class="text-sm text-slate-500">暂无论文。</p>
+    <LoadingSkeleton v-if="loading && items.length === 0" variant="row" :count="8" />
+    <EmptyState
+      v-else-if="items.length === 0 && !loading"
+      title="还没有论文"
+      description="点击上方上传按钮添加你的第一篇 PDF"
+    />
 
     <div v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500">
+        <thead class="sticky top-0 bg-white/95 backdrop-blur z-10 text-left text-xs uppercase text-slate-500">
           <tr>
             <th class="px-3 py-2 w-10">
               <input
@@ -426,7 +439,12 @@ function tierClass(tier: number | null | undefined) {
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
-          <tr v-for="p in items" :key="p.id" class="hover:bg-slate-50">
+          <tr
+            v-for="p in items"
+            :key="p.id"
+            class="hover:bg-slate-50 transition-colors"
+            :class="{ 'bg-blue-50': selectedIds.has(p.id) }"
+          >
             <td class="px-3 py-2">
               <input
                 type="checkbox"

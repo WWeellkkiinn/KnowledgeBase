@@ -10,6 +10,11 @@ import type {
   ProgressEvent,
 } from '@/types/api'
 import { isTrackAccepted } from '@/types/api'
+import Button from '@/components/ui/Button.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton.vue'
+import ErrorState from '@/components/ui/ErrorState.vue'
 
 const progress = useProgressStore()
 const PAGE_LIMIT = 100
@@ -348,14 +353,14 @@ async function runAiAnalyze() {
 
 <template>
   <section class="space-y-5">
-    <button @click="goBack" class="text-sm text-blue-600 hover:underline">
-      {{ backLabel }}
-    </button>
+    <PageHeader :title="detail?.paper.title || detail?.paper.stem || '论文详情'" subtitle="">
+      <template #actions>
+        <Button variant="ghost" size="sm" @click="goBack">{{ backLabel }}</Button>
+      </template>
+    </PageHeader>
 
-    <p v-if="error" class="rounded bg-rose-50 p-3 text-sm text-rose-700">
-      {{ error }}
-    </p>
-    <p v-if="loading" class="text-sm text-slate-500">加载中…</p>
+    <ErrorState v-if="error" :message="error" />
+    <LoadingSkeleton v-if="loading" variant="text" :count="6" />
 
     <article v-if="detail" class="space-y-6">
       <!-- ── 头部：结构化元数据 ── -->
@@ -427,22 +432,20 @@ async function runAiAnalyze() {
             内容精炼
             <span class="text-xs font-normal text-slate-400">{{ aiSectionOpen ? '▲' : '▼' }}</span>
           </button>
-          <button
+          <Button
             v-if="detail.paper.abstract && !detail.paper.ai_analyzed_at"
-            class="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            variant="secondary" size="sm"
+            :loading="aiAnalyzing"
             :disabled="aiAnalyzing"
             @click="runAiAnalyze"
-          >
-            {{ aiAnalyzing ? '分析中…' : '立即分析' }}
-          </button>
-          <button
+          >立即分析</Button>
+          <Button
             v-else-if="detail.paper.abstract && detail.paper.ai_analyzed_at"
-            class="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+            variant="secondary" size="sm"
+            :loading="aiAnalyzing"
             :disabled="aiAnalyzing"
             @click="runAiAnalyze"
-          >
-            {{ aiAnalyzing ? '分析中…' : '重新分析' }}
-          </button>
+          >重新分析</Button>
         </div>
         <div v-if="aiSectionOpen" class="px-4 py-3 space-y-3 text-sm">
           <p v-if="aiAnalyzeError" class="text-xs text-rose-500">{{ aiAnalyzeError }}</p>
@@ -543,17 +546,13 @@ async function runAiAnalyze() {
             </li>
           </ul>
           <div v-if="btResult.has_more" class="mt-3 text-center">
-            <button
-              class="rounded border border-slate-300 px-4 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
-              :disabled="btLoadMoreLoading"
-              @click="loadMoreBackward"
-            >
+            <Button variant="secondary" size="sm" :loading="btLoadMoreLoading" :disabled="btLoadMoreLoading" @click="loadMoreBackward">
               {{ btLoadMoreLoading ? '加载中…' : `加载更多（已显示 ${btResult.referenced_papers.length} / ${btResult.references_count}）` }}
-            </button>
+            </Button>
           </div>
         </div>
 
-        <p v-else-if="!btLoading && !btTaskId && detail.paper.doi" class="text-xs text-slate-400">暂无引用数据。</p>
+        <EmptyState v-else-if="!btLoading && !btTaskId && detail.paper.doi" title="暂无引用数据" description="" />
       </div>
 
       <!-- ── 被引用 Tab ── -->
@@ -563,26 +562,13 @@ async function runAiAnalyze() {
           后台处理中（task #{{ ftTaskId }}），首次查询需调外部 API，可关闭页面，完成后下次访问即用缓存秒回。
         </p>
         <p v-else-if="ftLoading" class="text-xs text-slate-400">查询中…</p>
-        <div v-if="ftError" class="rounded bg-rose-50 p-3 text-sm text-rose-700 flex items-center justify-between">
-          <span>{{ ftError }}</span>
-          <button
-            v-if="detail.paper.doi"
-            class="ml-3 text-xs text-rose-600 hover:text-rose-800 underline shrink-0"
-            :disabled="ftLoading"
-            @click="runForwardTrack(false)"
-          >重试</button>
-        </div>
+        <ErrorState v-if="ftError" :message="ftError" @retry="runForwardTrack(false)" />
 
         <div v-if="ftResult">
           <div class="mb-2 flex items-center gap-3 text-sm text-slate-500">
             <span>{{ ftResult.citing_count }} 篇被引用</span>
             <span v-if="ftResult.cached" class="text-xs">(来自缓存)</span>
-            <button
-              v-if="detail.paper.doi"
-              class="ml-auto text-xs text-slate-400 hover:text-slate-600 disabled:opacity-40"
-              :disabled="ftLoading"
-              @click="runForwardTrack(true)"
-            >↻ 刷新</button>
+            <Button v-if="detail.paper.doi" variant="ghost" size="sm" class="ml-auto" :disabled="ftLoading" @click="runForwardTrack(true)">↻ 刷新</Button>
           </div>
           <ul class="divide-y divide-slate-100">
             <li
@@ -609,13 +595,9 @@ async function runAiAnalyze() {
             </li>
           </ul>
           <div v-if="ftResult.has_more" class="mt-3 text-center">
-            <button
-              class="rounded border border-slate-300 px-4 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
-              :disabled="ftLoadMoreLoading"
-              @click="loadMoreForward"
-            >
+            <Button variant="secondary" size="sm" :loading="ftLoadMoreLoading" :disabled="ftLoadMoreLoading" @click="loadMoreForward">
               {{ ftLoadMoreLoading ? '加载中…' : `加载更多（已显示 ${ftResult.citing_papers.length} / ${ftResult.citing_count}）` }}
-            </button>
+            </Button>
           </div>
         </div>
         <p v-if="!ftResult && !ftLoading && !ftTaskId && !detail.paper.is_core" class="text-xs text-slate-400">

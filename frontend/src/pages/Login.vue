@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { setToken, clearToken, validateToken, isSafeBackPath } from '@/api/client'
 import { resetSocket } from '@/api/socket'
+import Button from '@/components/ui/Button.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,32 +50,36 @@ async function submit() {
 </script>
 
 <template>
-  <main class="min-h-screen flex items-center justify-center bg-[#F8FAFC] p-4">
-    <form
-      class="w-full max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
-      @submit.prevent="submit"
-    >
-      <h1 class="text-lg font-semibold text-slate-900">KnowledgeBase 访问</h1>
-      <p class="text-sm text-slate-500">需要访问令牌才能继续。</p>
-      <label class="block">
-        <span class="text-xs font-medium uppercase tracking-wide text-slate-400">访问令牌</span>
-        <input
-          v-model="token"
-          type="password"
-          autocomplete="current-password"
-          class="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          placeholder="粘贴你的 token"
-          :disabled="submitting"
-        />
-      </label>
-      <p v-if="error" class="text-sm text-rose-600">{{ error }}</p>
-      <button
-        type="submit"
-        class="w-full rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        :disabled="submitting"
+  <main
+    class="min-h-screen flex items-center justify-center p-4"
+    style="background: linear-gradient(180deg, var(--color-bg) 0%, var(--color-bg-subtle) 100%)"
+  >
+    <div class="w-full max-w-sm space-y-6">
+      <div class="text-center">
+        <h1 class="text-xl font-semibold text-slate-900">KnowledgeBase</h1>
+        <p class="text-sm text-slate-500 mt-1">学术文献知识库</p>
+      </div>
+      <form
+        class="space-y-4 rounded-panel border border-slate-200 bg-white p-6 shadow-lift"
+        @submit.prevent="submit"
       >
-        {{ submitting ? '验证中…' : '进入' }}
-      </button>
-    </form>
+        <p class="text-sm text-slate-500">需要访问令牌才能继续。</p>
+        <label class="block">
+          <span class="text-xs font-medium uppercase tracking-wide text-slate-400">访问令牌</span>
+          <input
+            v-model="token"
+            type="password"
+            autocomplete="current-password"
+            class="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            placeholder="粘贴你的 token"
+            :disabled="submitting"
+          />
+        </label>
+        <p v-if="error" class="text-sm text-rose-600">{{ error }}</p>
+        <Button type="submit" variant="primary" class="w-full" :loading="submitting" :disabled="submitting">
+          进入
+        </Button>
+      </form>
+    </div>
   </main>
 </template>

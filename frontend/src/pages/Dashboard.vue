@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import StatCard from '@/components/StatCard.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import Button from '@/components/ui/Button.vue'
 import { useTasksStore } from '@/stores/tasks'
 import { usePapersStore } from '@/stores/papers'
 import { digestApi, subscriptionsApi } from '@/api/endpoints'
@@ -10,6 +12,8 @@ const papers = usePapersStore()
 const refreshing = ref(false)
 const activeTopicCount = ref(0)
 const totalTopicCount = ref(0)
+
+const todayLabel = computed(() => '今天 ' + new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }))
 
 async function refresh() {
   refreshing.value = true
@@ -51,26 +55,27 @@ async function sendDigest() {
 
 <template>
   <section class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">概览</h1>
-      <div class="flex items-center gap-2">
+    <PageHeader title="概览" :subtitle="todayLabel">
+      <template #actions>
         <span v-if="digestMsg" class="text-xs text-slate-500">{{ digestMsg }}</span>
-        <button
-          class="rounded-md bg-blue-50 px-3 py-1 text-sm text-blue-700 hover:bg-blue-100 disabled:opacity-50"
-          :disabled="digestSending"
+        <Button
+          variant="secondary"
+          size="sm"
+          :loading="digestSending"
           @click="sendDigest"
         >
           {{ digestSending ? '发送中…' : '发送今日日报' }}
-        </button>
-        <button
-          class="rounded-md bg-slate-100 px-3 py-1 text-sm hover:bg-slate-200 disabled:opacity-50"
-          :disabled="refreshing"
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          :loading="refreshing"
           @click="refresh"
         >
           {{ refreshing ? '刷新中…' : '刷新' }}
-        </button>
-      </div>
-    </div>
+        </Button>
+      </template>
+    </PageHeader>
 
     <div class="grid grid-cols-2 gap-4 md:grid-cols-3">
       <StatCard

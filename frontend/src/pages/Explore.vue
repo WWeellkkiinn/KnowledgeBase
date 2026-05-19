@@ -44,8 +44,8 @@ function resetCardPositions() {
   if (cardNextRef.value) cardNextRef.value.style.transform = `translateX(${W}px) translateY(-50%)`
 }
 
-const EMPTY_HTML = `<div style="padding:60px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center"><div style="font-size:15px">暂时没有新内容</div><div style="font-size:13px;color:#94a3b8;margin-top:8px">正在后台为你准备，请稍后…</div></div>`
-const LOADING_HTML = `<div style="padding:60px 24px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:14px">加载中…</div>`
+const EMPTY_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center;font-family:Inter,'Noto Sans SC',sans-serif"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"><circle cx="20" cy="20" r="16"/></svg><div style="font-size:14px;font-weight:500;color:#334155;margin-top:14px">暂时没有新内容</div><div style="font-size:12px;color:#94a3b8;margin-top:6px">正在后台为你准备，请稍后</div></div>`
+const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div><style>@keyframes kb-pulse{0%,100%{opacity:1}50%{opacity:.5}}</style>`
 
 function stageCards() {
   if (cardContentRef.value)

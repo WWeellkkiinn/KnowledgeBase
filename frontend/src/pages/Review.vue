@@ -4,6 +4,11 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { papersApi } from '@/api/endpoints'
 import type { Paper } from '@/types/api'
+import Button from '@/components/ui/Button.vue'
+import PageHeader from '@/components/ui/PageHeader.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton.vue'
+import ErrorState from '@/components/ui/ErrorState.vue'
 
 const papers = ref<Paper[]>([])
 const selected = ref<Set<number>>(new Set())
@@ -172,7 +177,7 @@ watch(output, (v) => {
 
 <template>
   <section class="space-y-4">
-    <h1 class="text-2xl font-bold">Review</h1>
+    <PageHeader title="综述" subtitle="选择论文生成 AI 综述" />
 
     <div class="grid gap-4 lg:grid-cols-[300px_1fr]">
       <aside class="space-y-3">
@@ -224,30 +229,29 @@ watch(output, (v) => {
           </ul>
         </div>
         <div class="flex gap-2">
-          <button
-            class="flex-1 rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+          <Button
+            class="flex-1"
+            variant="primary"
+            :loading="running"
             :disabled="running || selected.size === 0"
             @click="run"
-          >
-            {{ running ? '生成中…' : '生成综述' }}
-          </button>
-          <button
+          >生成综述</Button>
+          <Button
             v-if="running"
-            class="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+            variant="secondary"
             @click="cancel"
-          >
-            取消
-          </button>
+          >取消</Button>
         </div>
       </aside>
 
       <article class="rounded-lg border border-slate-200 bg-white p-4">
-        <p v-if="error" class="mb-3 rounded bg-rose-50 p-3 text-sm text-rose-700">
-          {{ error }}
-        </p>
-        <p v-if="!output && !running" class="text-sm text-slate-500">
-          选择论文后点击「生成综述」开始流式输出。
-        </p>
+        <ErrorState v-if="error" :message="error" />
+        <LoadingSkeleton v-else-if="running && !output" variant="text" :count="8" />
+        <EmptyState
+          v-else-if="!output && !running"
+          title="尚未生成综述"
+          description="选择论文后点击「生成综述」开始流式输出"
+        />
         <div
           v-else
           class="prose max-w-none text-sm leading-relaxed"
