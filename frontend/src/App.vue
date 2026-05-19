@@ -25,7 +25,7 @@ const isExplore = computed(() => route.path === '/explore')
         :class="[
           'flex-1 w-full overflow-y-auto',
           isExplore
-            ? 'flex flex-col min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
+            ? 'flex flex-col min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)] pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0'
             : 'max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 py-6 pb-20 md:pb-6'
         ]"
       >

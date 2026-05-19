@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, reactive } from 'vue'
 import { exploreApi, subscriptionsApi } from '@/api/endpoints'
 import type { ExploreCard, Subscription } from '@/types/api'
 import SubscriptionSheet from '@/components/SubscriptionSheet.vue'
+import ExploreSidePanel from '@/components/explore/ExploreSidePanel.vue'
 import { useSubscriptionsStore } from '@/stores/subscriptions'
 
 const subsStore = useSubscriptionsStore()
@@ -13,6 +14,8 @@ const UNDO_THRESHOLD = 80
 
 const cards = ref<ExploreCard[]>([])
 const prevCard = ref<ExploreCard | null>(null)
+const prevAction = ref<'saved' | 'skipped' | 'passed' | null>(null)
+const sessionStats = reactive({ saved: 0, skipped: 0, passed: 0 })
 const animating = ref(false)
 const settingsOpen = ref(false)
 const loading = ref(true)
@@ -47,6 +50,8 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
     await anim.finished
     anim.cancel()
     prevCard.value = card
+    prevAction.value = action
+    sessionStats[action]++
     cards.value = cards.value.slice(1)
     exploreApi.recordAction(card.id, action).catch(() => {})
     if (cards.value.length <= 10) loadMoreCards()
@@ -70,7 +75,11 @@ async function doUndo() {
     await anim.finished
     anim.cancel()
     cards.value = [undoCard, ...cards.value]
+    if (prevAction.value) {
+      sessionStats[prevAction.value] = Math.max(0, sessionStats[prevAction.value] - 1)
+    }
     prevCard.value = null
+    prevAction.value = null
     exploreApi.undo(undoCard.id).catch(() => {})
   } finally {
     animating.value = false
@@ -195,20 +204,30 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div
-      class="card-stage"
-      @touchstart.passive="onTouchStart"
-      @touchend.passive="onTouchEnd"
-      @touchcancel.passive="onTouchCancel"
-    >
-      <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current" @touchmove="onTouchMove">
-        <div class="card-content-area" v-html="loading ? LOADING_HTML : (cards[0]?.card_html ?? EMPTY_HTML)"></div>
-        <div class="card-action-bar" v-if="!loading && cards.length > 0">
-          <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
-          <button class="btn-pass" :disabled="animating" @click="doAction('passed')">已读</button>
-          <button class="btn-save" :disabled="animating" @click="doAction('saved')">收藏</button>
+    <div class="explore-body">
+      <div
+        class="card-stage"
+        @touchstart.passive="onTouchStart"
+        @touchend.passive="onTouchEnd"
+        @touchcancel.passive="onTouchCancel"
+      >
+        <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current" @touchmove="onTouchMove">
+          <div class="card-content-area" v-html="loading ? LOADING_HTML : (cards[0]?.card_html ?? EMPTY_HTML)"></div>
+          <div class="card-action-bar" v-if="!loading && cards.length > 0">
+            <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
+            <button class="btn-pass" :disabled="animating" @click="doAction('passed')">已读</button>
+            <button class="btn-save" :disabled="animating" @click="doAction('saved')">收藏</button>
+          </div>
         </div>
       </div>
+      <ExploreSidePanel
+        class="hidden-mobile"
+        :prev-card="prevCard"
+        :prev-action="prevAction"
+        :remaining-count="cards.length"
+        :session-stats="sessionStats"
+        @undo="doUndo"
+      />
     </div>
   </div>
 
@@ -258,15 +277,34 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 
-.card-stage {
+.explore-body {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  width: 100%;
+  max-width: 1024px;
+  margin: 0 auto;
+}
+
+.hidden-mobile {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .hidden-mobile {
+    display: flex;
+  }
+}
+
+.card-stage {
+  flex: 0 1 640px;
+  min-width: 0;
   min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  max-width: 640px;
-  width: 100%;
-  margin: 0 auto;
 }
 
 .card-current {
