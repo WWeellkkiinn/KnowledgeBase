@@ -1,17 +1,14 @@
 import client, { API_BASE_URL } from './client'
 import type {
   BackwardTrackResult,
-  DigestResult,
   ExploreCardsResponse,
   ExploreCard,
-  FailuresResponse,
   ForwardTrackResult,
   ListResponse,
   NetworkGraph,
   Paper,
   PaperDetail,
   Subscription,
-  Task,
   TrackResponse,
 } from '@/types/api'
 
@@ -35,8 +32,6 @@ export const papersApi = {
     client.get<{ total: number; analyzed: number }>('/papers/stats').then((r) => r.data),
   get: (id: number) =>
     client.get<PaperDetail>(`/papers/${id}`).then((r) => r.data),
-  getInsight: (id: number) =>
-    client.get<{ content: string | null }>(`/papers/${id}/insight`).then((r) => r.data),
   forwardTrack: (id: number, body?: { refresh?: boolean; page_limit?: number; offset?: number; limit?: number }) =>
     client
       .post<TrackResponse<ForwardTrackResult>>(`/papers/${id}/forward-track`, body ?? {})
@@ -45,16 +40,12 @@ export const papersApi = {
     client
       .post<TrackResponse<BackwardTrackResult>>(`/papers/${id}/backward-track`, body ?? {})
       .then((r) => r.data),
-  promote: (id: number) =>
-    client.post<Paper>(`/papers/${id}/promote`).then((r) => r.data),
   deleteBatch: (ids: number[]) =>
     client.delete<{ deleted: number }>('/papers/batch', { data: { ids } }).then((r) => r.data),
   moveBatch: (ids: number[], is_core: boolean) =>
     client.patch<{ updated: number }>('/papers/batch/tier', { ids, is_core }).then((r) => r.data),
   // 走 client.baseURL（默认 /api），反代/路径前缀变化时跟 axios 一致
   citationBibUrl: (id: number) => `${API_BASE_URL}/papers/${id}/citations.bib`,
-  generateCitation: (id: number) =>
-    client.post(`/papers/${id}/citation`, {}).then((r) => r.data),
   aiAnalyze: (id: number) =>
     client.post<Paper>(`/papers/${id}/ai-analyze`).then((r) => r.data),
   upload: (file: File) => {
@@ -70,15 +61,6 @@ export const papersApi = {
       )
       .then((r) => r.data)
   },
-}
-
-export const digestApi = {
-  send: () => client.post<DigestResult>('/digest/send').then((r) => r.data),
-}
-
-export const tasksApi = {
-  list: (params?: { status?: string; type?: string; limit?: number }) =>
-    client.get<ListResponse<Task>>('/tasks', { params }).then((r) => r.data.items),
 }
 
 export const subscriptionsApi = {
@@ -98,14 +80,6 @@ export const subscriptionsApi = {
     client.delete(`/subscriptions/${id}`, { params: force ? { force: 1 } : undefined }),
 }
 
-export const healthApi = {
-  ping: () => client.get<{ ok: boolean }>('/health').then((r) => r.data),
-}
-
-export const failuresApi = {
-  list: () => client.get<FailuresResponse>('/failures').then((r) => r.data),
-}
-
 export const exploreApi = {
   getCards: (subId: number, limit = 10, excludeIds: number[] = []) =>
     client.get<ExploreCardsResponse>('/explore/cards', {
@@ -113,8 +87,6 @@ export const exploreApi = {
     }),
   recordAction: (poolId: number, action: 'saved' | 'skipped' | 'passed') =>
     client.post<{ ok: boolean; paper_id: number | null }>('/explore/' + poolId + '/action', { action }),
-  refill: (subId: number) =>
-    client.post<{ added: number; scored: number; embedded: number }>('/explore/refill', null, { params: { sub_id: subId } }),
   undo: (poolId: number) =>
     client.post(`/explore/${poolId}/undo`),
 }
