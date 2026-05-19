@@ -212,17 +212,19 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
         llm_queued = len(needs_scoring)
         from database import SessionLocal as _SL
         def _bg_llm(sid, desc, ids):
-            s = _SL()
-            try:
-                from services.subscription_service import _score_batch
-                pending = list(s.execute(
-                    select(models.ExplorePool).where(
-                        models.ExplorePool.id.in_(ids),
-                        models.ExplorePool.scored_at.is_(None),
-                    )
-                ).scalars().all())
-                for i in range(0, len(pending), 5):
-                    batch = pending[i:i + 5]
+            from services.subscription_service import _score_batch
+
+            def _run_batch(batch_ids):
+                s = _SL()
+                try:
+                    batch = list(s.execute(
+                        select(models.ExplorePool).where(
+                            models.ExplorePool.id.in_(batch_ids),
+                            models.ExplorePool.scored_at.is_(None),
+                        )
+                    ).scalars().all())
+                    if not batch:
+                        return
                     try:
                         _score_batch(s, desc, batch)
                     except Exception as exc:
@@ -232,12 +234,21 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
                             if it.score_attempts >= 3:
                                 it.scored_at = _utcnow()
                                 it.llm_reason = "LLM 失败 3 次已放弃"
-                    s.commit()  # commit each batch immediately, survive partial restart
+                    s.commit()
+                except Exception as exc:
+                    _log.error("_bg_llm batch failed sub=%d: %s", sid, exc)
+                finally:
+                    s.close()
+
+            try:
+                batches = [ids[i:i + 5] for i in range(0, len(ids), 5)]
+                with ThreadPoolExecutor(max_workers=5) as ex:
+                    list(ex.map(_run_batch, batches))
             except Exception as exc:
                 _log.error("_bg_llm failed sub=%d: %s", sid, exc)
             finally:
-                s.close()
                 _scoring_subs.discard(sid)
+
         threading.Thread(target=_bg_llm, args=(sub_id, description, needs_scoring), daemon=True).start()
 
     return {"embedded": embedded, "llm_queued": llm_queued, "errors": 0}
