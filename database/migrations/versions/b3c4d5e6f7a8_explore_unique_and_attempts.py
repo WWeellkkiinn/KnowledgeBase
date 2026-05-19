@@ -39,7 +39,19 @@ def upgrade() -> None:
     # 5. Subscription: add last_filled_at
     op.add_column('subscriptions', sa.Column('last_filled_at', sa.DateTime(), nullable=True))
 
-    # 6. ExplorePool: add unique constraint on (subscription_id, external_id)
+    # 6. Dedup existing rows before adding unique constraint
+    #    Keep the row with the highest id (most recent insertion) per (sub_id, external_id) group.
+    op.execute("""
+        DELETE FROM explore_pool
+        WHERE external_id IS NOT NULL
+          AND id NOT IN (
+            SELECT MAX(id) FROM explore_pool
+            WHERE external_id IS NOT NULL
+            GROUP BY subscription_id, external_id
+          )
+    """)
+
+    # 7. ExplorePool: add unique constraint on (subscription_id, external_id)
     #    SQLite allows multiple NULLs in a unique index, so a plain UniqueConstraint suffices.
     op.create_index(
         'uq_explore_sub_external',
