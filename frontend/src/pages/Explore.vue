@@ -21,12 +21,11 @@ const sub = ref<Subscription | null>(null)
 const cardRef = ref<HTMLDivElement>()
 
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null
-let cardEl: HTMLElement | null = null
 let isLoadingMore = false
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const EMPTY_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center;font-family:Inter,'Noto Sans SC',sans-serif"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"><circle cx="20" cy="20" r="16"/></svg><div style="font-size:14px;font-weight:500;color:#334155;margin-top:14px">暂时没有新内容</div><div style="font-size:12px;color:#94a3b8;margin-top:6px">正在后台为你准备，请稍后</div></div>`
-const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div><style>@keyframes kb-pulse{0%,100%{opacity:1}50%{opacity:.5}}</style>`
+const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div>`
 
 function snapAllBack() {
   const m = cardRef.value?.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
@@ -39,37 +38,43 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   if (animating.value || !cards.value[0] || !cardRef.value) return
   animating.value = true
   const card = cards.value[0]
-  const W = (cardRef.value.offsetWidth ?? 320) + 16
-  const anim = cardRef.value.animate(
-    [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
-    { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-  )
-  await anim.finished
-  anim.cancel()
-  prevCard.value = card
-  cards.value = cards.value.slice(1)
-  animating.value = false
-  exploreApi.recordAction(card.id, action).catch(() => {})
-  if (cards.value.length <= 10) loadMoreCards()
+  try {
+    const W = (cardRef.value.offsetWidth ?? 320) + 16
+    const anim = cardRef.value.animate(
+      [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
+      { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
+    )
+    await anim.finished
+    anim.cancel()
+    prevCard.value = card
+    cards.value = cards.value.slice(1)
+    exploreApi.recordAction(card.id, action).catch(() => {})
+    if (cards.value.length <= 10) loadMoreCards()
+  } finally {
+    animating.value = false
+  }
 }
 
 async function doUndo() {
   if (animating.value || !prevCard.value || !cardRef.value) return
   animating.value = true
   const undoCard = prevCard.value
-  const W = (cardRef.value.offsetWidth ?? 320) + 16
-  const m = cardRef.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
-  const curDx = m ? parseFloat(m[1]) : 0
-  const anim = cardRef.value.animate(
-    [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
-    { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-  )
-  await anim.finished
-  anim.cancel()
-  cards.value = [undoCard, ...cards.value]
-  prevCard.value = null
-  animating.value = false
-  exploreApi.undo(undoCard.id).catch(() => {})
+  try {
+    const W = (cardRef.value.offsetWidth ?? 320) + 16
+    const m = cardRef.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
+    const curDx = m ? parseFloat(m[1]) : 0
+    const anim = cardRef.value.animate(
+      [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
+      { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
+    )
+    await anim.finished
+    anim.cancel()
+    cards.value = [undoCard, ...cards.value]
+    prevCard.value = null
+    exploreApi.undo(undoCard.id).catch(() => {})
+  } finally {
+    animating.value = false
+  }
 }
 
 async function loadMoreCards() {
@@ -102,10 +107,17 @@ function scheduleRetry() {
 async function loadCards() {
   if (!sub.value) { cards.value = []; loading.value = false; return }
   loading.value = true
-  const res = await exploreApi.getCards(sub.value.id, 20)
-  cards.value = res.data.items
-  loading.value = false
-  if (cards.value.length === 0) scheduleRetry()
+  try {
+    const res = await exploreApi.getCards(sub.value.id, 20)
+    if (cards.value.length === 0) {
+      cards.value = res.data.items
+      if (cards.value.length === 0) scheduleRetry()
+    }
+  } catch {
+    cards.value = []
+  } finally {
+    loading.value = false
+  }
 }
 
 async function loadSubscription() {
@@ -164,14 +176,10 @@ onMounted(async () => {
   subsStore.fetchAll()
   await loadSubscription()
   await loadCards()
-  cardEl = cardRef.value ?? null
-  cardEl?.addEventListener('touchmove', onTouchMove, { passive: false })
 })
 
 onBeforeUnmount(() => {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
-  cardEl?.removeEventListener('touchmove', onTouchMove)
-  cardEl = null
 })
 </script>
 
@@ -193,7 +201,7 @@ onBeforeUnmount(() => {
       @touchend.passive="onTouchEnd"
       @touchcancel.passive="onTouchCancel"
     >
-      <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current">
+      <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current" @touchmove="onTouchMove">
         <div class="card-content-area" v-html="loading ? LOADING_HTML : (cards[0]?.card_html ?? EMPTY_HTML)"></div>
         <div class="card-action-bar" v-if="!loading && cards.length > 0">
           <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
@@ -300,6 +308,11 @@ onBeforeUnmount(() => {
 .card-action-bar .btn-pass { background: #64748b; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
 .card-action-bar .btn-save { background: #16a34a; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
 .card-action-bar button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+@keyframes kb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .5; }
+}
 
 .sheet-overlay {
   position: fixed;

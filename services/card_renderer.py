@@ -53,7 +53,7 @@ def render_subscription_card(result, subscription, card_index: int | None = None
         result_id=result.id,
         paper_id=result.paper_id,
         title=meta.get("title") or "",
-        url=meta.get("url") or "",
+        url=(_u if (_u := meta.get("url") or "").lower().startswith(("http://", "https://")) else ""),
         title_zh=result.title_zh or "",
         llm_score=result.llm_score,
         display_date=_display_date(meta),
