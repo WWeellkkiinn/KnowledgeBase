@@ -204,15 +204,16 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div class="graph-wrap h-[calc(100dvh-14rem)] md:h-[calc(100dvh-12rem)] min-h-[480px]">
-      <LoadingSkeleton v-if="showSkeleton" variant="card" :count="1" />
-      <ErrorState v-else-if="error" :message="error" @retry="render" />
-      <EmptyState v-else-if="loaded && stats.nodes === 0" title="还没有引用网络" description="先在论文库里启动引用追踪" />
+    <div class="graph-wrap relative h-[calc(100dvh-14rem)] md:h-[calc(100dvh-12rem)] min-h-[480px]">
       <div
-        v-else
         ref="container"
         class="h-full w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
       ></div>
+      <div v-if="showSkeleton" class="absolute inset-0">
+        <LoadingSkeleton variant="card" :count="1" />
+      </div>
+      <ErrorState v-else-if="error" class="absolute inset-0" :message="error" @retry="render" />
+      <EmptyState v-else-if="loaded && stats.nodes === 0" class="absolute inset-0" title="还没有引用网络" description="先在论文库里启动引用追踪" />
     </div>
   </section>
 </template>

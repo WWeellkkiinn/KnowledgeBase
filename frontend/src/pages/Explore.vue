@@ -26,16 +26,28 @@ const cardRef = ref<HTMLDivElement>()
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null
 let isLoadingMore = false
 let retryTimer: ReturnType<typeof setTimeout> | null = null
+let snapAnim: Animation | null = null
+let actionQueue: Promise<unknown> = Promise.resolve()
+function queueRecord(fn: () => Promise<unknown>) {
+  actionQueue = actionQueue.then(fn).catch(() => {})
+}
 
 const EMPTY_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center;font-family:Inter,'Noto Sans SC',sans-serif"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"><circle cx="20" cy="20" r="16"/></svg><div style="font-size:14px;font-weight:500;color:#334155;margin-top:14px">暂时没有新内容</div><div style="font-size:12px;color:#94a3b8;margin-top:6px">正在后台为你准备，请稍后</div></div>`
 const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div>`
 
 function snapAllBack() {
+  if (snapAnim) { snapAnim.cancel(); snapAnim = null }
   const m = cardRef.value?.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
   const curDx = m ? parseFloat(m[1]) : 0
   const opts = { duration: 220, easing: ENTER_EASING }
   const animation = cardRef.value?.animate([{ transform: `translateX(${curDx}px)` }, { transform: 'none' }], opts)
-  if (animation) animation.onfinish = () => { if (cardRef.value) cardRef.value.style.transform = '' }
+  if (animation) {
+    snapAnim = animation
+    animation.onfinish = () => {
+      if (cardRef.value) cardRef.value.style.transform = ''
+      snapAnim = null
+    }
+  }
 }
 
 async function doAction(action: 'saved' | 'skipped' | 'passed') {
@@ -48,13 +60,13 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
       [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
       { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
     )
-    await anim.finished
+    await anim.finished.catch(() => {})
     anim.cancel()
     prevCard.value = card
     prevAction.value = action
     sessionStats[action]++
     cards.value = cards.value.slice(1)
-    exploreApi.recordAction(card.id, action).catch(() => {})
+    queueRecord(() => exploreApi.recordAction(card.id, action))
     if (cards.value.length <= 10) loadMoreCards()
   } finally {
     animating.value = false
@@ -73,7 +85,7 @@ async function doUndo() {
       [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
       { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
     )
-    await anim.finished
+    await anim.finished.catch(() => {})
     anim.cancel()
     cards.value = [undoCard, ...cards.value]
     if (prevAction.value) {
@@ -81,7 +93,7 @@ async function doUndo() {
     }
     prevCard.value = null
     prevAction.value = null
-    exploreApi.undo(undoCard.id).catch(() => {})
+    queueRecord(() => exploreApi.undo(undoCard.id))
   } finally {
     animating.value = false
   }
@@ -125,6 +137,7 @@ async function loadCards() {
     }
   } catch {
     cards.value = []
+    scheduleRetry()
   } finally {
     loading.value = false
   }
@@ -137,6 +150,7 @@ async function loadSubscription() {
 
 function onTouchStart(e: TouchEvent) {
   if (animating.value) return
+  if (snapAnim) { snapAnim.cancel(); snapAnim = null }
   sx = e.touches[0].clientX
   sy = e.touches[0].clientY
   swipeDir = null

@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { nav } from '@/composables/useNav'
+
+const route = useRoute()
+function isActive(to: string) {
+  return route.path === to
+}
 </script>
 
 <template>
@@ -19,13 +24,19 @@ import { nav } from '@/composables/useNav'
         v-for="item in nav"
         :key="item.to"
         :to="item.to"
-        class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors relative"
-        active-class="bg-[color:var(--color-accent-soft)] text-[color:var(--color-accent)] sidebar-active"
-        :exact="item.to === '/'"
+        :class="[
+          'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors relative',
+          isActive(item.to)
+            ? 'bg-[color:var(--color-accent-soft)] text-[color:var(--color-accent)] sidebar-active'
+            : 'text-slate-600 hover:bg-slate-50',
+        ]"
       >
         <!-- 左侧蓝条（active 态） -->
         <span
-          class="active-bar absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 rounded-full bg-[color:var(--color-accent)] opacity-0"
+          :class="[
+            'active-bar absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 rounded-full bg-[color:var(--color-accent)]',
+            isActive(item.to) ? 'opacity-100' : 'opacity-0',
+          ]"
         ></span>
         <!-- icon -->
         <span class="w-[18px] h-[18px] shrink-0" v-html="item.icon"></span>
@@ -37,10 +48,3 @@ import { nav } from '@/composables/useNav'
     <div class="h-6"></div>
   </aside>
 </template>
-
-<style scoped>
-.router-link-active .active-bar,
-.router-link-exact-active .active-bar {
-  opacity: 1;
-}
-</style>

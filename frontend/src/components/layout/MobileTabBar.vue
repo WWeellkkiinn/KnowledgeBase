@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { nav } from '@/composables/useNav'
+
+const route = useRoute()
+function isActive(to: string) {
+  return route.path === to
+}
 </script>
 
 <template>
@@ -12,9 +17,10 @@ import { nav } from '@/composables/useNav'
         v-for="item in nav"
         :key="item.to"
         :to="item.to"
-        class="flex flex-col items-center justify-center gap-0.5 text-slate-500 transition-colors"
-        active-class="text-[color:var(--color-accent)]"
-        :exact="item.to === '/'"
+        :class="[
+          'flex flex-col items-center justify-center gap-0.5 transition-colors',
+          isActive(item.to) ? 'text-[color:var(--color-accent)]' : 'text-slate-500',
+        ]"
       >
         <span class="w-[22px] h-[22px]" v-html="item.icon"></span>
         <span class="text-[11px] font-medium leading-none">{{ item.label }}</span>
