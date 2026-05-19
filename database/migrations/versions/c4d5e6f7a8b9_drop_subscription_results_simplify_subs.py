@@ -14,23 +14,37 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade():
-    op.drop_table('subscription_results')
+def _has_table(name: str) -> bool:
+    bind = op.get_bind()
+    rows = bind.exec_driver_sql(
+        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{name}'"
+    ).fetchall()
+    return bool(rows)
 
-    # Drop indexes that reference columns being removed before batch alter
+
+def _has_column(table: str, col: str) -> bool:
+    bind = op.get_bind()
+    rows = bind.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == col for r in rows)
+
+
+def upgrade():
+    if _has_table('subscription_results'):
+        op.drop_table('subscription_results')
+
+    # Drop stale indexes that reference columns being removed
     bind = op.get_bind()
     existing_indexes = {r[1] for r in bind.exec_driver_sql("PRAGMA index_list(subscriptions)").fetchall()}
     for idx in ('ix_subscriptions_active_next', 'ix_subscriptions_next_run_at'):
         if idx in existing_indexes:
             op.drop_index(idx, table_name='subscriptions')
 
-    with op.batch_alter_table('subscriptions', recreate='always') as batch_op:
-        batch_op.drop_column('type')
-        batch_op.drop_column('target_json')
-        batch_op.drop_column('cron_expr')
-        batch_op.drop_column('last_run_at')
-        batch_op.drop_column('next_run_at')
-        batch_op.drop_column('last_notified_at')
+    cols_to_drop = [c for c in ('type', 'target_json', 'cron_expr', 'last_run_at', 'next_run_at', 'last_notified_at')
+                    if _has_column('subscriptions', c)]
+    if cols_to_drop:
+        with op.batch_alter_table('subscriptions', recreate='always') as batch_op:
+            for col in cols_to_drop:
+                batch_op.drop_column(col)
 
 
 def downgrade():
