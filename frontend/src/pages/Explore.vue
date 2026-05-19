@@ -256,9 +256,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   flex-shrink: 0;
-  max-width: 640px;
   width: 100%;
-  margin: 0 auto;
 }
 
 .sub-label { font-size: 18px; font-weight: 700; color: #0f172a; }
@@ -299,9 +297,10 @@ onBeforeUnmount(() => {
 }
 
 .card-stage {
-  flex: 0 1 640px;
-  min-width: 0;
+  flex: 1;
   min-height: 0;
+  max-width: 640px;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
