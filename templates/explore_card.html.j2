@@ -11,6 +11,10 @@
     {{ display_date }}{% if authors %} · {{ authors }}{% endif %}{% if venue_name %} (<em style="font-style:italic;color:#475569">{{ venue_name }}</em>{% if rank_badges %} · {% for b in rank_badges %}{% if b.label == 'SCI' %}<span style="background:#dbeafe;color:#1d4ed8;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">{{ b.value }}</span>{% elif b.label == 'SSCI' %}<span style="background:#e0e7ff;color:#4338ca;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">{{ b.value }}</span>{% elif b.label == 'IF' %}<span style="background:#dcfce7;color:#15803d;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">IF {{ b.value }}</span>{% elif b.label == '中科院' %}<span style="background:#ffedd5;color:#c2410c;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">{{ b.value }}</span>{% elif b.label == 'Top' %}<span style="background:#ffe4e6;color:#be123c;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">Top</span>{% elif b.label == 'CCF' %}<span style="background:#f3e8ff;color:#7e22ce;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">CCF {{ b.value }}</span>{% elif b.label == 'CSSCI' %}<span style="background:#ccfbf1;color:#0f766e;border-radius:3px;padding:0 5px;font-size:11px;font-style:normal">CSSCI</span>{% endif %}{% if not loop.last %} {% endif %}{% endfor %}{% endif %}){% endif %}{% if cited_by_count %} · cited {{ cited_by_count }}{% endif %}
   </p>
 
+  {% if not research_question and not key_findings and not methodology and abstract %}
+  <p style="margin:10px 0 0;color:#475569;font-size:13px">{{ abstract[:500] }}{% if abstract|length > 500 %}…{% endif %}</p>
+  {% endif %}
+
   {% if tags %}
   <p style="margin:8px 0 0">
     {% for tag in tags %}<span style="background:#dbeafe;color:#1d4ed8;border-radius:9999px;padding:1px 9px;font-size:12px;display:inline-block;margin:2px 4px 0 0">{{ tag }}</span>{% endfor %}

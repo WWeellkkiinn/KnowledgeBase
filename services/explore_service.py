@@ -325,7 +325,8 @@ def get_explore_cards(db, sub_id, limit=10):
         select(models.ExplorePool).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
-            (models.ExplorePool.pre_score.isnot(None)) | (models.ExplorePool.scored_at.isnot(None)),
+            (models.ExplorePool.pre_score.is_(None) & models.ExplorePool.scored_at.isnot(None))
+            | (models.ExplorePool.pre_score >= 0),
         ).order_by(
             models.ExplorePool.pre_score.desc().nulls_last(),
             models.ExplorePool.llm_score.desc().nulls_last(),
@@ -441,6 +442,7 @@ def render_explore_card(item, sub, embedding_score: float | None = None,
         cited_by_count=meta.get("cited_by_count"),
         venue_name=venue_name,
         rank_badges=rank_badges,
+        abstract=meta.get("abstract") or "",
         tags=list(item.tags_json or [])[:4],
         research_question=item.research_question or "",
         methodology=item.methodology or "",
