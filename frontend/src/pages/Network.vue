@@ -181,41 +181,38 @@ onBeforeUnmount(() => {
       </template>
     </PageHeader>
 
-    <LoadingSkeleton v-if="showSkeleton" variant="card" :count="1" />
-    <ErrorState v-else-if="error" :message="error" @retry="render" />
-    <EmptyState
-      v-else-if="loaded && stats.nodes === 0"
-      title="还没有引用网络"
-      description="先在论文库里启动引用追踪"
-    />
-    <template v-else>
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-3 w-3 rounded-full" style="background:#1E40AF"></span>
-          一级期刊
-        </span>
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-3 w-3 rounded-full" style="background:#3B82F6"></span>
-          二级期刊
-        </span>
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-3 w-3 rounded-full" style="background:#93C5FD"></span>
-          三级期刊
-        </span>
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-3 w-3 rounded-full" style="background:#CBD5E1"></span>
-          未知 / 无期刊
-        </span>
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-3 w-3 rounded-full border-[2.5px]" style="background:#fff;border-color:#D97706"></span>
-          高被引
-        </span>
-      </div>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
+      <span class="flex items-center gap-1">
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#1E40AF"></span>
+        一级期刊
+      </span>
+      <span class="flex items-center gap-1">
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#3B82F6"></span>
+        二级期刊
+      </span>
+      <span class="flex items-center gap-1">
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#93C5FD"></span>
+        三级期刊
+      </span>
+      <span class="flex items-center gap-1">
+        <span class="inline-block h-3 w-3 rounded-full" style="background:#CBD5E1"></span>
+        未知 / 无期刊
+      </span>
+      <span class="flex items-center gap-1">
+        <span class="inline-block h-3 w-3 rounded-full border-[2.5px]" style="background:#fff;border-color:#D97706"></span>
+        高被引
+      </span>
+    </div>
 
+    <div class="graph-wrap h-[calc(100dvh-12rem)] min-h-[480px]">
+      <LoadingSkeleton v-if="showSkeleton" variant="card" :count="1" />
+      <ErrorState v-else-if="error" :message="error" @retry="render" />
+      <EmptyState v-else-if="loaded && stats.nodes === 0" title="还没有引用网络" description="先在论文库里启动引用追踪" />
       <div
+        v-else
         ref="container"
-        class="h-[calc(100dvh-12rem)] min-h-[480px] w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
+        class="h-full w-full rounded-lg border border-slate-200 bg-[#F8FAFC]"
       ></div>
-    </template>
+    </div>
   </section>
 </template>

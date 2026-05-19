@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, Path as _Path
 from typing import Optional
 
@@ -353,7 +353,14 @@ def papers_stats():
         select(func.count()).select_from(models.Paper)
         .where(models.Paper.status == "analyzed")
     ).scalar_one()
-    return jsonify({"total": int(total), "analyzed": int(analyzed)})
+    week_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+    new_this_week = g.db.execute(
+        select(func.count(models.Paper.id)).where(models.Paper.added_at >= week_ago)
+    ).scalar_one()
+    core_count = g.db.execute(
+        select(func.count(models.Paper.id)).where(models.Paper.is_core.is_(True))
+    ).scalar_one()
+    return jsonify({"total": int(total), "analyzed": int(analyzed), "new_this_week": int(new_this_week), "core_count": int(core_count)})
 
 
 @bp.get("/papers/<int:paper_id>")

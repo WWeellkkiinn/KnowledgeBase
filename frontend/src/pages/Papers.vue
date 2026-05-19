@@ -428,14 +428,7 @@ function tierClass(tier: number | null | undefined) {
       </div>
     </div>
 
-    <LoadingSkeleton v-if="showSkeleton" variant="row" :count="8" />
-    <ErrorState v-else-if="error" :message="error" @retry="fetchPage" />
-    <EmptyState
-      v-else-if="!loading && items.length === 0"
-      title="还没有论文"
-      description="点击上方上传按钮添加你的第一篇 PDF"
-    />
-    <div v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+    <div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <table class="w-full text-sm">
         <thead class="sticky top-0 bg-white/95 backdrop-blur z-10 text-left text-xs uppercase text-slate-500">
           <tr>
@@ -455,59 +448,76 @@ function tierClass(tier: number | null | undefined) {
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
-          <tr
-            v-for="p in items"
-            :key="p.id"
-            class="hover:bg-slate-50 transition-colors"
-            :class="{ 'bg-blue-50': selectedIds.has(p.id) }"
-          >
-            <td class="px-3 py-2">
-              <input
-                type="checkbox"
-                :checked="selectedIds.has(p.id)"
-                @change="toggleOne(p.id)"
-              />
-            </td>
-            <td class="px-3 py-2 max-w-xs">
-              <RouterLink
-                :to="`/papers/${p.id}`"
-                class="text-blue-600 hover:underline line-clamp-2"
-              >
-                {{ p.title || p.stem }}
-              </RouterLink>
-            </td>
-            <td class="px-3 py-2">
-              <div v-if="p.tags?.length" class="flex flex-wrap gap-1">
-                <span
-                  v-for="tag in p.tags.slice(0, 3)"
-                  :key="tag"
-                  class="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-600"
-                >{{ tag }}</span>
-                <span v-if="p.tags.length > 3" class="text-xs text-slate-400">+{{ p.tags.length - 3 }}</span>
-              </div>
-              <span v-else class="text-slate-300">—</span>
-            </td>
-            <td class="px-3 py-2 text-xs text-slate-500">
-              <span v-if="Array.isArray(p.authors_json) && p.authors_json.length">
-                {{ (p.authors_json as string[]).slice(0, 3).join(', ') }}{{ p.authors_json.length > 3 ? ' 等' : '' }}
-              </span>
-              <span v-else class="text-slate-300">—</span>
-            </td>
-            <td class="px-3 py-2 text-slate-600">{{ p.year ?? '—' }}</td>
-            <td class="px-3 py-2">
-              <template v-if="p.journal">
-                <span class="text-slate-700 text-xs">{{ p.journal.name }}</span>
-                <span
-                  v-if="p.journal.quality_tier != null"
-                  class="ml-1.5 rounded px-1 py-0.5 text-xs font-medium"
-                  :class="tierClass(p.journal.quality_tier)"
-                >
-                  T{{ p.journal.quality_tier }}
-                </span>
-              </template>
-              <span v-else class="text-slate-400">—</span>
+          <tr v-if="showSkeleton">
+            <td :colspan="6" class="p-0">
+              <LoadingSkeleton variant="row" :count="5" />
             </td>
           </tr>
+          <tr v-else-if="error">
+            <td :colspan="6" class="p-0">
+              <ErrorState :message="error" @retry="fetchPage" />
+            </td>
+          </tr>
+          <tr v-else-if="items.length === 0">
+            <td :colspan="6" class="p-0">
+              <EmptyState title="还没有论文" description="点击上方上传按钮添加你的第一篇 PDF" />
+            </td>
+          </tr>
+          <template v-else>
+            <tr
+              v-for="p in items"
+              :key="p.id"
+              class="hover:bg-slate-50 transition-colors"
+              :class="{ 'bg-blue-50': selectedIds.has(p.id) }"
+            >
+              <td class="px-3 py-2">
+                <input
+                  type="checkbox"
+                  :checked="selectedIds.has(p.id)"
+                  @change="toggleOne(p.id)"
+                />
+              </td>
+              <td class="px-3 py-2 max-w-xs">
+                <RouterLink
+                  :to="`/papers/${p.id}`"
+                  class="text-blue-600 hover:underline line-clamp-2"
+                >
+                  {{ p.title || p.stem }}
+                </RouterLink>
+              </td>
+              <td class="px-3 py-2">
+                <div v-if="p.tags?.length" class="flex flex-wrap gap-1">
+                  <span
+                    v-for="tag in p.tags.slice(0, 3)"
+                    :key="tag"
+                    class="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-600"
+                  >{{ tag }}</span>
+                  <span v-if="p.tags.length > 3" class="text-xs text-slate-400">+{{ p.tags.length - 3 }}</span>
+                </div>
+                <span v-else class="text-slate-300">—</span>
+              </td>
+              <td class="px-3 py-2 text-xs text-slate-500">
+                <span v-if="Array.isArray(p.authors_json) && p.authors_json.length">
+                  {{ (p.authors_json as string[]).slice(0, 3).join(', ') }}{{ p.authors_json.length > 3 ? ' 等' : '' }}
+                </span>
+                <span v-else class="text-slate-300">—</span>
+              </td>
+              <td class="px-3 py-2 text-slate-600">{{ p.year ?? '—' }}</td>
+              <td class="px-3 py-2">
+                <template v-if="p.journal">
+                  <span class="text-slate-700 text-xs">{{ p.journal.name }}</span>
+                  <span
+                    v-if="p.journal.quality_tier != null"
+                    class="ml-1.5 rounded px-1 py-0.5 text-xs font-medium"
+                    :class="tierClass(p.journal.quality_tier)"
+                  >
+                    T{{ p.journal.quality_tier }}
+                  </span>
+                </template>
+                <span v-else class="text-slate-400">—</span>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>
