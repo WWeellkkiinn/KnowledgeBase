@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import StatCard from '@/components/StatCard.vue'
 import { useTasksStore } from '@/stores/tasks'
 import { usePapersStore } from '@/stores/papers'
-import { useProgressStore } from '@/stores/progress'
 import { digestApi, subscriptionsApi } from '@/api/endpoints'
 
 const tasks = useTasksStore()
 const papers = usePapersStore()
-const progress = useProgressStore()
 const refreshing = ref(false)
-const watched = ref<Set<string>>(new Set())
 const activeTopicCount = ref(0)
 const totalTopicCount = ref(0)
 
@@ -30,20 +27,8 @@ async function refresh() {
 }
 
 onMounted(() => {
-  progress.initOnce()
   refresh()
 })
-
-onBeforeUnmount(() => {
-  for (const tid of watched.value) progress.unsubscribe(tid)
-  watched.value.clear()
-})
-
-function watchTask(taskId: number | string) {
-  const tid = String(taskId)
-  progress.subscribe(tid)
-  watched.value.add(tid)
-}
 
 const digestSending = ref(false)
 const digestMsg = ref('')
@@ -105,48 +90,5 @@ async function sendDigest() {
         :hint="`共 ${totalTopicCount} 条`"
       />
     </div>
-
-    <section class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-      <div class="rounded-lg border border-slate-200 bg-white p-4">
-        <div class="mb-3 flex items-center justify-between">
-          <h2 class="font-semibold">最近任务</h2>
-        </div>
-        <p v-if="tasks.items.length === 0" class="text-sm text-slate-500">
-          暂无任务。
-        </p>
-        <ul v-else class="divide-y divide-slate-100">
-          <li
-            v-for="t in tasks.recent"
-            :key="t.id"
-            class="flex items-center justify-between py-2 text-sm"
-          >
-            <div class="flex items-center gap-3">
-              <span
-                class="rounded px-1.5 py-0.5 text-xs font-medium"
-                :class="{
-                  'bg-amber-100 text-amber-700': t.status === 'queued',
-                  'bg-blue-100 text-blue-700': t.status === 'running',
-                  'bg-emerald-100 text-emerald-700': t.status === 'done',
-                  'bg-rose-100 text-rose-700': t.status === 'failed',
-                }"
-              >
-                {{ { queued: '排队中', running: '运行中', done: '完成', failed: '失败' }[t.status] ?? t.status }}
-              </span>
-              <span class="text-slate-600">#{{ t.id }} {{ t.type }}</span>
-              <span v-if="t.paper_id" class="text-xs text-slate-400">
-                论文 {{ t.paper_id }}
-              </span>
-            </div>
-            <button
-              v-if="t.status === 'running' || t.status === 'queued'"
-              class="text-xs text-blue-600 hover:underline"
-              @click="watchTask(t.id)"
-            >
-              订阅
-            </button>
-          </li>
-        </ul>
-      </div>
-    </section>
   </section>
 </template>
