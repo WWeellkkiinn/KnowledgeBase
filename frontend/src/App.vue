@@ -38,7 +38,7 @@ const nav = [
         'flex-1 w-full',
         route.path !== '/explore'
           ? 'max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6'
-          : 'min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
+          : 'flex flex-col min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
       ]"
     >
       <RouterView />

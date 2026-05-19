@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { exploreApi, subscriptionsApi } from '@/api/endpoints'
 import type { ExploreCard, Subscription } from '@/types/api'
 import SubscriptionSheet from '@/components/SubscriptionSheet.vue'
@@ -19,7 +19,6 @@ const loading = ref(true)
 const sub = ref<Subscription | null>(null)
 
 const cardRef = ref<HTMLDivElement>()
-const cardContentRef = ref<HTMLDivElement>()
 
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null
 let cardEl: HTMLElement | null = null
@@ -28,12 +27,6 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const EMPTY_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;text-align:center;font-family:Inter,'Noto Sans SC',sans-serif"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"><circle cx="20" cy="20" r="16"/></svg><div style="font-size:14px;font-weight:500;color:#334155;margin-top:14px">暂时没有新内容</div><div style="font-size:12px;color:#94a3b8;margin-top:6px">正在后台为你准备，请稍后</div></div>`
 const LOADING_HTML = `<div style="padding:48px 24px;display:flex;flex-direction:column;gap:12px;align-items:stretch"><div style="height:14px;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:80%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div><div style="height:14px;width:60%;background:#e2e8f0;border-radius:6px;animation:kb-pulse 1.5s ease-in-out infinite"></div></div><style>@keyframes kb-pulse{0%,100%{opacity:1}50%{opacity:.5}}</style>`
-
-function stageCards() {
-  if (cardRef.value) cardRef.value.style.transform = ''
-  if (cardContentRef.value)
-    cardContentRef.value.innerHTML = loading.value ? LOADING_HTML : (cards.value[0]?.card_html ?? EMPTY_HTML)
-}
 
 function snapAllBack() {
   const m = cardRef.value?.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
@@ -55,7 +48,6 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   anim.cancel()
   prevCard.value = card
   cards.value = cards.value.slice(1)
-  stageCards()
   animating.value = false
   exploreApi.recordAction(card.id, action).catch(() => {})
   if (cards.value.length <= 10) loadMoreCards()
@@ -76,7 +68,6 @@ async function doUndo() {
   anim.cancel()
   cards.value = [undoCard, ...cards.value]
   prevCard.value = null
-  stageCards()
   animating.value = false
   exploreApi.undo(undoCard.id).catch(() => {})
 }
@@ -109,13 +100,11 @@ function scheduleRetry() {
 }
 
 async function loadCards() {
-  if (!sub.value) { cards.value = []; loading.value = false; nextTick(() => stageCards()); return }
+  if (!sub.value) { cards.value = []; loading.value = false; return }
   loading.value = true
-  nextTick(() => stageCards())
   const res = await exploreApi.getCards(sub.value.id, 20)
   cards.value = res.data.items
   loading.value = false
-  nextTick(() => stageCards())
   if (cards.value.length === 0) scheduleRetry()
 }
 
@@ -205,7 +194,7 @@ onBeforeUnmount(() => {
       @touchcancel.passive="onTouchCancel"
     >
       <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current">
-        <div ref="cardContentRef" class="card-content-area"></div>
+        <div class="card-content-area" v-html="loading ? LOADING_HTML : (cards[0]?.card_html ?? EMPTY_HTML)"></div>
         <div class="card-action-bar" v-if="!loading && cards.length > 0">
           <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
           <button class="btn-pass" :disabled="animating" @click="doAction('passed')">已读</button>
@@ -264,7 +253,6 @@ onBeforeUnmount(() => {
 .card-stage {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
