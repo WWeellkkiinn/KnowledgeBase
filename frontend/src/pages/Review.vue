@@ -179,7 +179,7 @@ watch(output, (v) => {
   <section class="space-y-4">
     <PageHeader title="综述" subtitle="选择论文生成 AI 综述" />
 
-    <div class="grid gap-4 lg:grid-cols-[300px_1fr]">
+    <div class="grid gap-4 xl:grid-cols-[300px_1fr]">
       <aside class="space-y-3">
         <div>
           <label class="mb-1 block text-xs font-semibold text-slate-600">

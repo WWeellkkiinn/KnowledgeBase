@@ -19,7 +19,7 @@ const routes: RouteRecordRaw[] = [
   },
 { path: '/feed', redirect: '/explore' },
   { path: '/recommendations', redirect: '/explore' },
-  { path: '/login', name: 'login', component: () => import('@/pages/Login.vue'), meta: { public: true } },
+  { path: '/login', name: 'login', component: () => import('@/pages/Login.vue'), meta: { public: true, sidebar: false } },
 ]
 
 const router = createRouter({

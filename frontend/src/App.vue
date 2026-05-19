@@ -1,48 +1,39 @@
 <script setup lang="ts">
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import ProgressToast from '@/components/ProgressToast.vue'
+import Sidebar from '@/components/layout/Sidebar.vue'
+import TopBar from '@/components/layout/TopBar.vue'
+import MobileTabBar from '@/components/layout/MobileTabBar.vue'
 
 const route = useRoute()
 
-const nav = [
-  { to: '/', label: '概览' },
-  { to: '/papers', label: '论文库' },
-  { to: '/network', label: '引用图' },
-  { to: '/review', label: '综述' },
-  { to: '/explore', label: '探索' },
-]
+const showLayout = computed(() => route.meta.sidebar !== false)
+const isExplore = computed(() => route.path === '/explore')
 </script>
 
 <template>
-  <div class="h-dvh flex flex-col">
-    <header class="bg-white border-b border-slate-200">
-      <nav class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-6">
-        <div class="text-lg font-sans font-semibold text-slate-800 shrink-0">KnowledgeBase</div>
-        <div class="overflow-x-auto">
-          <ul class="flex gap-4 text-sm whitespace-nowrap">
-            <li v-for="item in nav" :key="item.to">
-              <RouterLink
-                :to="item.to"
-                class="text-slate-600 hover:text-slate-900"
-                active-class="text-blue-600 font-semibold"
-              >
-                {{ item.label }}
-              </RouterLink>
-            </li>
-          </ul>
-        </div>
-      </nav>
-    </header>
-    <main
-      :class="[
-        'flex-1 w-full',
-        route.path !== '/explore'
-          ? 'max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6'
-          : 'flex flex-col min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
-      ]"
-    >
-      <RouterView />
-    </main>
-    <ProgressToast />
+  <!-- 登录页：跳过整套 layout -->
+  <RouterView v-if="!showLayout" />
+
+  <!-- 主 layout：侧栏 + 顶栏 + 主区域 + 移动 TabBar -->
+  <div v-else class="h-dvh flex">
+    <Sidebar />
+    <div class="flex-1 flex flex-col min-w-0">
+      <TopBar />
+      <main
+        :class="[
+          'flex-1 w-full overflow-y-auto',
+          isExplore
+            ? 'flex flex-col min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
+            : 'max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 py-6 pb-20 md:pb-6'
+        ]"
+      >
+        <RouterView />
+      </main>
+    </div>
+    <MobileTabBar />
   </div>
+
+  <ProgressToast />
 </template>

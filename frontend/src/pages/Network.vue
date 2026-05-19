@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div class="graph-wrap h-[calc(100dvh-12rem)] min-h-[480px]">
+    <div class="graph-wrap h-[calc(100dvh-14rem)] md:h-[calc(100dvh-12rem)] min-h-[480px]">
       <LoadingSkeleton v-if="showSkeleton" variant="card" :count="1" />
       <ErrorState v-else-if="error" :message="error" @retry="render" />
       <EmptyState v-else-if="loaded && stats.nodes === 0" title="还没有引用网络" description="先在论文库里启动引用追踪" />
