@@ -168,7 +168,7 @@ async function loadCards() {
 
 async function loadSubscription() {
   const items = await subscriptionsApi.list({ active: true })
-  sub.value = items.find((item: Subscription) => item.active && item.type === 'topic_search') ?? null
+  sub.value = items.find((item: Subscription) => item.active) ?? null
 }
 
 function onTouchStart(e: TouchEvent) {
