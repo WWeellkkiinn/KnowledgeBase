@@ -9,7 +9,7 @@
   naive/aware 混用陷阱。约定：写入侧统一用 `datetime.now(timezone.utc).replace(tzinfo=None)`，
   读出后视为 UTC。
 - PLAN §3 中的列 `index` 在 ORM 落地为 `ref_index`（`index` 是 SQL 关键字）。
-- JSON 列中可能 in-place 修改的字段（payload_json / target_json）用 MutableDict 包装。
+- JSON 列中可能 in-place 修改的字段（payload_json）用 MutableDict 包装。
 """
 from __future__ import annotations
 
@@ -153,55 +153,14 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    type: Mapped[str] = mapped_column(String(32), nullable=False)  # paper_citations|author_works|topic_search
-    target_json: Mapped[dict] = mapped_column(MutableJSON, nullable=False)
-    cron_expr: Mapped[str] = mapped_column(String(64), nullable=False)
-    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     active: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=text("1"), nullable=False, index=True
     )
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     generated_queries: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     query_refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     query_stats_json: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
     last_filled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-
-
-class SubscriptionResult(Base):
-    """订阅结果行。
-
-    llm_score / llm_reason / scored_at：LLM 相关性评分字段，由 score_pending_results 写入。
-    """
-
-    __tablename__ = "subscription_results"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    subscription_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    paper_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("papers.id", ondelete="SET NULL"), nullable=True
-    )
-    raw_metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    notified: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default=text("0"), nullable=False
-    )
-    found_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.current_timestamp(), nullable=False
-    )
-    llm_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    llm_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    scored_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    title_zh: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    tags_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    research_question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    score_attempts: Mapped[int] = mapped_column(
-        Integer, default=0, server_default=text("0"), nullable=False
-    )
 
 
 class ExplorePool(Base):
@@ -307,7 +266,6 @@ class VenueEasyscholarCache(Base):
 
 
 Index("ix_tasks_status_type", Task.status, Task.type)
-Index("ix_subscriptions_active_next", Subscription.active, Subscription.next_run_at)
 # /api/papers?status=&source= 常见过滤路径
 Index("ix_papers_status", Paper.status)
 Index("ix_papers_source", Paper.source)
@@ -319,7 +277,6 @@ __all__ = [
     "Edge",
     "Task",
     "Subscription",
-    "SubscriptionResult",
     "ExplorePool",
     "Citation",
     "SessionRecord",

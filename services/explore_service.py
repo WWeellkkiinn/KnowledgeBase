@@ -75,9 +75,6 @@ def fill_explore_pool(db, sub, target=200) -> dict:
         return {"added": 0, "existing": current}
 
     queries = list(sub.generated_queries or [])
-    legacy_query = (sub.target_json or {}).get("query") if hasattr(sub, "target_json") else None
-    if not queries and legacy_query:
-        queries = [legacy_query]
     if not queries:
         return {"added": 0, "existing": current}
 

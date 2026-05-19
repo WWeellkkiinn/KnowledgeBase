@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app import limiter
 from database import models
-from services.card_renderer import render_subscription_card
 
 
 _log = logging.getLogger(__name__)
@@ -688,44 +687,18 @@ def list_tasks():
     return jsonify({"items": [_task_to_dict(t) for t in rows]})
 
 
-# ─── M2.4 订阅 CRUD + inbox ────────────────────────────────────────
+# ─── 感兴趣领域 CRUD ────────────────────────────────────────────────
 
 
 def _sub_to_dict(s: models.Subscription) -> dict:
     return {
         "id": s.id,
-        "type": s.type,
-        "target": s.target_json,
-        "cron_expr": s.cron_expr,
+        "description": s.description or "",
         "active": bool(s.active),
-        "last_run_at": _iso_utc(s.last_run_at),
-        "next_run_at": _iso_utc(s.next_run_at),
-        "description": s.description,
-        "generated_queries": s.generated_queries,
+        "generated_queries": s.generated_queries or [],
         "queries_pending": bool(s.description and not s.generated_queries),
-    }
-
-
-def _result_to_dict(r: models.SubscriptionResult, sub: Optional[models.Subscription] = None,
-                    venue_cache: dict | None = None) -> dict:
-    if sub is None:
-        sub = g.db.get(models.Subscription, r.subscription_id)
-    return {
-        "id": r.id,
-        "subscription_id": r.subscription_id,
-        "paper_id": r.paper_id,
-        "metadata": r.raw_metadata_json,
-        "notified": bool(r.notified),
-        "found_at": _iso_utc(r.found_at),
-        "llm_score": r.llm_score,
-        "llm_reason": r.llm_reason,
-        "scored_at": _iso_utc(r.scored_at),
-        "title_zh": r.title_zh,
-        "tags": r.tags_json or [],
-        "research_question": r.research_question,
-        "methodology": r.methodology,
-        "key_findings": r.key_findings_json or [],
-        "card_html": render_subscription_card(r, sub, db_session=g.db, venue_cache=venue_cache),
+        "last_filled_at": _iso_utc(s.last_filled_at),
+        "query_refreshed_at": _iso_utc(s.query_refreshed_at),
     }
 
 
@@ -745,9 +718,6 @@ def create_subscription():
     try:
         sub = SubscriptionService().create(
             g.db,
-            type=body.get("type", ""),
-            target=body.get("target", {}),
-            cron_expr=body.get("cron_expr", "every 7d"),
             description=body.get("description", ""),
             active=bool(body.get("active", True)),
         )
@@ -770,9 +740,7 @@ def update_subscription(sub_id: int):
     try:
         sub = SubscriptionService.update(
             g.db, sub_id,
-            cron_expr=body.get("cron_expr"),
             active=body.get("active"),
-            target=body.get("target"),
             description=body.get("description"),
         )
     except ValueError as e:
@@ -789,116 +757,13 @@ def update_subscription(sub_id: int):
     return jsonify(_sub_to_dict(sub))
 
 
-@bp.post("/subscriptions/<int:sub_id>/run-now")
-@limiter.limit("10 per hour")
-def run_subscription_now(sub_id: int):
-    """手动立刻执行一个订阅，不等 cron tick。返回 {ran, found, errors}。
-
-    复用 SubscriptionService._execute_one 的内部逻辑，并按 run_due 的方式更新
-    last_run_at / next_run_at（保证立刻刷新后下次 cron 时间也被推后）。
-    """
-    from services import SubscriptionService
-    from services.subscription_service import _utcnow, compute_next_run_at
-
-    sub = g.db.get(models.Subscription, sub_id)
-    if sub is None:
-        return jsonify({"error": "not found"}), 404
-    if not sub.active:
-        return jsonify({"error": "subscription is paused"}), 409
-
-    svc = SubscriptionService()
-    try:
-        found = svc._execute_one(g.db, sub)
-    except Exception as e:
-        g.db.rollback()
-        return jsonify({"error": f"execute failed: {e}"}), 500
-    # 更新元数据（独立 try，与 run_due 对齐）
-    try:
-        now2 = _utcnow()
-        sub.last_run_at = now2
-        sub.next_run_at = compute_next_run_at(sub.cron_expr, now2)
-        g.db.commit()
-    except Exception as e:
-        g.db.rollback()
-        return jsonify({"error": f"metadata update failed: {e}"}), 500
-    return jsonify({"ran": 1, "found": found, "errors": 0, "next_run_at": sub.next_run_at.isoformat() if sub.next_run_at else None})
-
-
 @bp.delete("/subscriptions/<int:sub_id>")
 def delete_subscription(sub_id: int):
     from services import SubscriptionService
-    # 删除前若有未读 inbox 项，要求显式 ?force=1 确认（避免静默丢未读通知）
-    sub = g.db.get(models.Subscription, sub_id)
-    if sub is None:
+    if not SubscriptionService.delete(g.db, sub_id):
         return jsonify({"error": "not found"}), 404
-    unread = g.db.execute(
-        select(models.SubscriptionResult.id)
-        .where(models.SubscriptionResult.subscription_id == sub_id)
-        .where(models.SubscriptionResult.notified.is_(False))
-        .limit(1)
-    ).first()
-    if unread is not None and request.args.get("force") not in ("1", "true", "yes"):
-        return jsonify({
-            "error": "subscription has unread results",
-            "hint": "DELETE ?force=1 to confirm",
-        }), 409
-    SubscriptionService.delete(g.db, sub_id)
     g.db.commit()
     return "", 204
-
-
-@bp.get("/inbox")
-def list_inbox():
-    """订阅发现的新论文。?unread=1 只看未读。"""
-    unread = request.args.get("unread") in ("1", "true", "yes")
-    try:
-        limit = max(1, min(int(request.args.get("limit", 10)), 500))
-    except ValueError:
-        return jsonify({"error": "invalid pagination"}), 400
-    stmt = select(models.SubscriptionResult).order_by(
-        models.SubscriptionResult.llm_score.desc().nulls_last(),
-        models.SubscriptionResult.found_at.desc(),
-    )
-    if unread:
-        stmt = stmt.where(models.SubscriptionResult.notified.is_(False))
-    stmt = stmt.limit(limit)
-    rows = g.db.execute(stmt).scalars().all()
-    venue_names = {(r.raw_metadata_json or {}).get("venue_name") or "" for r in rows}
-    venue_names.discard("")
-    venue_cache = {}
-    if venue_names:
-        cache_rows = g.db.execute(
-            select(models.VenueEasyscholarCache).where(models.VenueEasyscholarCache.name.in_(list(venue_names)))
-        ).scalars().all()
-        venue_cache = {row.name: row.easyscholar_json for row in cache_rows}
-    sub_ids = {r.subscription_id for r in rows}
-    subs = {} if not sub_ids else {
-        s.id: s for s in g.db.execute(
-            select(models.Subscription).where(models.Subscription.id.in_(sub_ids))
-        ).scalars()
-    }
-    return jsonify({"items": [_result_to_dict(r, subs.get(r.subscription_id), venue_cache) for r in rows]})
-
-
-@bp.post("/inbox/<int:result_id>/import")
-def import_inbox_to_library(result_id: int):
-    """把订阅结果入库为 Paper stub，复用 LLM 分析结果。"""
-    from services.subscription_service import import_result_to_paper
-    try:
-        result = import_result_to_paper(g.db, result_id)
-        return jsonify(result)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@bp.post("/inbox/<int:result_id>/read")
-def mark_inbox_read(result_id: int):
-    r = g.db.get(models.SubscriptionResult, result_id)
-    if r is None:
-        return jsonify({"error": "not found"}), 404
-    r.notified = True
-    g.db.commit()
-    return jsonify(_result_to_dict(r))
 
 
 # ─── M2.5 BibTeX / APA 导出 ────────────────────────────────────────
