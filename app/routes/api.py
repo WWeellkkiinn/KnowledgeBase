@@ -1394,11 +1394,10 @@ def record_explore_action(pool_id: int):
 @bp.post("/explore/<int:pool_id>/undo")
 def explore_undo(pool_id: int):
     from services.explore_service import undo_explore_action
-    with Session() as db:
-        try:
-            return jsonify(undo_explore_action(db, pool_id))
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 404
+    try:
+        return jsonify(undo_explore_action(g.db, pool_id))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
 
 
 @bp.post("/explore/refill")

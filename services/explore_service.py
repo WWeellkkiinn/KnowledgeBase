@@ -4,6 +4,7 @@ import hashlib
 import logging
 import math
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -19,6 +20,7 @@ from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 _log = logging.getLogger(__name__)
 
 _NORM_TITLE_RE = re.compile(r"[^\w一-鿿]+", flags=re.UNICODE)
+_fill_lock = threading.Lock()
 _filling_subs: set[int] = set()   # 防止同一 sub_id 并发填充
 _scoring_subs: set[int] = set()   # 防止同一 sub_id 并发 LLM 评分
 
@@ -111,7 +113,7 @@ def fill_explore_pool(db, sub, target=200) -> dict:
             "per_page": per_query,
             "page": page,
             "select": "id,doi,title,abstract_inverted_index,authorships,publication_year,publication_date,cited_by_count,primary_location",
-            "sort": "cited_by_count:desc",
+            "sort": "publication_date:desc",
         }
         if mailto:
             params["mailto"] = mailto
@@ -208,7 +210,6 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     if needs_scoring and sub_id not in _scoring_subs:
         _scoring_subs.add(sub_id)
         llm_queued = len(needs_scoring)
-        import threading
         from database import SessionLocal as _SL
         def _bg_llm(sid, desc, ids):
             s = _SL()
@@ -226,9 +227,11 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
                         _score_batch(s, desc, batch)
                     except Exception as exc:
                         _log.warning("_bg_llm _score_batch failed sub=%d: %s", sid, exc)
-                        now = _utcnow()
                         for it in batch:
-                            it.scored_at = now
+                            it.score_attempts = (it.score_attempts or 0) + 1
+                            if it.score_attempts >= 3:
+                                it.scored_at = _utcnow()
+                                it.llm_reason = "LLM 失败 3 次已放弃"
                     s.commit()  # commit each batch immediately, survive partial restart
             except Exception as exc:
                 _log.error("_bg_llm failed sub=%d: %s", sid, exc)
@@ -240,23 +243,36 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     return {"embedded": embedded, "llm_queued": llm_queued, "errors": 0}
 
 
-_query_emb_cache: dict[int, list] = {}  # sub_id -> list[Optional[bytes]]
+_query_emb_cache: dict[str, list] = {}  # "{sub_id}:{md5(queries)}" -> list[Optional[bytes]]
 
 
-def _compute_pre_scores(db, sub_id):
+def _queries_key(sub_id: int, queries: list[str]) -> str:
+    h = hashlib.md5("\n".join(queries).encode()).hexdigest()
+    return f"{sub_id}:{h}"
+
+
+def invalidate_query_cache(sub_id: int) -> None:
+    prefix = f"{sub_id}:"
+    keys_to_delete = [k for k in list(_query_emb_cache.keys()) if k.startswith(prefix)]
+    for k in keys_to_delete:
+        _query_emb_cache.pop(k, None)
+
+
+def _compute_pre_scores(db, sub_id: int) -> None:
     from services.embedding_service import embed_texts_batch, score_candidates_matrix
     sub = db.get(models.Subscription, sub_id)
 
-    # 查询锚点：始终占 40% 权重，防止用户行为完全主导方向
+    # 查询锚点：权重动态化，防止用户行为完全主导方向
     query_labeled: list[tuple[bytes, float]] = []
     queries = list(sub.generated_queries or []) if sub else []
     if queries:
-        if sub_id not in _query_emb_cache:
-            _query_emb_cache[sub_id] = embed_texts_batch(queries)
-        q_embs = _query_emb_cache[sub_id]
+        key = _queries_key(sub_id, queries)
+        if key not in _query_emb_cache:
+            _query_emb_cache[key] = embed_texts_batch(queries)
+        q_embs = _query_emb_cache[key]
         query_labeled = [(e, 1.0) for e in q_embs if e]
 
-    # 用户行为（带时间衰减），占 60% 权重
+    # 用户行为（带时间衰减）
     user_labeled = _get_labeled_embeddings(db, sub_id)
 
     # 冷启动：两者都没有时用描述 embedding
@@ -282,9 +298,25 @@ def _compute_pre_scores(db, sub_id):
     cand_embs = [item.embedding for item in items]
 
     if query_labeled and user_labeled:
+        # 动态锚点比例：按 saved 数量 0/30/60+ 三档：1.0/0.4/0.2
+        positive_count = db.execute(
+            select(func.count(models.ExplorePool.id)).where(
+                models.ExplorePool.subscription_id == sub_id,
+                models.ExplorePool.action == "saved",
+            )
+        ).scalar_one()
+        if positive_count == 0:
+            anchor_w = 1.0
+        elif positive_count < 30:
+            anchor_w = 1.0 - 0.6 * (positive_count / 30)
+        elif positive_count < 60:
+            anchor_w = 0.4 - 0.2 * ((positive_count - 30) / 30)
+        else:
+            anchor_w = 0.2
+        user_w = 1.0 - anchor_w
         q_scores = score_candidates_matrix(cand_embs, query_labeled)
         u_scores = score_candidates_matrix(cand_embs, user_labeled)
-        scores = [0.4 * q + 0.6 * u for q, u in zip(q_scores, u_scores)]
+        scores = [anchor_w * q + user_w * u for q, u in zip(q_scores, u_scores)]
     elif query_labeled:
         scores = score_candidates_matrix(cand_embs, query_labeled)
     else:
@@ -303,13 +335,15 @@ def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
             models.ExplorePool.embedding.isnot(None),
         )
     ).all()
-    weights = {"saved": 1.0, "skipped": -1.0, "passed": -0.25}
+    weights = {"saved": 1.0, "skipped": -1.0, "passed": 0.0}
     now = _utcnow()
     result = []
     for emb, action, acted_at in rows:
         if action not in weights:
             continue
         base = weights[action]
+        if base == 0.0:
+            continue
         if acted_at:
             days = max(0.0, (now - acted_at).total_seconds() / 86400)
             # 半衰期 30 天：30天前的行为权重衰减到原来的一半
@@ -331,8 +365,8 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         conditions.append(models.ExplorePool.id.notin_(exclude_ids))
     items = list(db.execute(
         select(models.ExplorePool).where(*conditions).order_by(
-            models.ExplorePool.pre_score.desc().nulls_last(),
-            models.ExplorePool.llm_score.desc().nulls_last(),
+            ((models.ExplorePool.pre_score * 0.6) + (func.coalesce(models.ExplorePool.llm_score, 0.0) * 0.4)).desc(),
+            models.ExplorePool.found_at.desc(),
         ).limit(int(limit))
     ).scalars().all())
 
@@ -354,33 +388,45 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         ).scalars().all()
         venue_cache_extra = {row.name: row.easyscholar_json for row in cache_rows}
 
-    unacted = db.execute(
+    # #5: 补池阈值用「可展示数」（scored_at NOT NULL + pre_score >= 0）
+    displayable = db.execute(
         select(func.count(models.ExplorePool.id)).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
+            models.ExplorePool.scored_at.isnot(None),
+            models.ExplorePool.pre_score >= 0,
         )
     ).scalar_one()
-    if unacted < 100 and sub_id not in _filling_subs:
-        _filling_subs.add(sub_id)
-        import threading
+    with _fill_lock:
+        should_fill = displayable < 100 and sub_id not in _filling_subs
+        if should_fill:
+            _filling_subs.add(sub_id)
+    if should_fill:
         from database import SessionLocal as _SL
         def _bg_fill(sid):
+            s = _SL()
             try:
-                s = _SL()
-                try:
+                sub_ = s.get(models.Subscription, sid)
+                if sub_:
+                    # #17: last_filled_at < 60s 则跳过，防并发重复 fill
+                    if sub_.last_filled_at is not None:
+                        elapsed = (_utcnow() - sub_.last_filled_at).total_seconds()
+                        if elapsed < 60:
+                            return
+                    fill_explore_pool(s, sub_)
+                    score_and_embed_pending(s, sid)
                     sub_ = s.get(models.Subscription, sid)
                     if sub_:
-                        fill_explore_pool(s, sub_)
-                        score_and_embed_pending(s, sid)
-                finally:
-                    s.close()
+                        sub_.last_filled_at = _utcnow()
+                        s.commit()
             finally:
-                _filling_subs.discard(sid)
+                s.close()
+                with _fill_lock:
+                    _filling_subs.discard(sid)
         threading.Thread(target=_bg_fill, args=(sub_id,), daemon=True).start()
 
     uncached = venue_names - set(venue_cache_extra.keys()) - set(journal_cache.keys())
     if uncached:
-        import threading
         from database import SessionLocal as _SL
         from services.easyscholar_service import get_or_cache_by_name
         def _bg_prefetch(names):
@@ -468,27 +514,30 @@ def record_explore_action(db, pool_id, action) -> dict:
     db.commit()
 
     refreshed = None
+    sid = item.subscription_id
+
+    # #2: 每次打分都后台重算 pre_score
+    from database import SessionLocal as _SL
+    def _bg_rescore(sub_id_):
+        s = _SL()
+        try:
+            _compute_pre_scores(s, sub_id_)
+        finally:
+            s.close()
+    threading.Thread(target=_bg_rescore, args=(sid,), daemon=True).start()
+
+    # query_refresh 保留 % 10 触发
     action_count = db.execute(
         select(func.count(models.ExplorePool.id)).where(
-            models.ExplorePool.subscription_id == item.subscription_id,
+            models.ExplorePool.subscription_id == sid,
             models.ExplorePool.action.isnot(None),
         )
     ).scalar_one()
     if action_count and action_count % 10 == 0:
         from services.query_refresh_service import refresh_subscription_queries
-        sub = db.get(models.Subscription, item.subscription_id)
+        sub = db.get(models.Subscription, sid)
         if sub is not None:
             refreshed = refresh_subscription_queries(db, sub)
-        import threading
-        from database import SessionLocal as _SL
-        _sid = item.subscription_id
-        def _bg_rescore(sid_):
-            s = _SL()
-            try:
-                _compute_pre_scores(s, sid_)
-            finally:
-                s.close()
-        threading.Thread(target=_bg_rescore, args=(_sid,), daemon=True).start()
     return {"pool_id": item.id, "action": action, "paper_id": paper_id or item.paper_id, "query_refresh": refreshed}
 
 

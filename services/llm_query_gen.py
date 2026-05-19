@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Optional
 
-from services.ai_service import _call_ollama
+from services.llm_client import chat_completion
 
 _log = logging.getLogger(__name__)
 
@@ -53,12 +53,9 @@ def generate_openalex_queries(intent: str, max_n: int = 5) -> list[str]:
         {"role": "user", "content": f"Research interest:\n{intent_clean}\n\nOutput 3-5 advanced OpenAlex boolean queries as JSON array now."},
     ]
     try:
-        # qwen3.6-27b 默认开 thinking，思考占 ~3000 token 后才输出答案；
-        # num_predict 限制单次输出 token 数，给到 16k（思考 3-5k + 答案足够）。
-        # 不能 >= num_ctx (32k) 否则没空间放 input + history。
-        raw = _call_ollama(messages, num_predict=16384)
+        raw = chat_completion(messages, max_tokens=8192)
     except Exception as exc:
-        _log.warning("generate_openalex_queries ollama error: %s", exc)
+        _log.warning("generate_openalex_queries llm error: %s", exc)
         return fallback
 
     # 优先抓 </think> 之后的内容（如果有 think 标签）

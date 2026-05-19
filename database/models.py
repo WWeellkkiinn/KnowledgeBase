@@ -166,6 +166,7 @@ class Subscription(Base):
     last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     query_refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     query_stats_json: Mapped[Optional[dict]] = mapped_column(MutableJSON, nullable=True)
+    last_filled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class SubscriptionResult(Base):
@@ -198,6 +199,9 @@ class SubscriptionResult(Base):
     research_question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    score_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
 
 
 class ExplorePool(Base):
@@ -226,6 +230,14 @@ class ExplorePool(Base):
     key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     pre_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
+    external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    score_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "external_id", name="uq_explore_sub_external"),
+    )
 
 
 class Citation(Base):

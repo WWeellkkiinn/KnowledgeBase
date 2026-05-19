@@ -253,6 +253,21 @@ def _process_generate_queries(session, task: models.Task) -> None:
     sub.generated_queries = queries or None
     session.commit()
 
+    # 关键词写入后：失效旧 embedding 缓存 + 后台重算 pre_score
+    if queries:
+        from services.explore_service import invalidate_query_cache, _compute_pre_scores
+        invalidate_query_cache(sub.id)
+        import threading
+        from database import SessionLocal as _SL
+        _sub_id = sub.id
+        def _bg_recompute(sid):
+            s = _SL()
+            try:
+                _compute_pre_scores(s, sid)
+            finally:
+                s.close()
+        threading.Thread(target=_bg_recompute, args=(_sub_id,), daemon=True).start()
+
 
 def _process_track(session, task: models.Task, *, direction: str) -> None:
     """执行 backward/forward track。payload: paper_id, refresh(=False), limit(=None)。

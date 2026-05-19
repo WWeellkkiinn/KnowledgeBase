@@ -1,4 +1,4 @@
-"""AI 论文分析服务（F1 打标签 + F2 精炼，单次 Ollama 调用）。"""
+"""AI 论文分析服务（F1 打标签 + F2 精炼，单次 LLM 调用）。"""
 from __future__ import annotations
 
 import json
@@ -10,18 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database import models
+from services.llm_client import chat_completion
 
 _log = logging.getLogger(__name__)
 
-import os
-
-_URL = os.environ.get("KB_OLLAMA_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
-_MODEL = os.environ.get("KB_OLLAMA_MODEL", "qwen3.6-27b")
 _VOCAB_PATH = Path(__file__).parent / "tags_vocab.json"
 _CHANNEL_RE = re.compile(r"(<channel\|>|<\|[^|>]*\|>)")
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
@@ -41,23 +37,6 @@ _SYSTEM = (
     "所有内容（标签、研究问题、方法、关键发现、标题翻译）必须用简体中文。"
     "标签使用 2-4 字的中文短语（如：专利分析、机器学习、社会网络）。"
 )
-
-
-def _get_client() -> httpx.Client:
-    """复用 httpx Client（进程级单例，按需重建）。"""
-    global _CLIENT
-    cli = _CLIENT
-    if cli is None or cli.is_closed:
-        # read=600s: num_ctx=71680 时 Ollama 首次加载 KV cache 极慢
-        # （27B 模型 + 70k ctx 显存压力大，可能 unload/reload）
-        cli = httpx.Client(
-            timeout=httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0),
-        )
-        _CLIENT = cli
-    return cli
-
-
-_CLIENT: Optional[httpx.Client] = None
 
 
 def _load_vocab() -> list[str]:
@@ -132,23 +111,6 @@ def _sanitize_findings(raw: Any) -> list[str]:
     return out
 
 
-def _call_ollama(messages: list[dict], num_predict: int = 8192) -> str:
-    # num_ctx=32768 匹配 Ollama 服务端 Modelfile 配置（qwen3.6-27b 默认就是 32k）；
-    # 模型原生支持 256k，但单卡 24GB RTX4090 装不下更大的 KV cache，强传会触发 reload+OOM。
-    # 思考型 LLM (qwen3.6-27b 默认开 thinking) 输出预算必须留出思考链 + 答案两段。
-    payload = {
-        "model": _MODEL,
-        "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": num_predict},
-    }
-    resp = _get_client().post(_URL, json=payload)
-    resp.raise_for_status()
-    data = resp.json()
-    raw = data.get("message", {}).get("content", "")
-    return _CHANNEL_RE.sub("", raw).strip()
-
-
 def analyze_paper(
     title: str,
     abstract: str,
@@ -181,11 +143,7 @@ def analyze_paper(
         {"role": "user", "content": prompt},
     ]
 
-    try:
-        raw = _call_ollama(messages)
-    except Exception as exc:
-        _log.warning("analyze_paper ollama error: %s", exc)
-        return {}
+    raw = _CHANNEL_RE.sub("", chat_completion(messages)).strip()
 
     json_match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not json_match:
@@ -250,11 +208,7 @@ def score_relevance(title: str, abstract: str) -> Optional[float]:
             "content": f"Title: {title}\nAbstract: {abstract[:600]}",
         },
     ]
-    try:
-        raw = _call_ollama(messages, num_predict=64)
-    except Exception as exc:
-        _log.warning("score_relevance ollama error: %s", exc)
-        return None
+    raw = chat_completion(messages, max_tokens=64)
 
     # 容错解析：从带文本的响应中抓第一个小数
     m = _FLOAT_RE.search(raw)

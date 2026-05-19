@@ -1,6 +1,6 @@
 """检索词自迭代服务：每周用正信号论文驱动 LLM 刷新 OpenAlex 检索词。"""
 
-from services.ai_service import _call_ollama
+from services.llm_client import chat_completion
 from database import models
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -107,7 +107,7 @@ def refresh_subscription_queries(db: Session, sub) -> dict:
         ]
         user_prompt = f"Research interest: {sub.description}\n\nCurrent queries and hit rates:\n{json.dumps(query_info, ensure_ascii=False)}\n\nPositive signal paper titles (imported or highly relevant):\n{json.dumps(positive_titles, ensure_ascii=False)}\n\nNegative signal paper titles (user marked as irrelevant):\n{json.dumps(negative_titles, ensure_ascii=False)}\n\nOutput JSON now."
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        response = _call_ollama(messages, num_predict=8192)
+        response = chat_completion(messages, max_tokens=8192)
 
         match = re.search(r"\{[\s\S]*\}", response)
         parsed = json.loads(match.group(0)) if match else {}

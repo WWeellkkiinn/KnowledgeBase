@@ -1,6 +1,6 @@
 """ReviewService —— 跨论文综述生成（M3.5）。
 
-策略：薄壳包装 scripts/cross_analysis 的 map-reduce 思路 + Ollama 流式调用。
+策略：薄壳包装 scripts/cross_analysis 的 map-reduce 思路 + Yinli 流式调用。
 - map：每篇 paper 的 analysis_insight.md 抽 "总览/小结" 段
 - reduce：拼接 + 第一轮表格 + 第二轮综合（共识/分歧/演化/交叉引用）
 
@@ -11,36 +11,23 @@ LLM 不可用 / 论文缺 insight 时 yield 一条错误 chunk 并结束，不�
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database import models
-
-from ._paths import ensure_scripts_on_path
+from services.llm_client import chat_completion_stream
 
 _log = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
-
-def _ollama_config() -> tuple[str, str]:
-    """从 scripts/run_analysis_ui 中读 OLLAMA_CHAT + MODEL。失败回退默认。"""
-    ensure_scripts_on_path()
-    try:
-        from run_analysis_ui import OLLAMA_CHAT, MODEL  # type: ignore
-        return OLLAMA_CHAT, MODEL
-    except Exception:
-        return "http://127.0.0.1:11434/api/chat", "qwen2.5:7b"
 
 
 SYSTEM = (
@@ -90,40 +77,16 @@ def _extract_summary(insight_md: str) -> str:
     return "\n".join(out).strip()
 
 
-# Ollama channel 标记清洗：仅匹配成对的 `<|...|>`，不允许吞跨标记的正文。
-# 原 `<\|[^>]*\|?>` 模式中 `\|?` 让 `|` 可选，会把普通 `<|...> ...>` 长串吞掉。
 _CHANNEL_RE = re.compile(r"<channel\|>|<\|[^|>]*\|>")
 
 
-def _stream_ollama(messages: list[dict]) -> Iterator[str]:
-    """流式调用 Ollama。yield 每个 content chunk（已剥 channel 标记）。
+def _stream_llm(messages: list[dict]) -> Iterator[str]:
+    """流式调用 Yinli。yield 每个 content chunk。
     异常时 yield 中性错误说明（不含异常详情，避免泄露内网 URL/路径）。"""
-    url, model = _ollama_config()
-    timeout = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0)
     try:
-        with httpx.stream(
-            "POST", url,
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": True,
-                "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 8192},
-            },
-            timeout=timeout,
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                content = obj.get("message", {}).get("content", "")
-                if content:
-                    yield _CHANNEL_RE.sub("", content)
-                if obj.get("done"):
-                    break
+        for chunk in chat_completion_stream(messages, max_tokens=8192):
+            if chunk:
+                yield _CHANNEL_RE.sub("", chunk)
     except Exception as e:
         _log.warning("[review] LLM stream error: %s", e)
         yield "\n\n[error] LLM 调用失败（详情见服务日志）。\n"
@@ -201,7 +164,7 @@ class ReviewService:
         yield f"# 跨论文综述（关注：{focus}，共 {n_used} 篇）\n\n"
         yield "## 第一轮：速览表格\n\n"
         round1_buf: list[str] = []
-        for chunk in _stream_ollama(msg_round1):
+        for chunk in _stream_llm(msg_round1):
             round1_buf.append(chunk)
             yield chunk
         round1_text = "".join(round1_buf).strip()
@@ -215,7 +178,7 @@ class ReviewService:
             {"role": "assistant", "content": round1_text},
             {"role": "user", "content": ROUND2.format(n=n_used)},
         ]
-        for chunk in _stream_ollama(msg_round2):
+        for chunk in _stream_llm(msg_round2):
             yield chunk
 
         yield f"\n\n---\n生成时间：{datetime.now(timezone.utc).isoformat(timespec='seconds')}Z\n"

@@ -351,11 +351,15 @@ class SubscriptionService:
                     # 部分订阅 _execute_one 可能让 session 进入异常态；先回滚再写元数据
                     if owns:
                         session.rollback()
-                # 元数据更新（last_run_at / next_run_at）放在 try 外、独立 try
+                # 元数据更新：成功时写 last_run_at + 完整 next_run_at；
+                # 失败时只写短退避（1h），不更新 last_run_at
                 try:
                     now2 = _utcnow()
-                    sub.last_run_at = now2
-                    sub.next_run_at = compute_next_run_at(sub.cron_expr, now2)
+                    if exec_ok:
+                        sub.last_run_at = now2
+                        sub.next_run_at = compute_next_run_at(sub.cron_expr, now2)
+                    else:
+                        sub.next_run_at = now2 + timedelta(hours=1)
                     if owns:
                         session.commit()
                     else:
@@ -1202,7 +1206,9 @@ def score_pending_results(db: Session, max_score: int = 120) -> dict:
                 from datetime import datetime as _dt, timezone as _tz
                 now = _dt.now(_tz.utc).replace(tzinfo=None)
                 for r in batch:
-                    r.scored_at = now
+                    r.score_attempts = (r.score_attempts or 0) + 1
+                    if r.score_attempts >= 3:
+                        r.scored_at = now
         db.commit()
     return {"scored": scored, "errors": errors}
 
@@ -1211,7 +1217,8 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
     """5 篇/批 LLM 评分+精炼。失败时整批抛异常，由调用方标 scored_at。"""
     import json
     import re as _re
-    from services.ai_service import _call_ollama, _sanitize_tags, _sanitize_text, _sanitize_findings
+    from services.ai_service import _sanitize_tags, _sanitize_text, _sanitize_findings
+    from services.llm_client import chat_completion as _call_llm
     from datetime import datetime as _dt, timezone as _tz
 
     payload = []
@@ -1246,7 +1253,7 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
             f"论文列表：\n{json.dumps(payload, ensure_ascii=False)}"
         )},
     ]
-    raw = _call_ollama(messages, num_predict=4096)
+    raw = _call_llm(messages, max_tokens=4096)
     match = _re.search(r"\[[\s\S]*\]", raw)
     if not match:
         raise ValueError("no JSON array")
