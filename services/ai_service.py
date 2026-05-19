@@ -143,21 +143,25 @@ def analyze_paper(
         {"role": "user", "content": prompt},
     ]
 
-    raw = _CHANNEL_RE.sub("", chat_completion(messages)).strip()
-
-    json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not json_match:
-        _log.warning("analyze_paper: no JSON found in response: %.200s", raw)
-        return {}
-
     try:
-        result = json.loads(json_match.group())
-    except json.JSONDecodeError as exc:
-        _log.warning("analyze_paper: JSON parse error: %s — raw: %.200s", exc, raw)
-        return {}
+        raw = _CHANNEL_RE.sub("", chat_completion(messages)).strip()
 
-    if not isinstance(result, dict):
-        _log.warning("analyze_paper: response is not an object")
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not json_match:
+            _log.warning("analyze_paper: no JSON found in response: %.200s", raw)
+            return {}
+
+        try:
+            result = json.loads(json_match.group())
+        except json.JSONDecodeError as exc:
+            _log.warning("analyze_paper: JSON parse error: %s — raw: %.200s", exc, raw)
+            return {}
+
+        if not isinstance(result, dict):
+            _log.warning("analyze_paper: response is not an object")
+            return {}
+    except Exception:
+        _log.exception("analyze_paper failed for paper title=%.100s", title)
         return {}
 
     # 规范化所有字段
@@ -208,16 +212,20 @@ def score_relevance(title: str, abstract: str) -> Optional[float]:
             "content": f"Title: {title}\nAbstract: {abstract[:600]}",
         },
     ]
-    raw = chat_completion(messages, max_tokens=64)
-
-    # 容错解析：从带文本的响应中抓第一个小数
-    m = _FLOAT_RE.search(raw)
-    if not m:
-        _log.warning("score_relevance: no float in response: %.100s", raw)
-        return None
     try:
-        return min(1.0, max(0.0, float(m.group())))
-    except ValueError:
+        raw = chat_completion(messages, max_tokens=64)
+
+        # 容错解析：从带文本的响应中抓第一个小数
+        m = _FLOAT_RE.search(raw)
+        if not m:
+            _log.warning("score_relevance: no float in response: %.100s", raw)
+            return None
+        try:
+            return min(1.0, max(0.0, float(m.group())))
+        except ValueError:
+            return None
+    except Exception:
+        _log.exception("score_relevance failed for title=%.100s", title)
         return None
 
 

@@ -23,6 +23,7 @@ _log = logging.getLogger(__name__)
 _NORM_TITLE_RE = re.compile(r"[^\w一-鿿]+", flags=re.UNICODE)
 _fill_lock = threading.Lock()
 _filling_subs: set[int] = set()   # 防止同一 sub_id 并发填充
+_scoring_lock = threading.Lock()
 _scoring_subs: set[int] = set()   # 防止同一 sub_id 并发 LLM 评分
 
 
@@ -71,7 +72,15 @@ def fill_explore_pool(db, sub, target=200) -> dict:
             models.ExplorePool.action.is_(None),
         )
     ).scalar_one()
-    needed = max(0, int(target) - int(current or 0))
+    displayable = db.execute(
+        select(func.count(models.ExplorePool.id)).where(
+            models.ExplorePool.subscription_id == sub.id,
+            models.ExplorePool.action.is_(None),
+            models.ExplorePool.scored_at.isnot(None),
+            models.ExplorePool.pre_score >= 0,
+        )
+    ).scalar_one()
+    needed = max(0, int(target) - int(displayable or 0))
     if needed <= 0:
         return {"added": 0, "existing": current}
 
@@ -155,7 +164,7 @@ def fill_explore_pool(db, sub, target=200) -> dict:
         title = _norm_title(meta.get("title") or "")
         if not eid or eid in existing_ids or (doi and doi in existing_dois) or (title and title in existing_titles):
             continue
-        db.add(models.ExplorePool(subscription_id=sub.id, raw_metadata_json=meta))
+        db.add(models.ExplorePool(subscription_id=sub.id, raw_metadata_json=meta, external_id=meta.get("external_id") or meta.get("id") or eid or None))
         existing_ids.add(eid)
         if title:
             existing_titles.add(title)
@@ -205,8 +214,11 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
     # _scoring_subs guards against concurrent LLM threads for the same subscription
     needs_scoring = [item.id for item in items if item.scored_at is None]
     llm_queued = 0
-    if needs_scoring and sub_id not in _scoring_subs:
-        _scoring_subs.add(sub_id)
+    with _scoring_lock:
+        should_score = bool(needs_scoring) and sub_id not in _scoring_subs
+        if should_score:
+            _scoring_subs.add(sub_id)
+    if should_score:
         llm_queued = len(needs_scoring)
         from database import SessionLocal as _SL
         def _bg_llm(sid, desc, ids):
@@ -223,6 +235,7 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
                         return
                     try:
                         _score_batch(s, desc, batch)
+                        s.commit()
                     except Exception as exc:
                         _log.warning("_bg_llm _score_batch failed sub=%d: %s", sid, exc)
                         for it in batch:
@@ -230,7 +243,22 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
                             if it.score_attempts >= 3:
                                 it.scored_at = _utcnow()
                                 it.llm_reason = "LLM 失败 3 次已放弃"
-                    s.commit()
+                        try:
+                            s.commit()
+                        except Exception:
+                            s.rollback()
+                            s2 = _SL()
+                            try:
+                                ids = [it.id for it in batch]
+                                from sqlalchemy import update as _upd
+                                s2.execute(
+                                    _upd(models.ExplorePool)
+                                    .where(models.ExplorePool.id.in_(ids))
+                                    .values(scored_at=_utcnow(), llm_reason="LLM 评分异常")
+                                )
+                                s2.commit()
+                            finally:
+                                s2.close()
                 except Exception as exc:
                     _log.error("_bg_llm batch failed sub=%d: %s", sid, exc)
                 finally:
@@ -243,7 +271,8 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
             except Exception as exc:
                 _log.error("_bg_llm failed sub=%d: %s", sid, exc)
             finally:
-                _scoring_subs.discard(sid)
+                with _scoring_lock:
+                    _scoring_subs.discard(sid)
 
         threading.Thread(target=_bg_llm, args=(sub_id, description, needs_scoring), daemon=True).start()
 

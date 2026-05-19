@@ -40,30 +40,26 @@ def client(tmp_path: Path, monkeypatch):
 
 def test_create_subscription_returns_201(client):
     r = client.post("/api/subscriptions", json={
-        "type": "paper_citations",
-        "target": {"doi": "10.1/root"},
-        "cron_expr": "every 7d",
+        "description": "machine learning papers",
+        "active": True,
     })
     assert r.status_code == 201
     data = r.get_json()
-    assert data["type"] == "paper_citations"
+    assert data["active"] is True
+    assert data["description"] == "machine learning papers"
+    assert "id" in data
+
+
+def test_create_subscription_defaults(client):
+    r = client.post("/api/subscriptions", json={})
+    assert r.status_code == 201
+    data = r.get_json()
     assert data["active"] is True
 
 
-def test_create_subscription_400_on_bad_input(client):
-    r = client.post("/api/subscriptions", json={"type": "bogus", "target": {}})
-    assert r.status_code == 400
-
-
 def test_list_subscriptions(client):
-    client.post("/api/subscriptions", json={
-        "type": "paper_citations", "target": {"doi": "10.1/a"},
-        "cron_expr": "every 7d",
-    })
-    client.post("/api/subscriptions", json={
-        "type": "topic_search", "target": {"query": "ABM"},
-        "cron_expr": "every 1d", "active": False,
-    })
+    client.post("/api/subscriptions", json={"description": "topic A", "active": True})
+    client.post("/api/subscriptions", json={"description": "topic B", "active": False})
     r = client.get("/api/subscriptions")
     assert r.status_code == 200
     items = r.get_json()["items"]
@@ -73,14 +69,25 @@ def test_list_subscriptions(client):
     assert len(r2.get_json()["items"]) == 1
 
 
-def test_update_subscription(client):
-    sid = client.post("/api/subscriptions", json={
-        "type": "paper_citations", "target": {"doi": "10.1/x"},
-        "cron_expr": "every 7d",
-    }).get_json()["id"]
+def test_get_subscription(client):
+    sid = client.post("/api/subscriptions", json={"description": "NLP"}).get_json()["id"]
+    r = client.get(f"/api/subscriptions/{sid}")
+    assert r.status_code == 200
+    assert r.get_json()["description"] == "NLP"
+
+
+def test_update_subscription_active(client):
+    sid = client.post("/api/subscriptions", json={"description": "econ"}).get_json()["id"]
     r = client.patch(f"/api/subscriptions/{sid}", json={"active": False})
     assert r.status_code == 200
     assert r.get_json()["active"] is False
+
+
+def test_update_subscription_description(client):  # noqa: secrets
+    sid = client.post("/api/subscriptions", json={"description": "old topic"}).get_json()["id"]
+    r = client.patch(f"/api/subscriptions/{sid}", json={"description": "new topic"})
+    assert r.status_code == 200
+    assert r.get_json()["description"] == "new topic"
 
 
 def test_update_subscription_404(client):
@@ -89,24 +96,11 @@ def test_update_subscription_404(client):
 
 
 def test_delete_subscription(client):
-    sid = client.post("/api/subscriptions", json={
-        "type": "paper_citations", "target": {"doi": "10.1/x"},
-        "cron_expr": "every 7d",
-    }).get_json()["id"]
+    sid = client.post("/api/subscriptions", json={"description": "to delete"}).get_json()["id"]
     r = client.delete(f"/api/subscriptions/{sid}")
     assert r.status_code == 204
     r2 = client.delete(f"/api/subscriptions/{sid}")
     assert r2.status_code == 404
-
-
-def test_create_subscription_rejects_oversize_target(client):
-    """target_json 单值超过 1024 字符应被拒绝（DoS 防御）。"""
-    r = client.post("/api/subscriptions", json={
-        "type": "paper_citations",
-        "target": {"doi": "10.1/x", "junk": "A" * 2000},
-        "cron_expr": "every 7d",
-    })
-    assert r.status_code == 400
 
 
 # ─── citations / bibtex ─────────────────────────────────────────────

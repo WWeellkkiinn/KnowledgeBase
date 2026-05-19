@@ -6,7 +6,7 @@
     embed_texts_batch(texts) -> list[Optional[bytes]]
     embed_text(text) -> Optional[bytes]
 
-配置全部从环境变量读取，缺失则 import 时 KeyError。
+配置全部从环境变量读取，缺失则调用时 RuntimeError。
 失败直接抛 httpx.HTTPStatusError，不吞错。
 """
 from __future__ import annotations
@@ -17,17 +17,29 @@ from typing import Iterator, Optional
 
 import httpx
 
-_CHAT_BASE = os.environ["CHAT_API_BASE"].rstrip("/")
-_CHAT_KEY = os.environ["CHAT_API_KEY"]
-_CHAT_MODEL = os.environ["CHAT_MODEL"]
-
-_EMBED_BASE = os.environ["EMBED_API_BASE"].rstrip("/")
-_EMBED_KEY = os.environ["EMBED_API_KEY"]
-_EMBED_MODEL = os.environ["EMBED_MODEL"]
-
-_CHAT_HEADERS = {"Authorization": f"Bearer {_CHAT_KEY}", "Content-Type": "application/json"}
-_EMBED_HEADERS = {"Authorization": f"Bearer {_EMBED_KEY}", "Content-Type": "application/json"}
 _TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0)
+
+
+def _chat_config() -> tuple[str, str, str]:
+    try:
+        return (
+            os.environ["CHAT_API_BASE"].rstrip("/"),
+            os.environ["CHAT_API_KEY"],
+            os.environ["CHAT_MODEL"],
+        )
+    except KeyError as e:
+        raise RuntimeError(f"Missing chat LLM env var: {e.args[0]}") from None
+
+
+def _embed_config() -> tuple[str, str, str]:
+    try:
+        return (
+            os.environ["EMBED_API_BASE"].rstrip("/"),
+            os.environ["EMBED_API_KEY"],
+            os.environ["EMBED_MODEL"],
+        )
+    except KeyError as e:
+        raise RuntimeError(f"Missing embed LLM env var: {e.args[0]}") from None
 
 
 def chat_completion(
@@ -35,12 +47,14 @@ def chat_completion(
     max_tokens: int = 8192,
     temperature: float = 0.1,
 ) -> str:
+    base, key, model = _chat_config()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     with httpx.Client(timeout=_TIMEOUT) as c:
         resp = c.post(
-            f"{_CHAT_BASE}/chat/completions",
-            headers=_CHAT_HEADERS,
+            f"{base}/chat/completions",
+            headers=headers,
             json={
-                "model": _CHAT_MODEL,
+                "model": model,
                 "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
@@ -58,13 +72,15 @@ def chat_completion_stream(
     """SSE 流式调用，yield content delta 字符串块。"""
     import json as _json
 
+    base, key, model = _chat_config()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     with httpx.Client(timeout=_TIMEOUT) as c:
         with c.stream(
             "POST",
-            f"{_CHAT_BASE}/chat/completions",
-            headers=_CHAT_HEADERS,
+            f"{base}/chat/completions",
+            headers=headers,
             json={
-                "model": _CHAT_MODEL,
+                "model": model,
                 "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": 0.1,
@@ -94,11 +110,13 @@ def embed_texts_batch(texts: list[str]) -> list[Optional[bytes]]:
     result: list[Optional[bytes]] = [None] * len(texts)
     if not non_empty:
         return result
+    base, key, model = _embed_config()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     with httpx.Client(timeout=_TIMEOUT) as c:
         resp = c.post(
-            f"{_EMBED_BASE}/embeddings",
-            headers=_EMBED_HEADERS,
-            json={"model": _EMBED_MODEL, "input": [t for _, t in non_empty]},
+            f"{base}/embeddings",
+            headers=headers,
+            json={"model": model, "input": [t for _, t in non_empty]},
         )
     resp.raise_for_status()
     data = resp.json().get("data") or []

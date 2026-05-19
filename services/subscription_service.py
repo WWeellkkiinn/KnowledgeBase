@@ -65,17 +65,24 @@ class SubscriptionService:
         *,
         active: Optional[bool] = None,
         description: Optional[str] = None,
-    ) -> Optional[models.Subscription]:
+    ) -> tuple[Optional[models.Subscription], bool]:
+        """Returns (sub, description_changed).
+
+        description_changed=True signals the caller to start _bg_recompute
+        **after** committing, so the background thread reads the new description.
+        """
         sub = session.get(models.Subscription, sub_id)
         if sub is None:
-            return None
+            return None, False
         if active is not None:
             sub.active = bool(active)
+        description_changed = False
         if description is not None:
             new_desc = description.strip() or None
             if new_desc != sub.description:
                 sub.description = new_desc
                 sub.generated_queries = None
+                description_changed = bool(new_desc)
                 if new_desc:
                     from services.task_queue import TaskQueue
                     from services.upload_worker import GENERATE_QUERIES_TASK_TYPE
@@ -84,19 +91,10 @@ class SubscriptionService:
                         payload={"subscription_id": sub.id},
                         max_attempts=2,
                     )
-                    from services.explore_service import invalidate_query_cache, _compute_pre_scores
-                    import threading as _t
-                    from database import SessionLocal as _SL
+                    from services.explore_service import invalidate_query_cache
                     invalidate_query_cache(sub.id)
-                    def _bg_recompute(sid):
-                        s = _SL()
-                        try:
-                            _compute_pre_scores(s, sid)
-                        finally:
-                            s.close()
-                    _t.Thread(target=_bg_recompute, args=(sub.id,), daemon=True).start()
         session.flush()
-        return sub
+        return sub, description_changed
 
     @staticmethod
     def delete(session: Session, sub_id: int) -> bool:

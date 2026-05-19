@@ -712,6 +712,7 @@ def list_subscriptions():
 
 
 @bp.post("/subscriptions")
+@limiter.limit("5 per minute")
 def create_subscription():
     from services import SubscriptionService
     body = request.get_json(silent=True) or {}
@@ -734,11 +735,12 @@ def create_subscription():
 
 
 @bp.patch("/subscriptions/<int:sub_id>")
+@limiter.limit("10 per minute")
 def update_subscription(sub_id: int):
     from services import SubscriptionService
     body = request.get_json(silent=True) or {}
     try:
-        sub = SubscriptionService.update(
+        sub, description_changed = SubscriptionService.update(
             g.db, sub_id,
             active=body.get("active"),
             description=body.get("description"),
@@ -749,6 +751,18 @@ def update_subscription(sub_id: int):
     if sub is None:
         return jsonify({"error": "not found"}), 404
     g.db.commit()
+    if description_changed:
+        import threading as _t
+        from database import SessionLocal as _SL
+        from services.explore_service import _compute_pre_scores
+        sid = sub.id
+        def _bg_recompute(s_id):
+            s = _SL()
+            try:
+                _compute_pre_scores(s, s_id)
+            finally:
+                s.close()
+        _t.Thread(target=_bg_recompute, args=(sid,), daemon=True).start()
     try:
         from services.upload_worker import wake_worker
         wake_worker()
@@ -1244,6 +1258,7 @@ def get_explore_cards():
 
 
 @bp.post("/explore/<int:pool_id>/action")
+@limiter.limit("60 per minute")
 def record_explore_action(pool_id: int):
     """记录用户对探索池卡片的操作：saved / skipped / passed。"""
     from services.explore_service import record_explore_action
@@ -1257,6 +1272,7 @@ def record_explore_action(pool_id: int):
 
 
 @bp.post("/explore/<int:pool_id>/undo")
+@limiter.limit("60 per minute")
 def explore_undo(pool_id: int):
     from services.explore_service import undo_explore_action
     try:
@@ -1266,6 +1282,7 @@ def explore_undo(pool_id: int):
 
 
 @bp.post("/explore/refill")
+@limiter.limit("3 per minute")
 def refill_explore_pool():
     """手动触发探索池补充。"""
     from services.explore_service import fill_explore_pool, score_and_embed_pending
