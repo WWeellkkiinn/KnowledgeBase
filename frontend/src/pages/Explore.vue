@@ -34,7 +34,8 @@ function snapAllBack() {
   const m = cardRef.value?.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
   const curDx = m ? parseFloat(m[1]) : 0
   const opts = { duration: 220, easing: ENTER_EASING }
-  cardRef.value?.animate([{ transform: `translateX(${curDx}px)` }, { transform: 'none' }], opts)
+  const animation = cardRef.value?.animate([{ transform: `translateX(${curDx}px)` }, { transform: 'none' }], opts)
+  if (animation) animation.onfinish = () => { if (cardRef.value) cardRef.value.style.transform = '' }
 }
 
 async function doAction(action: 'saved' | 'skipped' | 'passed') {
@@ -169,8 +170,6 @@ function onTouchEnd(e: TouchEvent) {
   swipeDir = null
   if (dx > UNDO_THRESHOLD && prevCard.value) {
     doUndo()
-  } else if (dx < -UNDO_THRESHOLD) {
-    doAction('skipped')
   } else {
     snapAllBack()
   }
@@ -281,6 +280,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
+  align-items: flex-start;
   justify-content: center;
   gap: 24px;
   width: 100%;
@@ -303,7 +303,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
 }
 
