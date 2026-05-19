@@ -282,11 +282,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   max-width: 640px;
   height: 100%;
+  min-height: 100%;
   margin: 0 auto;
   gap: 12px;
   overflow: clip;
-  padding: 16px 0 0;
-  background: var(--color-bg-subtle);
+  padding: 16px 16px 16px;
 }
 
 .explore-header {

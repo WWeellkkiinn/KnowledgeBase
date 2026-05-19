@@ -33,7 +33,14 @@ const nav = [
         </div>
       </nav>
     </header>
-    <main :class="['flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 lg:px-8', route.path !== '/explore' ? 'py-6' : 'h-[calc(100dvh-3.25rem)] min-h-0 overflow-hidden']">
+    <main
+      :class="[
+        'flex-1 w-full',
+        route.path !== '/explore'
+          ? 'max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6'
+          : 'h-[calc(100dvh-3.25rem)] min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
+      ]"
+    >
       <RouterView />
     </main>
     <ProgressToast />
