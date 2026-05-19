@@ -75,7 +75,7 @@ const actionBadgeClass = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-
+  align-self: center;
   padding-top: 4px;
 }
 

@@ -247,7 +247,15 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   gap: 12px;
-  padding: 16px;
+  padding: 24px 16px 16px;
+}
+
+@media (min-width: 640px) {
+  .explore-root { padding-left: 24px; padding-right: 24px; }
+}
+
+@media (min-width: 1024px) {
+  .explore-root { padding-left: 32px; padding-right: 32px; }
 }
 
 .explore-header {
@@ -278,7 +286,6 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
   gap: 24px;
   width: 100%;
