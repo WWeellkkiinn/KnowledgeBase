@@ -17,16 +17,17 @@ from typing import Iterator, Optional
 
 import httpx
 
-_BASE = os.environ["YINLI_API_BASE"].rstrip("/")
-_KEY = os.environ["YINLI_API_KEY"]
-_CHAT_MODEL = os.environ["YINLI_CHAT_MODEL"]
-_EMBED_MODEL = os.environ["YINLI_EMBED_MODEL"]
+_CHAT_BASE = os.environ["CHAT_API_BASE"].rstrip("/")
+_CHAT_KEY = os.environ["CHAT_API_KEY"]
+_CHAT_MODEL = os.environ["CHAT_MODEL"]
 
-_HEADERS = {"Authorization": f"Bearer {_KEY}", "Content-Type": "application/json"}
+_EMBED_BASE = os.environ["EMBED_API_BASE"].rstrip("/")
+_EMBED_KEY = os.environ["EMBED_API_KEY"]
+_EMBED_MODEL = os.environ["EMBED_MODEL"]
+
+_CHAT_HEADERS = {"Authorization": f"Bearer {_CHAT_KEY}", "Content-Type": "application/json"}
+_EMBED_HEADERS = {"Authorization": f"Bearer {_EMBED_KEY}", "Content-Type": "application/json"}
 _TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=10.0)
-
-# 注：yinli 上游对 keep-alive 连接复用有 bug，复用同一 Client 时
-# 第一个请求后续会 502/429。所以每次请求新建 Client（用 with 自动关闭）。
 
 
 def chat_completion(
@@ -36,8 +37,8 @@ def chat_completion(
 ) -> str:
     with httpx.Client(timeout=_TIMEOUT) as c:
         resp = c.post(
-            f"{_BASE}/chat/completions",
-            headers=_HEADERS,
+            f"{_CHAT_BASE}/chat/completions",
+            headers=_CHAT_HEADERS,
             json={
                 "model": _CHAT_MODEL,
                 "messages": messages,
@@ -60,8 +61,8 @@ def chat_completion_stream(
     with httpx.Client(timeout=_TIMEOUT) as c:
         with c.stream(
             "POST",
-            f"{_BASE}/chat/completions",
-            headers=_HEADERS,
+            f"{_CHAT_BASE}/chat/completions",
+            headers=_CHAT_HEADERS,
             json={
                 "model": _CHAT_MODEL,
                 "messages": messages,
@@ -95,8 +96,8 @@ def embed_texts_batch(texts: list[str]) -> list[Optional[bytes]]:
         return result
     with httpx.Client(timeout=_TIMEOUT) as c:
         resp = c.post(
-            f"{_BASE}/embeddings",
-            headers=_HEADERS,
+            f"{_EMBED_BASE}/embeddings",
+            headers=_EMBED_HEADERS,
             json={"model": _EMBED_MODEL, "input": [t for _, t in non_empty]},
         )
     resp.raise_for_status()
