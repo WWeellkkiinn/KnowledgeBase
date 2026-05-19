@@ -316,6 +316,8 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-x: clip;
   padding: 8px;
+  display: flex;
+  align-items: center;
 }
 
 .card-current,
