@@ -14,7 +14,7 @@ const nav = [
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col">
+  <div class="h-dvh flex flex-col">
     <header class="bg-white border-b border-slate-200">
       <nav class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-6">
         <div class="text-lg font-sans font-semibold text-slate-800 shrink-0">KnowledgeBase</div>
@@ -38,7 +38,7 @@ const nav = [
         'flex-1 w-full',
         route.path !== '/explore'
           ? 'max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6'
-          : 'h-[calc(100dvh-3.25rem)] min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
+          : 'min-h-0 overflow-hidden bg-[color:var(--color-bg-subtle)]'
       ]"
     >
       <RouterView />
