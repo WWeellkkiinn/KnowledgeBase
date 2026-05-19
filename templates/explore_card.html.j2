@@ -17,6 +17,11 @@
   </p>
   {% endif %}
 
+  {% if llm_reason %}
+  <p style="margin:12px 0 2px;color:#0f172a"><strong>为什么推给你</strong></p>
+  <p style="margin:0">{{ llm_reason }}</p>
+  {% endif %}
+
   {% if research_question %}
   <p style="margin:12px 0 2px;color:#0f172a"><strong>一句话</strong></p>
   <p style="margin:0">{{ research_question }}</p>
@@ -32,10 +37,5 @@
   {% if methodology %}
   <p style="margin:12px 0 2px;color:#0f172a"><strong>怎么做</strong></p>
   <p style="margin:0">{{ methodology }}</p>
-  {% endif %}
-
-  {% if llm_reason %}
-  <p style="margin:12px 0 2px;color:#0f172a"><strong>为什么推给你</strong></p>
-  <p style="margin:0">{{ llm_reason }}</p>
   {% endif %}
 </div>

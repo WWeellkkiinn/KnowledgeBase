@@ -376,7 +376,7 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         conditions.append(models.ExplorePool.id.notin_(exclude_ids))
     items = list(db.execute(
         select(models.ExplorePool).where(*conditions).order_by(
-            ((models.ExplorePool.pre_score * 0.6) + (func.coalesce(models.ExplorePool.llm_score, 0.0) * 0.4)).desc(),
+            models.ExplorePool.pre_score.desc(),
             models.ExplorePool.found_at.desc(),
         ).limit(int(limit))
     ).scalars().all())
