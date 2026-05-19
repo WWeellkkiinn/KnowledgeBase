@@ -159,7 +159,7 @@ function onTouchMove(e: TouchEvent) {
     const travel = Math.min(dx * 0.12, 18)
     if (cardRef.value) cardRef.value.style.transform = `translateX(${travel}px)`
   } else {
-    const travel = dx * 0.85
+    const travel = -Math.min(Math.abs(dx) * 0.12, 18)
     if (cardRef.value) cardRef.value.style.transform = `translateX(${travel}px)`
   }
 }
@@ -280,7 +280,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   gap: 24px;
   width: 100%;
@@ -303,7 +303,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
 }
 
