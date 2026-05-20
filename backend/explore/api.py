@@ -9,22 +9,28 @@ from ninja.security import django_auth
 router = Router()
 
 
-class ExploreCardOut(Schema):
-    id: int
+class ExploreCardData(Schema):
+    pool_id: int
     title: str
-    url: str
-    title_zh: str
+    url: Optional[str]
+    title_zh: Optional[str]
     display_date: str
     authors: str
+    venue_name: Optional[str]
+    rank_badges: List[dict] = []
     cited_by_count: Optional[int]
-    venue_name: str
     tags: List[str]
-    research_question: str
-    methodology: str
+    llm_reason: Optional[str]
+    research_question: Optional[str]
+    methodology: Optional[str]
     key_findings: List[str]
-    llm_reason: str
-    llm_pending: bool
     bandit_score: Optional[float]
+
+
+class ExploreCardOut(Schema):
+    id: int
+    card: ExploreCardData
+    score: Optional[float]
     action: Optional[str]
 
 
@@ -34,6 +40,7 @@ class ActionIn(Schema):
 
 class ExploreCardsResponse(Schema):
     items: List[ExploreCardOut]
+    count: int
     pool_count: int
     is_filling: bool
 
@@ -59,9 +66,34 @@ def get_cards(request, sub_id: int, limit: int = 10, exclude: str = ""):
             chunk = chunk.strip()
             if chunk.isdigit():
                 exclude_ids.append(int(chunk))
-    cards = get_explore_cards(tenant_id, sub_id, limit=limit, exclude_ids=exclude_ids or None)
+    raw = get_explore_cards(tenant_id, sub_id, limit=limit, exclude_ids=exclude_ids or None)
+    items = []
+    for c in raw:
+        items.append({
+            "id": c["id"],
+            "score": c.get("bandit_score"),
+            "action": c.get("action"),
+            "card": {
+                "pool_id": c["id"],
+                "title": c.get("title") or "",
+                "url": c.get("url") or None,
+                "title_zh": c.get("title_zh") or None,
+                "display_date": c.get("display_date") or "",
+                "authors": c.get("authors") or "",
+                "venue_name": c.get("venue_name") or None,
+                "rank_badges": [],
+                "cited_by_count": c.get("cited_by_count"),
+                "tags": c.get("tags") or [],
+                "llm_reason": c.get("llm_reason") or None,
+                "research_question": c.get("research_question") or None,
+                "methodology": c.get("methodology") or None,
+                "key_findings": c.get("key_findings") or [],
+                "bandit_score": c.get("bandit_score"),
+            },
+        })
     return ExploreCardsResponse(
-        items=cards,
+        items=items,
+        count=len(items),
         pool_count=_pool_count(tenant_id, sub_id),
         is_filling=False,
     )
