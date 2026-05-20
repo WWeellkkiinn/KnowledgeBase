@@ -68,6 +68,7 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
     prevAction.value = action
     sessionStats[action]++
     cards.value = cards.value.slice(1)
+    poolCount.value = Math.max(0, poolCount.value - 1)
     queueRecord(() => exploreApi.recordAction(card.id, action))
     if (cards.value.length <= 10) loadMoreCards()
   } finally {
@@ -93,6 +94,7 @@ async function doUndo() {
     if (prevAction.value) {
       sessionStats[prevAction.value] = Math.max(0, sessionStats[prevAction.value] - 1)
     }
+    poolCount.value = poolCount.value + 1
     prevCard.value = null
     prevAction.value = null
     queueRecord(() => exploreApi.undo(undoCard.id))
