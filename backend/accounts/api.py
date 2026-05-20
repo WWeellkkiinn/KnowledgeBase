@@ -61,6 +61,11 @@ class SwitchTenantIn(Schema):
     tenant_id: int
 
 
+class ChangePasswordIn(Schema):
+    old_password: str
+    new_password: str
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _me_payload(request) -> MeOut:
@@ -186,4 +191,27 @@ def switch_tenant(request, payload: SwitchTenantIn):
 @router.post("/logout")
 def logout_view(request):
     logout(request)
+    return {"status": "ok"}
+
+
+@router.post("/change-password")
+def change_password(request, payload: ChangePasswordIn):
+    """Self-service password change. Requires the current password to defend
+    against session-hijack ⇒ persistent compromise."""
+    from django.contrib.auth import update_session_auth_hash
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
+
+    if not request.user.is_authenticated:
+        raise HttpError(401, "Not authenticated")
+    if not request.user.check_password(payload.old_password):
+        raise HttpError(400, "Current password is incorrect")
+    try:
+        validate_password(payload.new_password, user=request.user)
+    except ValidationError as exc:
+        raise HttpError(400, "; ".join(exc.messages))
+    request.user.set_password(payload.new_password)
+    request.user.save(update_fields=["password"])
+    # Keep the existing session alive after the hash rotates.
+    update_session_auth_hash(request, request.user)
     return {"status": "ok"}

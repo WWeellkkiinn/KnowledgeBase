@@ -56,4 +56,7 @@ export const authApi = {
 
   logout: () =>
     client.post<{ ok: boolean }>('/auth/logout').then((r) => r.data),
+
+  changePassword: (payload: { old_password: string; new_password: string }) =>
+    client.post<{ status: string }>('/auth/change-password', payload).then((r) => r.data),
 }

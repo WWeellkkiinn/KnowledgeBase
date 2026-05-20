@@ -66,6 +66,10 @@ export const useAuthStore = defineStore('auth', () => {
     activeTenantId.value = null
   }
 
+  async function changePassword(oldPassword: string, newPassword: string) {
+    await authApi.changePassword({ old_password: oldPassword, new_password: newPassword })
+  }
+
   function clear() {
     user.value = null
     tenants.value = []
@@ -84,6 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
     consumeMagicLink,
     switchTenant,
     logout,
+    changePassword,
     clear,
   }
 })
