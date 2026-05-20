@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -24,7 +25,37 @@ _log = logging.getLogger(__name__)
 
 _API_URL = "https://www.easyscholar.cc/open/getPublicationRank"
 _CACHE_TTL_DAYS = 180
-_RATE_SLEEP = 0.5  # 每次请求后等待，保证 ≤2次/秒
+_RATE_INTERVAL = 0.5  # per-key interval (s) — API 限制 2 req/s per key
+
+
+class _KeyPool:
+    """Per-key rate-limited pool. Always picks the key whose next slot is soonest."""
+
+    def __init__(self, keys: list[str], interval: float) -> None:
+        self._keys = keys
+        self._last = [0.0] * len(keys)
+        self._lock = threading.Lock()
+        self._interval = interval
+
+    def acquire(self) -> tuple[str, float]:
+        """Reserve the next available slot; return (key, sleep_seconds)."""
+        with self._lock:
+            now = time.time()
+            idx = min(range(len(self._keys)), key=lambda i: self._last[i])
+            next_avail = self._last[idx] + self._interval
+            sleep_time = max(0.0, next_avail - now)
+            self._last[idx] = max(now, next_avail)
+        return self._keys[idx], sleep_time
+
+
+def _load_es_pool() -> _KeyPool:
+    raw = os.environ.get("EASYSCHOLAR_SECRET_KEY", "")
+    keys = [k.strip() for k in raw.split(",") if k.strip()] or [""]
+    _log.info("[easyscholar] %d key(s) loaded", len(keys))
+    return _KeyPool(keys, _RATE_INTERVAL)
+
+
+_es_pool: _KeyPool = _load_es_pool()
 
 # 展示的字段及中文标签
 DISPLAY_FIELDS: list[tuple[str, str]] = [
@@ -36,10 +67,6 @@ DISPLAY_FIELDS: list[tuple[str, str]] = [
     ("ccf",       "CCF"),
     ("cssci",     "CSSCI"),
 ]
-
-
-def _secret_key() -> str:
-    return os.environ.get("EASYSCHOLAR_SECRET_KEY", "")
 
 
 def _utcnow() -> datetime:
@@ -54,17 +81,18 @@ def _is_stale(fetched_at: Optional[datetime]) -> bool:
 
 def fetch_from_api(journal_name: str) -> Optional[dict]:
     """调 EasyScholar API，返回 officialRank.all 字典，失败返回 None。"""
-    key = _secret_key()
+    key, sleep_time = _es_pool.acquire()
     if not key:
         _log.warning("[easyscholar] EASYSCHOLAR_SECRET_KEY not set")
         return None
+    if sleep_time > 0:
+        time.sleep(sleep_time)
     encoded = urllib.parse.quote(journal_name, safe="")
     try:
         resp = httpx.get(
             f"{_API_URL}?secretKey={key}&publicationName={encoded}",
             timeout=15,
         )
-        time.sleep(_RATE_SLEEP)
         if resp.status_code != 200:
             _log.warning("[easyscholar] HTTP %s for %s", resp.status_code, journal_name)
             return None

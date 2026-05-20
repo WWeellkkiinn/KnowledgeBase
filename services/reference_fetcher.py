@@ -16,7 +16,6 @@ import logging
 import re
 import threading
 import time
-import functools
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -32,12 +31,46 @@ _OPENALEX_BASE = "https://api.openalex.org"
 _TIMEOUT = 30
 _PER_PAGE = 100
 
-# SS API key 认证后限速 1 req/s（官方值），实测 0.8s 无 429，更快
+# SS per-key interval (s) — official limit 1 req/s, 0.8s gives headroom
 _SS_INTERVAL = 0.8
-_SS_LOCK = threading.Lock()
-_ss_last_call: float = 0.0
 
 _DOI_ALLOWED = re.compile(r"^10\.[0-9]{1,9}/[A-Za-z0-9._;()/:\-]+$")
+
+
+class _KeyPool:
+    """Per-key rate-limited pool. Always picks the key whose next slot is soonest."""
+
+    def __init__(self, keys: list[str], interval: float) -> None:
+        self._keys = keys
+        self._last = [0.0] * len(keys)
+        self._lock = threading.Lock()
+        self._interval = interval
+
+    def acquire(self) -> tuple[str, float]:
+        """Reserve the next available slot; return (key, sleep_seconds)."""
+        with self._lock:
+            now = time.time()
+            idx = min(range(len(self._keys)), key=lambda i: self._last[i])
+            next_avail = self._last[idx] + self._interval
+            sleep_time = max(0.0, next_avail - now)
+            self._last[idx] = max(now, next_avail)
+        return self._keys[idx], sleep_time
+
+
+def _load_ss_pool() -> _KeyPool:
+    ensure_scripts_on_path()
+    raw = ""
+    try:
+        from config import SS_API_KEY  # type: ignore
+        raw = SS_API_KEY or ""
+    except Exception:
+        pass
+    keys = [k.strip() for k in raw.split(",") if k.strip()] or [""]
+    _log.info("[ss] %d key(s) loaded", len(keys))
+    return _KeyPool(keys, _SS_INTERVAL)
+
+
+_ss_pool: _KeyPool = _load_ss_pool()
 
 
 # ─── 数据结构 ────────────────────────────────────────────────────────────────
@@ -75,25 +108,12 @@ def normalize_doi(doi: str) -> str:
 
 # ─── HTTP 工具 ───────────────────────────────────────────────────────────────
 
-def _ss_get(url: str, params: dict, headers: dict) -> Optional[httpx.Response]:
-    """SS GET 限速器：节流到 _SS_INTERVAL，遇 429 退避一次重试。
-    锁只保护时间戳读写，sleep 和 HTTP 调用在锁外执行，避免长时间持锁阻塞其他线程。
-    """
-    global _ss_last_call
-    with _SS_LOCK:
-        now = time.time()
-        elapsed = now - _ss_last_call
-        if elapsed < _SS_INTERVAL:
-            # 预约下一个时间槽
-            _ss_last_call += _SS_INTERVAL
-            sleep_time = _ss_last_call - now
-        else:
-            _ss_last_call = now
-            sleep_time = 0.0
-
-    # sleep 和 HTTP 在锁外执行
+def _ss_get(url: str, params: dict) -> Optional[httpx.Response]:
+    """SS GET：从 key pool 取最早可用的 key，sleep 到可用窗口，遇 429 退避重试。"""
+    key, sleep_time = _ss_pool.acquire()
     if sleep_time > 0:
         time.sleep(sleep_time)
+    headers = {"x-api-key": key} if key else {}
 
     for attempt in (0, 1):
         if attempt:
@@ -107,16 +127,6 @@ def _ss_get(url: str, params: dict, headers: dict) -> Optional[httpx.Response]:
             return resp
         _log.warning("[ss] 429 rate-limited; backing off")
     return None
-
-
-@functools.lru_cache(maxsize=1)
-def _ss_headers() -> dict:
-    ensure_scripts_on_path()
-    try:
-        from config import SS_API_KEY  # type: ignore
-        return {"x-api-key": SS_API_KEY} if SS_API_KEY else {}
-    except Exception:
-        return {}
 
 
 @functools.lru_cache(maxsize=1)
@@ -202,7 +212,6 @@ def _ss_cited_by(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]:
             resp = _ss_get(
                 f"{_SS_BASE}/paper/DOI:{doi}/citations",
                 {"fields": _SS_FIELDS, "limit": page_size, "offset": offset},
-                _ss_headers(),
             )
             if resp is None or resp.status_code != 200:
                 _log.warning("[ss] cited_by %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
@@ -275,7 +284,6 @@ def _ss_references(doi: str, limit: Optional[int] = None) -> list[ReferenceItem]
             resp = _ss_get(
                 f"{_SS_BASE}/paper/DOI:{doi}/references",
                 {"fields": _SS_FIELDS, "limit": page_size, "offset": offset},
-                _ss_headers(),
             )
             if resp is None or resp.status_code != 200:
                 _log.warning("[ss] references %s: HTTP %s", doi, "n/a" if resp is None else resp.status_code)
