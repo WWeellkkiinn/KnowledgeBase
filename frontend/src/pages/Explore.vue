@@ -25,8 +25,11 @@ const loading = ref(true)
 const sub = ref<Subscription | null>(null)
 const poolCount = ref(0)
 const isFilling = ref(false)
+const ghostCard = ref<ExploreCardItem | null>(null)
+const ghostDir = ref<'left' | 'right'>('left')
 
 const cardRef = ref<HTMLDivElement>()
+const ghostEl = ref<HTMLDivElement>()
 
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null
 let isLoadingMore = false
@@ -59,34 +62,36 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   const el = cardRef.value
   try {
     const W = (el.offsetWidth ?? 320) + 16
-    const out = el.animate(
-      [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
-      { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-    )
-    await out.finished.catch(() => {})
-    el.style.transform = `translateX(${-W}px)`
-    out.cancel()
-    prevCard.value = card
-    prevAction.value = action
-    sessionStats[action]++
+    ghostCard.value = card
+    ghostDir.value = 'left'
+    await nextTick()
     cards.value = cards.value.slice(1)
     poolCount.value = Math.max(0, poolCount.value - 1)
-    queueRecord(() => exploreApi.recordAction(card.id, action))
-    if (cards.value.length <= 10) loadMoreCards()
+    el.style.transform = `translateX(${W}px)`
     await nextTick()
-    if (cards.value[0] && cardRef.value) {
-      cardRef.value.style.transform = `translateX(${W}px)`
-      void cardRef.value.offsetHeight
-      const inAnim = cardRef.value.animate(
+    const anims: Promise<unknown>[] = []
+    if (ghostEl.value) {
+      const gAnim = ghostEl.value.animate(
+        [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
+        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
+      )
+      anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
+    }
+    if (cards.value[0]) {
+      const cAnim = el.animate(
         [{ transform: `translateX(${W}px)` }, { transform: 'translateX(0)' }],
         { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
       )
-      await inAnim.finished.catch(() => {})
-      inAnim.cancel()
-      cardRef.value.style.transform = ''
-    } else if (cardRef.value) {
-      cardRef.value.style.transform = ''
+      anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
     }
+    await Promise.all(anims)
+    el.style.transform = ''
+    prevCard.value = card
+    prevAction.value = action
+    sessionStats[action]++
+    ghostCard.value = null
+    queueRecord(() => exploreApi.recordAction(card.id, action))
+    if (cards.value.length <= 10) loadMoreCards()
   } finally {
     animating.value = false
   }
@@ -96,38 +101,44 @@ async function doUndo() {
   if (animating.value || !prevCard.value || !cardRef.value) return
   animating.value = true
   const undoCard = prevCard.value
+  const oldAction = prevAction.value
   const el = cardRef.value
   try {
     const W = (el.offsetWidth ?? 320) + 16
-    const m = el.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
-    const curDx = m ? parseFloat(m[1]) : 0
-    const out = el.animate(
-      [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
-      { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-    )
-    await out.finished.catch(() => {})
-    el.style.transform = `translateX(${W * 1.5}px)`
-    out.cancel()
+    const hadTop = !!cards.value[0]
+    if (hadTop) {
+      ghostCard.value = cards.value[0]
+      ghostDir.value = 'right'
+      await nextTick()
+    }
     cards.value = [undoCard, ...cards.value]
-    if (prevAction.value) {
-      sessionStats[prevAction.value] = Math.max(0, sessionStats[prevAction.value] - 1)
+    if (oldAction) {
+      sessionStats[oldAction] = Math.max(0, sessionStats[oldAction] - 1)
     }
     poolCount.value = poolCount.value + 1
     prevCard.value = null
     prevAction.value = null
-    queueRecord(() => exploreApi.undo(undoCard.id))
+    el.style.transform = `translateX(${-W}px)`
     await nextTick()
-    if (cardRef.value) {
-      cardRef.value.style.transform = `translateX(${-W}px)`
-      void cardRef.value.offsetHeight
-      const inAnim = cardRef.value.animate(
-        [{ transform: `translateX(${-W}px)` }, { transform: 'translateX(0)' }],
-        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
+    const anims: Promise<unknown>[] = []
+    if (hadTop && ghostEl.value) {
+      const m = ghostEl.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
+      const curDx = m ? parseFloat(m[1]) : 0
+      const gAnim = ghostEl.value.animate(
+        [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W}px)` }],
+        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
       )
-      await inAnim.finished.catch(() => {})
-      inAnim.cancel()
-      cardRef.value.style.transform = ''
+      anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
     }
+    const cAnim = el.animate(
+      [{ transform: `translateX(${-W}px)` }, { transform: 'translateX(0)' }],
+      { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
+    )
+    anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
+    await Promise.all(anims)
+    el.style.transform = ''
+    ghostCard.value = null
+    queueRecord(() => exploreApi.undo(undoCard.id))
   } finally {
     animating.value = false
   }
@@ -265,6 +276,16 @@ onBeforeUnmount(() => {
         @touchend.passive="onTouchEnd"
         @touchcancel.passive="onTouchCancel"
       >
+        <div v-if="ghostCard" ref="ghostEl" class="card-current card-ghost" aria-hidden="true">
+          <div class="card-content-area">
+            <ExploreCard :card="ghostCard.card" />
+          </div>
+          <div class="card-action-bar">
+            <button class="btn-skip" disabled tabindex="-1"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
+            <button class="btn-pass" disabled tabindex="-1"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
+            <button class="btn-save" disabled tabindex="-1"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
+          </div>
+        </div>
         <div ref="cardRef" class="card-current" @touchmove="onTouchMove">
           <div class="card-content-area">
             <ExploreLoading v-if="loading" />
@@ -382,9 +403,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   max-width: 640px;
   width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  position: relative;
   overflow: hidden;
 }
 
@@ -392,14 +411,17 @@ onBeforeUnmount(() => {
   background: #fff;
   border-radius: 20px;
   box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
-  position: relative;
-  width: 100%;
-  max-height: 100%;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   will-change: transform;
   cursor: grab;
+}
+
+.card-ghost {
+  pointer-events: none;
 }
 
 .card-content-area {
