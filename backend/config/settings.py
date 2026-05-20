@@ -98,9 +98,14 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
-SESSION_COOKIE_SECURE = not DEBUG
+# Secure 默认 = (not DEBUG)，但 HTTP 部署需要显式关掉，否则浏览器不会带 cookie。
+# 用 DJANGO_COOKIE_SECURE env 控制：未设 → 沿用 not DEBUG；设为 0/1 → 强制。
+_cookie_secure_env = os.environ.get("DJANGO_COOKIE_SECURE", "").strip()
+SESSION_COOKIE_SECURE = (
+    bool(int(_cookie_secure_env)) if _cookie_secure_env else (not DEBUG)
+)
 CSRF_COOKIE_SAMESITE = "Lax"
-CSRF_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
 # Frontend reads csrftoken to inject X-CSRFToken; cannot be HttpOnly.
 CSRF_COOKIE_HTTPONLY = False
 CSRF_TRUSTED_ORIGINS = [
