@@ -25,11 +25,20 @@ const loading = ref(true)
 const sub = ref<Subscription | null>(null)
 const poolCount = ref(0)
 const isFilling = ref(false)
-const ghostCard = ref<ExploreCardItem | null>(null)
-const ghostDir = ref<'left' | 'right'>('left')
+const ghostOutCard = ref<ExploreCardItem | null>(null)
 
 const cardRef = ref<HTMLDivElement>()
-const ghostEl = ref<HTMLDivElement>()
+const ghostInEl = ref<HTMLDivElement>()
+const ghostOutEl = ref<HTMLDivElement>()
+
+function readTx(el: HTMLDivElement | undefined): number {
+  if (!el) return 0
+  const m = el.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
+  return m ? parseFloat(m[1]) : 0
+}
+function cardW(): number {
+  return (cardRef.value?.offsetWidth ?? 320) + 16
+}
 
 let sx = 0, sy = 0, swipeDir: 'h' | 'v' | null = null
 let isLoadingMore = false
@@ -42,15 +51,28 @@ function queueRecord(fn: () => Promise<unknown>) {
 
 function snapAllBack() {
   if (snapAnim) { snapAnim.cancel(); snapAnim = null }
-  const m = cardRef.value?.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
-  const curDx = m ? parseFloat(m[1]) : 0
   const opts = { duration: 220, easing: ENTER_EASING }
-  const animation = cardRef.value?.animate([{ transform: `translateX(${curDx}px)` }, { transform: 'none' }], opts)
-  if (animation) {
+  if (cardRef.value) {
+    const cur = readTx(cardRef.value)
+    const animation = cardRef.value.animate(
+      [{ transform: `translateX(${cur}px)` }, { transform: 'none' }],
+      opts,
+    )
     snapAnim = animation
     animation.onfinish = () => {
       if (cardRef.value) cardRef.value.style.transform = ''
-      snapAnim = null
+      if (snapAnim === animation) snapAnim = null
+    }
+  }
+  if (ghostInEl.value && ghostInEl.value.style.transform) {
+    const cur = readTx(ghostInEl.value)
+    const W = cardW()
+    const anim = ghostInEl.value.animate(
+      [{ transform: `translateX(${cur}px)` }, { transform: `translateX(${-W}px)` }],
+      opts,
+    )
+    anim.onfinish = () => {
+      if (ghostInEl.value) ghostInEl.value.style.transform = ''
     }
   }
 }
@@ -61,26 +83,25 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   const card = cards.value[0]
   const el = cardRef.value
   try {
-    const W = (el.offsetWidth ?? 320) + 16
-    ghostCard.value = card
-    ghostDir.value = 'left'
+    const W = cardW()
+    ghostOutCard.value = card
     await nextTick()
     cards.value = cards.value.slice(1)
     poolCount.value = Math.max(0, poolCount.value - 1)
     el.style.transform = `translateX(${W}px)`
     await nextTick()
     const anims: Promise<unknown>[] = []
-    if (ghostEl.value) {
-      const gAnim = ghostEl.value.animate(
+    if (ghostOutEl.value) {
+      const gAnim = ghostOutEl.value.animate(
         [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
-        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
+        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' },
       )
       anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
     }
     if (cards.value[0]) {
       const cAnim = el.animate(
         [{ transform: `translateX(${W}px)` }, { transform: 'translateX(0)' }],
-        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
+        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' },
       )
       anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
     }
@@ -89,7 +110,7 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
     prevCard.value = card
     prevAction.value = action
     sessionStats[action]++
-    ghostCard.value = null
+    ghostOutCard.value = null
     queueRecord(() => exploreApi.recordAction(card.id, action))
     if (cards.value.length <= 10) loadMoreCards()
   } finally {
@@ -104,13 +125,29 @@ async function doUndo() {
   const oldAction = prevAction.value
   const el = cardRef.value
   try {
-    const W = (el.offsetWidth ?? 320) + 16
+    const W = cardW()
+    const curCardTx = readTx(el)
+    const curGhostTx = ghostInEl.value ? readTx(ghostInEl.value) : -W
     const hadTop = !!cards.value[0]
+    const anims: Promise<unknown>[] = []
     if (hadTop) {
-      ghostCard.value = cards.value[0]
-      ghostDir.value = 'right'
-      await nextTick()
+      const cAnim = el.animate(
+        [{ transform: `translateX(${curCardTx}px)` }, { transform: `translateX(${W}px)` }],
+        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' },
+      )
+      anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
     }
+    if (ghostInEl.value) {
+      const gAnim = ghostInEl.value.animate(
+        [
+          { transform: `translateX(${curGhostTx}px)` },
+          { transform: 'translateX(0)' },
+        ],
+        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' },
+      )
+      anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
+    }
+    await Promise.all(anims)
     cards.value = [undoCard, ...cards.value]
     if (oldAction) {
       sessionStats[oldAction] = Math.max(0, sessionStats[oldAction] - 1)
@@ -118,26 +155,8 @@ async function doUndo() {
     poolCount.value = poolCount.value + 1
     prevCard.value = null
     prevAction.value = null
-    el.style.transform = `translateX(${-W}px)`
-    await nextTick()
-    const anims: Promise<unknown>[] = []
-    if (hadTop && ghostEl.value) {
-      const m = ghostEl.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
-      const curDx = m ? parseFloat(m[1]) : 0
-      const gAnim = ghostEl.value.animate(
-        [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W}px)` }],
-        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
-      )
-      anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
-    }
-    const cAnim = el.animate(
-      [{ transform: `translateX(${-W}px)` }, { transform: 'translateX(0)' }],
-      { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
-    )
-    anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
-    await Promise.all(anims)
     el.style.transform = ''
-    ghostCard.value = null
+    if (ghostInEl.value) ghostInEl.value.style.transform = ''
     queueRecord(() => exploreApi.undo(undoCard.id))
   } finally {
     animating.value = false
@@ -215,9 +234,11 @@ function onTouchMove(e: TouchEvent) {
   }
   if (swipeDir !== 'h') return
   e.preventDefault()
+  const W = cardW()
   if (dx > 0 && prevCard.value) {
     const travel = dx <= UNDO_THRESHOLD ? dx : UNDO_THRESHOLD + (dx - UNDO_THRESHOLD) * 0.25
     if (cardRef.value) cardRef.value.style.transform = `translateX(${travel}px)`
+    if (ghostInEl.value) ghostInEl.value.style.transform = `translateX(${-W + travel}px)`
   } else if (dx > 0) {
     const travel = Math.min(dx * 0.12, 18)
     if (cardRef.value) cardRef.value.style.transform = `translateX(${travel}px)`
@@ -276,26 +297,38 @@ onBeforeUnmount(() => {
         @touchend.passive="onTouchEnd"
         @touchcancel.passive="onTouchCancel"
       >
-        <div v-if="ghostCard" ref="ghostEl" class="card-current card-ghost" aria-hidden="true">
-          <div class="card-content-area">
-            <ExploreCard :card="ghostCard.card" />
+        <div class="card-deck">
+          <div v-if="prevCard" ref="ghostInEl" class="card-current card-ghost card-ghost-in" aria-hidden="true">
+            <div class="card-content-area">
+              <ExploreCard :card="prevCard.card" />
+            </div>
+            <div class="card-action-bar">
+              <button class="btn-skip" disabled tabindex="-1"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
+              <button class="btn-pass" disabled tabindex="-1"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
+              <button class="btn-save" disabled tabindex="-1"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
+            </div>
           </div>
-          <div class="card-action-bar">
-            <button class="btn-skip" disabled tabindex="-1"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
-            <button class="btn-pass" disabled tabindex="-1"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
-            <button class="btn-save" disabled tabindex="-1"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
+          <div v-if="ghostOutCard" ref="ghostOutEl" class="card-current card-ghost" aria-hidden="true">
+            <div class="card-content-area">
+              <ExploreCard :card="ghostOutCard.card" />
+            </div>
+            <div class="card-action-bar">
+              <button class="btn-skip" disabled tabindex="-1"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
+              <button class="btn-pass" disabled tabindex="-1"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
+              <button class="btn-save" disabled tabindex="-1"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
+            </div>
           </div>
-        </div>
-        <div ref="cardRef" class="card-current" @touchmove="onTouchMove">
-          <div class="card-content-area">
-            <ExploreLoading v-if="loading" />
-            <ExploreEmpty v-else-if="!cards[0]" />
-            <ExploreCard v-else :card="cards[0].card" />
-          </div>
-          <div class="card-action-bar" v-if="!loading && cards.length > 0">
-            <button class="btn-skip" :disabled="animating" @click="doAction('skipped')"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
-            <button class="btn-pass" :disabled="animating" @click="doAction('passed')"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
-            <button class="btn-save" :disabled="animating" @click="doAction('saved')"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
+          <div ref="cardRef" class="card-current" @touchmove="onTouchMove">
+            <div class="card-content-area">
+              <ExploreLoading v-if="loading" />
+              <ExploreEmpty v-else-if="!cards[0]" />
+              <ExploreCard v-else :card="cards[0].card" />
+            </div>
+            <div class="card-action-bar" v-if="!loading && cards.length > 0">
+              <button class="btn-skip" :disabled="animating" @click="doAction('skipped')"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
+              <button class="btn-pass" :disabled="animating" @click="doAction('passed')"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
+              <button class="btn-save" :disabled="animating" @click="doAction('saved')"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
+            </div>
           </div>
         </div>
       </div>
@@ -407,6 +440,11 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.card-deck {
+  position: absolute;
+  inset: 28px 6px 32px 6px;
+}
+
 .card-current {
   background: #fff;
   border-radius: 20px;
@@ -422,6 +460,10 @@ onBeforeUnmount(() => {
 
 .card-ghost {
   pointer-events: none;
+}
+
+.card-ghost-in {
+  transform: translate3d(calc(-100% - 16px), 0, 0);
 }
 
 .card-content-area {
