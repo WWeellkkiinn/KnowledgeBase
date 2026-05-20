@@ -20,11 +20,10 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
+    Float,
     Index,
     Integer,
-    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -186,8 +185,6 @@ class ExplorePool(Base):
     research_question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     key_findings_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
-    pre_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
     external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     score_attempts: Mapped[int] = mapped_column(
         Integer, default=0, server_default=text("0"), nullable=False
@@ -204,6 +201,8 @@ class TagDict(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tag: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     source: Mapped[str] = mapped_column(String(16), nullable=False)
+    alpha: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    beta: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.current_timestamp(), nullable=False
     )

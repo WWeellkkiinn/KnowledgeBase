@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import limiter
 from database import models
+from services.bandit import apply_action as bandit_apply
 from services.tag_pool import promote_proposed_tags
 
 
@@ -748,7 +749,7 @@ def update_subscription(sub_id: int):
     from services import SubscriptionService
     body = request.get_json(silent=True) or {}
     try:
-        sub, description_changed = SubscriptionService.update(
+        sub, _description_changed = SubscriptionService.update(
             g.db, sub_id,
             active=body.get("active"),
             description=body.get("description"),
@@ -759,18 +760,6 @@ def update_subscription(sub_id: int):
     if sub is None:
         return jsonify({"error": "not found"}), 404
     g.db.commit()
-    if description_changed:
-        import threading as _t
-        from database import SessionLocal as _SL
-        from services.explore_service import _compute_pre_scores
-        sid = sub.id
-        def _bg_recompute(s_id):
-            s = _SL()
-            try:
-                _compute_pre_scores(s, s_id)
-            finally:
-                s.close()
-        _t.Thread(target=_bg_recompute, args=(sid,), daemon=True).start()
     try:
         from services.upload_worker import wake_worker
         wake_worker()
@@ -1253,7 +1242,7 @@ def send_digest_now():
 # ── 探索池 ──────────────────────────────────────────────────────────────
 @bp.get("/explore/cards")
 def get_explore_cards():
-    """获取探索池待评卡片列表，按 embedding 得分排序。"""
+    """获取探索池待评卡片列表。"""
     from services.explore_service import get_explore_cards
     sub_id = request.args.get("sub_id", type=int)
     limit = request.args.get("limit", 10, type=int)
@@ -1273,10 +1262,12 @@ def record_explore_action(pool_id: int):
     body = request.get_json(silent=True) or {}
     action = body.get("action", "")
     try:
+        card = g.db.get(models.ExplorePool, pool_id)
         result = record_explore_action(g.db, pool_id, action)
         if action == "saved":
             promoted = promote_proposed_tags(g.db, pool_id)
             _log.info("promoted tags: %s", promoted)
+        bandit_apply(g.db, card.tags_json or [], action)
         return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1296,7 +1287,7 @@ def explore_undo(pool_id: int):
 @limiter.limit("3 per minute")
 def refill_explore_pool():
     """手动触发探索池补充。"""
-    from services.explore_service import fill_explore_pool, score_and_embed_pending
+    from services.explore_service import fill_explore_pool, enrich_pending
     sub_id = request.args.get("sub_id", type=int)
     if not sub_id:
         return jsonify({"error": "sub_id required"}), 400
@@ -1329,7 +1320,7 @@ def refill_explore_pool():
         fill_result = fill_explore_pool(g.db, sub)
 
     # 先同步打分第一批（10篇），让用户立刻看到卡片
-    first_batch = score_and_embed_pending(g.db, sub_id, max_items=10)
+    first_batch = enrich_pending(g.db, sub_id, max_items=10)
 
     # 剩余卡片放后台线程继续处理
     import threading
@@ -1338,7 +1329,7 @@ def refill_explore_pool():
     def _bg(sid):
         s = _SL()
         try:
-            score_and_embed_pending(s, sid)
+            enrich_pending(s, sid)
         finally:
             s.close()
 

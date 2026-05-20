@@ -28,9 +28,6 @@ const renderedBadges = computed(() =>
     .filter((b): b is { bg: string; color: string; text: string } => b !== null),
 )
 
-const embeddingScoreText = computed(() =>
-  props.card.embedding_score != null ? `相关度 ${props.card.embedding_score.toFixed(2)}` : null,
-)
 </script>
 
 <template>
@@ -38,7 +35,6 @@ const embeddingScoreText = computed(() =>
     <p class="title-line">
       <a v-if="card.url" :href="card.url" class="title-link"><strong>{{ card.title }}</strong></a>
       <strong v-else>{{ card.title }}</strong>
-      <span v-if="embeddingScoreText" class="score-badge">{{ embeddingScoreText }}</span>
     </p>
 
     <p v-if="card.title_zh" class="title-zh"><strong>{{ card.title_zh }}</strong></p>

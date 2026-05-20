@@ -185,7 +185,6 @@ export interface ExploreCardData {
   title: string
   url: string | null
   title_zh: string | null
-  embedding_score: number | null
   display_date: string
   authors: string
   venue_name: string | null

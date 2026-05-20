@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import models
-from services.embedding_service import embed_text, score_candidate
+from services.bandit import score_card
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
 _log = logging.getLogger(__name__)
@@ -76,7 +76,6 @@ def fill_explore_pool(db, sub, target=200) -> dict:
             models.ExplorePool.subscription_id == sub.id,
             models.ExplorePool.action.is_(None),
             models.ExplorePool.scored_at.isnot(None),
-            models.ExplorePool.pre_score >= 0,
         )
     ).scalar_one()
     needed = max(0, int(target) - int(displayable or 0))
@@ -172,44 +171,23 @@ def fill_explore_pool(db, sub, target=200) -> dict:
     return {"added": added, "existing": current}
 
 
-def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
+def enrich_pending(db, sub_id, max_items: int = 120) -> dict:
     stmt = (
         select(models.ExplorePool, models.Subscription.description)
         .join(models.Subscription, models.ExplorePool.subscription_id == models.Subscription.id)
         .where(models.ExplorePool.subscription_id == sub_id)
         .where(models.ExplorePool.action.is_(None))
-        .where((models.ExplorePool.scored_at.is_(None)) | (models.ExplorePool.embedding.is_(None)))
+        .where(models.ExplorePool.scored_at.is_(None))
         .order_by(models.ExplorePool.found_at.desc())
         .limit(max_items)
     )
     rows = list(db.execute(stmt).all())
     if not rows:
-        return {"embedded": 0, "llm_queued": 0, "errors": 0}
+        return {"llm_queued": 0, "errors": 0}
 
     items = [item for item, _ in rows]
-    # Truncate description to prevent prompt injection via user-controlled input
     description = (rows[0][1] or "")[:500]
-    embedded = 0
 
-    # Step 1: embed first so cards can appear quickly
-    no_emb = [item for item in items if item.embedding is None]
-    if no_emb:
-        from services.embedding_service import embed_texts_batch
-        texts = [
-            f"{(item.raw_metadata_json or {}).get('title') or ''}\n\n{(item.raw_metadata_json or {}).get('abstract') or ''}"[:8000]
-            for item in no_emb
-        ]
-        embs = embed_texts_batch(texts)
-        for item, emb in zip(no_emb, embs):
-            if emb is not None:
-                item.embedding = emb
-                embedded += 1
-    db.commit()
-
-    # Step 2: compute pre_scores immediately so GET /cards can return results
-    _compute_pre_scores(db, sub_id)
-
-    # Step 3: LLM scoring in background (slow — don't block the caller)
     # _scoring_subs guards against concurrent LLM threads for the same subscription
     needs_scoring = [item.id for item in items if item.scored_at is None]
     llm_queued = 0
@@ -275,117 +253,7 @@ def score_and_embed_pending(db, sub_id, max_items: int = 120) -> dict:
 
         threading.Thread(target=_bg_llm, args=(sub_id, description, needs_scoring), daemon=True).start()
 
-    return {"embedded": embedded, "llm_queued": llm_queued, "errors": 0}
-
-
-_query_emb_cache: dict[str, list] = {}  # "{sub_id}:{md5(queries)}" -> list[Optional[bytes]]
-
-
-def _queries_key(sub_id: int, queries: list[str]) -> str:
-    h = hashlib.md5("\n".join(queries).encode()).hexdigest()
-    return f"{sub_id}:{h}"
-
-
-def invalidate_query_cache(sub_id: int) -> None:
-    prefix = f"{sub_id}:"
-    keys_to_delete = [k for k in list(_query_emb_cache.keys()) if k.startswith(prefix)]
-    for k in keys_to_delete:
-        _query_emb_cache.pop(k, None)
-
-
-def _compute_pre_scores(db, sub_id: int) -> None:
-    from services.embedding_service import embed_texts_batch, score_candidates_matrix
-    sub = db.get(models.Subscription, sub_id)
-
-    # 查询锚点：权重动态化，防止用户行为完全主导方向
-    query_labeled: list[tuple[bytes, float]] = []
-    queries = list(sub.generated_queries or []) if sub else []
-    if queries:
-        key = _queries_key(sub_id, queries)
-        if key not in _query_emb_cache:
-            _query_emb_cache[key] = embed_texts_batch(queries)
-        q_embs = _query_emb_cache[key]
-        query_labeled = [(e, 1.0) for e in q_embs if e]
-
-    # 用户行为（带时间衰减）
-    user_labeled = _get_labeled_embeddings(db, sub_id)
-
-    # 冷启动：两者都没有时用描述 embedding
-    if not query_labeled and not user_labeled:
-        if sub and sub.description:
-            from services.embedding_service import embed_text
-            desc_emb = embed_text(sub.description)
-            if desc_emb:
-                user_labeled = [(desc_emb, 1.0)]
-        if not user_labeled:
-            return
-
-    items = list(db.execute(
-        select(models.ExplorePool).where(
-            models.ExplorePool.subscription_id == sub_id,
-            models.ExplorePool.action.is_(None),
-            models.ExplorePool.embedding.isnot(None),
-        ).order_by(models.ExplorePool.found_at.desc()).limit(2000)
-    ).scalars().all())
-    if not items:
-        return
-
-    cand_embs = [item.embedding for item in items]
-
-    if query_labeled and user_labeled:
-        # 动态锚点比例：按 saved 数量 0/30/60+ 三档：1.0/0.4/0.2
-        positive_count = db.execute(
-            select(func.count(models.ExplorePool.id)).where(
-                models.ExplorePool.subscription_id == sub_id,
-                models.ExplorePool.action == "saved",
-            )
-        ).scalar_one()
-        if positive_count == 0:
-            anchor_w = 1.0
-        elif positive_count < 30:
-            anchor_w = 1.0 - 0.6 * (positive_count / 30)
-        elif positive_count < 60:
-            anchor_w = 0.4 - 0.2 * ((positive_count - 30) / 30)
-        else:
-            anchor_w = 0.2
-        user_w = 1.0 - anchor_w
-        q_scores = score_candidates_matrix(cand_embs, query_labeled)
-        u_scores = score_candidates_matrix(cand_embs, user_labeled)
-        scores = [anchor_w * q + user_w * u for q, u in zip(q_scores, u_scores)]
-    elif query_labeled:
-        scores = score_candidates_matrix(cand_embs, query_labeled)
-    else:
-        scores = score_candidates_matrix(cand_embs, user_labeled)
-
-    for item, score in zip(items, scores):
-        item.pre_score = score
-    db.commit()
-
-
-def _get_labeled_embeddings(db, sub_id) -> list[tuple[bytes, float]]:
-    rows = db.execute(
-        select(models.ExplorePool.embedding, models.ExplorePool.action, models.ExplorePool.acted_at).where(
-            models.ExplorePool.subscription_id == sub_id,
-            models.ExplorePool.action.isnot(None),
-            models.ExplorePool.embedding.isnot(None),
-        )
-    ).all()
-    weights = {"saved": 1.0, "skipped": -1.0, "passed": 0.0}
-    now = _utcnow()
-    result = []
-    for emb, action, acted_at in rows:
-        if action not in weights:
-            continue
-        base = weights[action]
-        if base == 0.0:
-            continue
-        if acted_at:
-            days = max(0.0, (now - acted_at).total_seconds() / 86400)
-            # 半衰期 30 天：30天前的行为权重衰减到原来的一半
-            decay = 0.5 ** (days / 30)
-            base *= decay
-        result.append((emb, base))
-    return result
+    return {"llm_queued": llm_queued, "errors": 0}
 
 
 def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None):
@@ -394,16 +262,19 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         models.ExplorePool.subscription_id == sub_id,
         models.ExplorePool.action.is_(None),
         models.ExplorePool.scored_at.isnot(None),
-        models.ExplorePool.pre_score >= 0,
     ]
     if exclude_ids:
         conditions.append(models.ExplorePool.id.notin_(exclude_ids))
     items = list(db.execute(
-        select(models.ExplorePool).where(*conditions).order_by(
-            models.ExplorePool.pre_score.desc(),
-            models.ExplorePool.found_at.desc(),
-        ).limit(int(limit))
+        select(models.ExplorePool).where(*conditions)
     ).scalars().all())
+    scored_items = [
+        (score_card(db, item.tags_json or []), item)
+        for item in items
+        if item.tags_json
+    ]
+    scored_items.sort(key=lambda row: row[0], reverse=True)
+    items = [item for _, item in scored_items[:int(limit)]]
 
     # Batch-fetch journals for all venue_names in one query (avoids N+1)
     venue_names = {(item.raw_metadata_json or {}).get("venue_name") or "" for item in items}
@@ -423,13 +294,11 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         ).scalars().all()
         venue_cache_extra = {row.name: row.easyscholar_json for row in cache_rows}
 
-    # #5: 补池阈值用「可展示数」（scored_at NOT NULL + pre_score >= 0）
     displayable = db.execute(
         select(func.count(models.ExplorePool.id)).where(
             models.ExplorePool.subscription_id == sub_id,
             models.ExplorePool.action.is_(None),
             models.ExplorePool.scored_at.isnot(None),
-            models.ExplorePool.pre_score >= 0,
         )
     ).scalar_one()
     with _fill_lock:
@@ -449,7 +318,7 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
                         if elapsed < 60:
                             return
                     fill_explore_pool(s, sub_)
-                    score_and_embed_pending(s, sid)
+                    enrich_pending(s, sid)
                     sub_ = s.get(models.Subscription, sid)
                     if sub_:
                         sub_.last_filled_at = _utcnow()
@@ -478,18 +347,16 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         {
             "id": item.id,
             "card": build_explore_card_data(
-                item, sub, embedding_score=item.pre_score,
+                item, sub,
                 journal_cache=journal_cache, venue_cache=venue_cache_extra,
             ),
-            "score": round(item.pre_score or 0.0, 4),
             "action": item.action,
         }
         for item in items
     ]
 
 
-def build_explore_card_data(item, sub, embedding_score: float | None = None,
-                            db_session=None, journal_cache: dict | None = None,
+def build_explore_card_data(item, sub, db_session=None, journal_cache: dict | None = None,
                             venue_cache: dict | None = None) -> dict:
     from services.easyscholar_service import extract_badges
 
@@ -520,7 +387,6 @@ def build_explore_card_data(item, sub, embedding_score: float | None = None,
         "title": meta.get("title") or "",
         "url": url,
         "title_zh": item.title_zh or "",
-        "embedding_score": embedding_score,
         "display_date": meta.get("publication_date") or str(meta.get("year") or ""),
         "authors": ", ".join((meta.get("authors_json") or [])[:3]),
         "cited_by_count": meta.get("cited_by_count"),
@@ -550,16 +416,6 @@ def record_explore_action(db, pool_id, action) -> dict:
 
     refreshed = None
     sid = item.subscription_id
-
-    # #2: 每次打分都后台重算 pre_score
-    from database import SessionLocal as _SL
-    def _bg_rescore(sub_id_):
-        s = _SL()
-        try:
-            _compute_pre_scores(s, sub_id_)
-        finally:
-            s.close()
-    threading.Thread(target=_bg_rescore, args=(sid,), daemon=True).start()
 
     # query_refresh 保留 % 10 触发
     action_count = db.execute(

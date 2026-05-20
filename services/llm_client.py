@@ -3,8 +3,6 @@
 对外暴露：
     chat_completion(messages, max_tokens, temperature) -> str
     chat_completion_stream(messages, max_tokens) -> Iterator[str]
-    embed_texts_batch(texts) -> list[Optional[bytes]]
-    embed_text(text) -> Optional[bytes]
 
 配置全部从环境变量读取，缺失则调用时 RuntimeError。
 失败直接抛 httpx.HTTPStatusError，不吞错。
@@ -12,8 +10,7 @@
 from __future__ import annotations
 
 import os
-import struct
-from typing import Iterator, Optional
+from typing import Iterator
 
 import httpx
 
@@ -29,17 +26,6 @@ def _chat_config() -> tuple[str, str, str]:
         )
     except KeyError as e:
         raise RuntimeError(f"Missing chat LLM env var: {e.args[0]}") from None
-
-
-def _embed_config() -> tuple[str, str, str]:
-    try:
-        return (
-            os.environ["EMBED_API_BASE"].rstrip("/"),
-            os.environ["EMBED_API_KEY"],
-            os.environ["EMBED_MODEL"],
-        )
-    except KeyError as e:
-        raise RuntimeError(f"Missing embed LLM env var: {e.args[0]}") from None
 
 
 def chat_completion(
@@ -102,31 +88,3 @@ def chat_completion_stream(
                 content = delta.get("content")
                 if content:
                     yield content
-
-
-def embed_texts_batch(texts: list[str]) -> list[Optional[bytes]]:
-    indexed = [(i, (t or "").strip()) for i, t in enumerate(texts)]
-    non_empty = [(i, t) for i, t in indexed if t]
-    result: list[Optional[bytes]] = [None] * len(texts)
-    if not non_empty:
-        return result
-    base, key, model = _embed_config()
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    with httpx.Client(timeout=_TIMEOUT) as c:
-        resp = c.post(
-            f"{base}/embeddings",
-            headers=headers,
-            json={"model": model, "input": [t for _, t in non_empty]},
-        )
-    resp.raise_for_status()
-    data = resp.json().get("data") or []
-    for (orig_idx, _), item in zip(non_empty, data):
-        emb = item.get("embedding") or []
-        if emb:
-            result[orig_idx] = struct.pack(f"{len(emb)}f", *[float(x) for x in emb])
-    return result
-
-
-def embed_text(text: str) -> Optional[bytes]:
-    results = embed_texts_batch([text])
-    return results[0]
