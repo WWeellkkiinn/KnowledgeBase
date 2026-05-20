@@ -1,0 +1,481 @@
+{
+  "方法模型": {
+    "merges": [
+      {
+        "canonical": "主体建模",
+        "aliases": [
+          "ABM",
+          "ABM综述",
+          "主体仿真",
+          "主体模型",
+          "多主体",
+          "多智能体"
+        ]
+      },
+      {
+        "canonical": "仿真",
+        "aliases": [
+          "仿真建模",
+          "仿真模型",
+          "模拟"
+        ]
+      },
+      {
+        "canonical": "复杂系统",
+        "aliases": [
+          "复杂性",
+          "复杂系"
+        ]
+      },
+      {
+        "canonical": "均衡",
+        "aliases": [
+          "均衡分析"
+        ]
+      },
+      {
+        "canonical": "博弈",
+        "aliases": [
+          "博弈行为"
+        ]
+      },
+      {
+        "canonical": "决策",
+        "aliases": [
+          "决策支持"
+        ]
+      },
+      {
+        "canonical": "综述",
+        "aliases": [
+          "文献综述"
+        ]
+      },
+      {
+        "canonical": "文献计量",
+        "aliases": [
+          "研究图谱"
+        ]
+      },
+      {
+        "canonical": "建模工具",
+        "aliases": [
+          "工具箱"
+        ]
+      },
+      {
+        "canonical": "参数估计",
+        "aliases": [
+          "模型校准"
+        ]
+      },
+      {
+        "canonical": "随机建模",
+        "aliases": [
+          "随机性"
+        ]
+      },
+      {
+        "canonical": "领域进展",
+        "aliases": [
+          "方法演化"
+        ]
+      }
+    ]
+  },
+  "AI计算": {
+    "merges": [
+      {
+        "canonical": "智能体",
+        "aliases": [
+          "AI代理",
+          "Agent",
+          "智能代理",
+          "智能体AI"
+        ]
+      },
+      {
+        "canonical": "强化学习",
+        "aliases": [
+          "强化"
+        ]
+      },
+      {
+        "canonical": "推荐系统",
+        "aliases": [
+          "推荐"
+        ]
+      },
+      {
+        "canonical": "神经网络",
+        "aliases": [
+          "神经网"
+        ]
+      },
+      {
+        "canonical": "大模型",
+        "aliases": [
+          "LLM"
+        ]
+      },
+      {
+        "canonical": "生成式AI",
+        "aliases": [
+          "生成智能"
+        ]
+      },
+      {
+        "canonical": "控制系统",
+        "aliases": [
+          "控制"
+        ]
+      },
+      {
+        "canonical": "任务调度",
+        "aliases": [
+          "调度优化",
+          "资源调度"
+        ]
+      }
+    ]
+  },
+  "经济理论": {
+    "merges": [
+      {
+        "canonical": "产业",
+        "aliases": [
+          "产业经济"
+        ]
+      },
+      {
+        "canonical": "产业转型",
+        "aliases": [
+          "产业调整"
+        ]
+      },
+      {
+        "canonical": "信息扩散",
+        "aliases": [
+          "信息传播"
+        ]
+      },
+      {
+        "canonical": "宏观经济",
+        "aliases": [
+          "宏观",
+          "宏观理论"
+        ]
+      },
+      {
+        "canonical": "市场动态",
+        "aliases": [
+          "市场演化"
+        ]
+      },
+      {
+        "canonical": "政策模拟",
+        "aliases": [
+          "政策仿真"
+        ]
+      },
+      {
+        "canonical": "财富分配",
+        "aliases": [
+          "财富分布"
+        ]
+      },
+      {
+        "canonical": "税收",
+        "aliases": [
+          "税收研究"
+        ]
+      },
+      {
+        "canonical": "经济建模",
+        "aliases": [
+          "经济模型"
+        ]
+      }
+    ]
+  },
+  "金融市场": {
+    "merges": [
+      {
+        "canonical": "股市",
+        "aliases": [
+          "股票"
+        ]
+      },
+      {
+        "canonical": "股票预测",
+        "aliases": [
+          "股价预测"
+        ]
+      },
+      {
+        "canonical": "风险评估",
+        "aliases": [
+          "风险预测"
+        ]
+      },
+      {
+        "canonical": "数字金融",
+        "aliases": [
+          "金融科技"
+        ]
+      },
+      {
+        "canonical": "数字资产",
+        "aliases": [
+          "数字货币",
+          "加密市场"
+        ]
+      },
+      {
+        "canonical": "资产定价",
+        "aliases": [
+          "定价"
+        ]
+      }
+    ]
+  },
+  "管理产业": {
+    "merges": [
+      {
+        "canonical": "企业",
+        "aliases": [
+          "中小企业",
+          "企业协作",
+          "企业网络",
+          "建筑企业"
+        ]
+      },
+      {
+        "canonical": "会计",
+        "aliases": [
+          "会计框架",
+          "管理会计"
+        ]
+      },
+      {
+        "canonical": "创新",
+        "aliases": [
+          "数字创新",
+          "创新网络"
+        ]
+      },
+      {
+        "canonical": "制造业",
+        "aliases": [
+          "工业",
+          "工业4.0"
+        ]
+      },
+      {
+        "canonical": "品牌",
+        "aliases": [
+          "声誉"
+        ]
+      },
+      {
+        "canonical": "战略",
+        "aliases": [
+          "竞争策略"
+        ]
+      },
+      {
+        "canonical": "商业",
+        "aliases": [
+          "零售服务"
+        ]
+      }
+    ]
+  },
+  "政策治理": {
+    "merges": [
+      {
+        "canonical": "政策分析",
+        "aliases": [
+          "政策",
+          "政策评估",
+          "城市政策",
+          "环境政策",
+          "疫情政策",
+          "社会政策"
+        ]
+      },
+      {
+        "canonical": "治理",
+        "aliases": [
+          "公共管理"
+        ]
+      },
+      {
+        "canonical": "监管",
+        "aliases": [
+          "数据监管"
+        ]
+      }
+    ]
+  },
+  "社会教育": {
+    "merges": [
+      {
+        "canonical": "社会福利",
+        "aliases": [
+          "福利",
+          "社保"
+        ]
+      },
+      {
+        "canonical": "教育",
+        "aliases": [
+          "二语学习",
+          "编程教育",
+          "学生适应"
+        ]
+      },
+      {
+        "canonical": "心理",
+        "aliases": [
+          "幸福感",
+          "情绪"
+        ]
+      },
+      {
+        "canonical": "社会行为",
+        "aliases": [
+          "社会学习",
+          "集体动态"
+        ]
+      },
+      {
+        "canonical": "社会模拟",
+        "aliases": [
+          "冲突模拟"
+        ]
+      },
+      {
+        "canonical": "社媒",
+        "aliases": [
+          "社交网络"
+        ]
+      },
+      {
+        "canonical": "劳动经济",
+        "aliases": [
+          "劳动力"
+        ]
+      },
+      {
+        "canonical": "重建",
+        "aliases": [
+          "战后重建"
+        ]
+      }
+    ]
+  },
+  "环境能源": {
+    "merges": [
+      {
+        "canonical": "绿色经济",
+        "aliases": [
+          "绿色增长"
+        ]
+      },
+      {
+        "canonical": "能源优化",
+        "aliases": [
+          "节能优化"
+        ]
+      },
+      {
+        "canonical": "低碳转型",
+        "aliases": [
+          "能源转型"
+        ]
+      }
+    ]
+  },
+  "医疗生命": {
+    "merges": [
+      {
+        "canonical": "医疗",
+        "aliases": [
+          "临床",
+          "健康",
+          "健康经济",
+          "公共健康",
+          "医疗旅游"
+        ]
+      },
+      {
+        "canonical": "传染病",
+        "aliases": [
+          "疫情",
+          "疫情经济",
+          "疾病传播",
+          "病毒",
+          "病毒传播"
+        ]
+      },
+      {
+        "canonical": "生物",
+        "aliases": [
+          "生物模型",
+          "灵长类"
+        ]
+      }
+    ]
+  },
+  "城市交通": {
+    "merges": [
+      {
+        "canonical": "交通",
+        "aliases": [
+          "交通规划",
+          "公共交通",
+          "共享出行",
+          "出行",
+          "城市交通",
+          "自动车"
+        ]
+      },
+      {
+        "canonical": "区域经济",
+        "aliases": [
+          "城市经济"
+        ]
+      }
+    ]
+  },
+  "农业食品": {
+    "merges": [
+      {
+        "canonical": "农业",
+        "aliases": [
+          "城市农业",
+          "林业",
+          "渔民",
+          "牧区"
+        ]
+      },
+      {
+        "canonical": "农业经济",
+        "aliases": [
+          "林业经济"
+        ]
+      }
+    ]
+  },
+  "其他": {
+    "merges": [
+      {
+        "canonical": "投资",
+        "aliases": [
+          "投资行为"
+        ]
+      }
+    ]
+  }
+}

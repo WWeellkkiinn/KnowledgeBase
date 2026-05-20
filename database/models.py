@@ -179,7 +179,6 @@ class ExplorePool(Base):
     found_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.current_timestamp(), nullable=False
     )
-    llm_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     llm_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scored_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     title_zh: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -196,6 +195,30 @@ class ExplorePool(Base):
 
     __table_args__ = (
         UniqueConstraint("subscription_id", "external_id", name="uq_explore_sub_external"),
+    )
+
+
+class TagDict(Base):
+    __tablename__ = "tag_dict"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tag: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+
+
+class TagProposal(Base):
+    __tablename__ = "tag_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tag: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    explore_pool_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("explore_pool.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proposed_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
     )
 
 

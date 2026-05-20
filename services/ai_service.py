@@ -24,7 +24,7 @@ _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 # 字段长度上限（防 AI 返回超长字符串污染 DB）
 _MAX_TAG_LEN = 32
-_MAX_TAGS_PER_PAPER = 8
+_MAX_TAGS_PER_PAPER = 6
 _MAX_FIELD_LEN = 4000
 _MAX_VOCAB_SIZE = 1000
 

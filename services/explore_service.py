@@ -520,7 +520,6 @@ def build_explore_card_data(item, sub, embedding_score: float | None = None,
         "title": meta.get("title") or "",
         "url": url,
         "title_zh": item.title_zh or "",
-        "llm_score": item.llm_score,
         "embedding_score": embedding_score,
         "display_date": meta.get("publication_date") or str(meta.get("year") or ""),
         "authors": ", ".join((meta.get("authors_json") or [])[:3]),
@@ -600,6 +599,7 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
     import re as _re
     from services.ai_service import _sanitize_tags, _sanitize_text, _sanitize_findings
     from services.llm_client import chat_completion as _call_llm
+    from services.tag_pool import build_candidate_pool, record_proposed_tags
     from datetime import datetime as _dt, timezone as _tz
 
     payload = []
@@ -610,18 +610,24 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
             "title": (meta.get("title") or "")[:200],
             "abstract": (meta.get("abstract") or "")[:600],
         })
-    sys_prompt = (
-        "你是学术论文晨报助手。目标读者是忙碌的研究者，需要在10秒内判断一篇论文是否值得打开。\n"
-        "对输入论文列表中的每篇，输出一个 JSON 数组项，包含：\n"
-        "- idx: 输入论文的索引（int）\n"
-        "- reason: <=80 字，说明为什么值得或不值得推送（不用学术语气）\n"
-        "- title_zh: 中文翻译标题\n"
-        '- tags: 2-4 字中文标签数组，最多 4 个（如 ["机器学习", "宏观经济"]）\n'
-        "- research_question: ≤40 字，用普通中文说清楚【这篇文章在问什么】，不用学术语气，不写【本文】\n"
-        "- methodology: ≤50 字，说【它怎么做】，遇到专业术语立刻用括号解释\n"
-        "- key_findings: 中文数组，最多 3 条，每条≤35 字，说【能用它做什么/有什么用】，偏应用价值，不写【本文提出/本文研究】\n\n"
-        "只输出 JSON 数组，无 markdown 围栏、无说明。"
-    )
+    pool = build_candidate_pool(db)
+    pool_str = "、".join(pool)
+    sys_prompt = f"""你是学术论文晨报助手。目标读者是忙碌的研究者，需要在10秒内判断一篇论文是否值得打开。
+
+【候选 tag 池（请优先从中选 3-5 个）】
+{pool_str}
+
+对输入论文列表中的每篇，输出一个 JSON 数组项，包含：
+- idx: 输入论文的索引（int）
+- reason: <=80 字，说明为什么值得或不值得推送（不用学术语气）
+- title_zh: 中文翻译标题
+- tags: 中文标签数组，4-6 个，优先从【候选 tag 池】选 3-5 个；如池里无合适匹配，可新增 1-2 个 tag（2-4 字、规范），但绝不超过 6 个 tag
+- proposed_tags: 你新增的 tag 数组（来自上面 tags 但不在候选池里的子集；如全部从池里选则空数组）
+- research_question: ≤40 字，用普通中文说清楚【这篇文章在问什么】，不用学术语气，不写【本文】
+- methodology: ≤50 字，说【它怎么做】，遇到专业术语立刻用括号解释
+- key_findings: 中文数组，最多 3 条，每条≤35 字，说【能用它做什么/有什么用】，偏应用价值，不写【本文提出/本文研究】
+
+只输出 JSON 数组，无 markdown 围栏、无说明。"""
     messages = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": (
@@ -644,6 +650,10 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
         r.title_zh = _sanitize_text(info.get("title_zh")) or None
         tags = _sanitize_tags(info.get("tags"))
         r.tags_json = tags if tags else None
+        proposed_tags = info.get("proposed_tags", [])
+        if not isinstance(proposed_tags, list):
+            proposed_tags = []
+        record_proposed_tags(db, r.id, proposed_tags)
         r.research_question = _sanitize_text(info.get("research_question")) or None
         r.methodology = _sanitize_text(info.get("methodology")) or None
         findings = _sanitize_findings(info.get("key_findings"))

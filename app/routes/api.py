@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import limiter
 from database import models
+from services.tag_pool import promote_proposed_tags
 
 
 _log = logging.getLogger(__name__)
@@ -1273,6 +1274,9 @@ def record_explore_action(pool_id: int):
     action = body.get("action", "")
     try:
         result = record_explore_action(g.db, pool_id, action)
+        if action == "saved":
+            promoted = promote_proposed_tags(g.db, pool_id)
+            _log.info("promoted tags: %s", promoted)
         return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
