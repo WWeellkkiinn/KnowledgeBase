@@ -23,6 +23,8 @@ const animating = ref(false)
 const settingsOpen = ref(false)
 const loading = ref(true)
 const sub = ref<Subscription | null>(null)
+const poolCount = ref(0)
+const isFilling = ref(false)
 
 const cardRef = ref<HTMLDivElement>()
 
@@ -105,6 +107,8 @@ async function loadMoreCards() {
   try {
     const existingIds = cards.value.map(c => c.id)
     const res = await exploreApi.getCards(sub.value.id, 10, existingIds)
+    poolCount.value = res.data.pool_count
+    isFilling.value = res.data.is_filling
     const newCards = (res.data.items as ExploreCardItem[]).filter(
       c => !cards.value.some(existing => existing.id === c.id)
     )
@@ -131,6 +135,8 @@ async function loadCards() {
   loading.value = true
   try {
     const res = await exploreApi.getCards(sub.value.id, 20)
+    poolCount.value = res.data.pool_count
+    isFilling.value = res.data.is_filling
     if (cards.value.length === 0) {
       cards.value = res.data.items
       if (cards.value.length === 0) scheduleRetry()
@@ -210,7 +216,10 @@ onBeforeUnmount(() => {
     <div class="explore-header">
       <div>
         <div class="sub-label">{{ sub?.description || '探索' }}</div>
-        <div class="pool-count">{{ cards.length }} 张卡片</div>
+        <div class="pool-count">
+          池中候选 {{ poolCount }} 张
+          <span v-if="isFilling" class="filling-tag">自动补给中…</span>
+        </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="settings-btn" @click="settingsOpen = true">⚙</button>
@@ -289,6 +298,19 @@ onBeforeUnmount(() => {
 
 .sub-label { font-size: 18px; font-weight: 700; color: #0f172a; }
 .pool-count { margin-top: 2px; font-size: 13px; color: #64748b; }
+.filling-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #4338ca;
+  background: #e0e7ff;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  animation: filling-pulse 1.6s ease-in-out infinite;
+}
+@keyframes filling-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
 
 .settings-btn {
   border: 0;

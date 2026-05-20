@@ -1251,7 +1251,21 @@ def get_explore_cards():
     if not sub_id:
         return jsonify({"error": "sub_id required"}), 400
     cards = get_explore_cards(g.db, sub_id, limit=min(limit, 30), exclude_ids=exclude_ids)
-    return jsonify({"items": cards, "count": len(cards)})
+    from services.explore_service import _filling_subs
+    from sqlalchemy import func, select as _select
+    pool_count = g.db.execute(
+        _select(func.count(models.ExplorePool.id)).where(
+            models.ExplorePool.subscription_id == sub_id,
+            models.ExplorePool.action.is_(None),
+            models.ExplorePool.scored_at.isnot(None),
+        )
+    ).scalar_one()
+    return jsonify({
+        "items": cards,
+        "count": len(cards),
+        "pool_count": int(pool_count),
+        "is_filling": sub_id in _filling_subs,
+    })
 
 
 @bp.post("/explore/<int:pool_id>/action")

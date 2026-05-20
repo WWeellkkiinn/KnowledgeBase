@@ -208,4 +208,6 @@ export interface ExploreCard {
 export interface ExploreCardsResponse {
   items: ExploreCard[]
   count: number
+  pool_count: number
+  is_filling: boolean
 }
