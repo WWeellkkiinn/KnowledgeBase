@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useProgressStore } from '@/stores/progress'
 
 const progress = useProgressStore()
-onMounted(() => progress.initOnce())
+// SSE is per-task lazy: streams open in subscribe(), no global init needed.
 
 const visible = computed(() => progress.recent.slice(0, 5))
 </script>

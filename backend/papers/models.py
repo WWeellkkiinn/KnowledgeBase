@@ -39,7 +39,14 @@ class Paper(models.Model):
     abstract = models.TextField(null=True, blank=True)
     authors_json = models.JSONField(null=True, blank=True)
     year = models.IntegerField(null=True, blank=True)
-    journal_id = models.IntegerField(null=True, blank=True)
+    journal = models.ForeignKey(
+        "journals.Journal",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="papers",
+        db_column="journal_id",
+    )
     pdf_path = models.CharField(max_length=1024, null=True, blank=True)
     md_path = models.CharField(max_length=1024, null=True, blank=True)
     sha1 = models.CharField(max_length=40, null=True, blank=True, db_index=True)

@@ -261,6 +261,6 @@ def attach_journal_to_paper(paper, meta: Optional[dict] = None) -> Optional[Jour
         if updates:
             journal.save(update_fields=updates)
 
-    paper.journal_id = journal.pk
-    paper.save(update_fields=["journal_id"])
+    paper.journal = journal
+    paper.save(update_fields=["journal"])
     return journal

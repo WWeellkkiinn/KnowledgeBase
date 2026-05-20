@@ -219,12 +219,11 @@ def generate_citation(paper) -> dict:
     journal_name: Optional[str] = None
     publisher: Optional[str] = None
     if paper.journal_id:
-        try:
-            j = Journal.objects.get(pk=paper.journal_id)
+        # journal_id is still set by Django for FK fields; .journal traverses the FK.
+        j = paper.journal
+        if j is not None:
             journal_name = j.name
             publisher = j.publisher
-        except Journal.DoesNotExist:
-            pass
 
     if (not title or not authors or not year) and doi:
         meta = _fetch_openalex(doi)

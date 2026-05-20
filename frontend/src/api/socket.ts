@@ -1,48 +1,70 @@
-// /progress namespace 的 Socket.IO 客户端单例。
-// 后端定义见 app/sockets/progress.py：subscribe/unsubscribe by task_id，回放缓冲。
-// dev：vite proxy 转发 ws；prod：同源部署。
-import { io, type Socket } from 'socket.io-client'
-import { getToken } from './client'
+// Progress event stream client.
+//
+// Replaces the old Socket.IO client with SSE (Server-Sent Events) — the SaaS
+// backend (Django) exposes /api/progress/stream?task_id=<id>, which streams
+// JSON-encoded events for one task.
+//
+// Public API kept compatible with the previous Pinia store consumers:
+//   - subscribeTask(taskId, onEvent) → returns a disposer
+//   - closeAll() — disconnect every active stream (used on logout)
+//
+// One EventSource per task_id. Browsers cap concurrent EventSources at ~6 per
+// origin; since users normally watch 1–3 tasks at once this is fine.
 
-let _socket: Socket | null = null
+import type { ProgressEvent } from '@/types/api'
 
-export function useProgressSocket(): Socket {
-  if (_socket === null) {
-    _socket = io('/progress', {
-      autoConnect: false,
-      // 函数形式：每次（重）连接前重新读取，token 在登录页改了立刻生效
-      auth: (cb) => cb({ token: getToken() }),
-      transports: ['websocket', 'polling'],
-    })
+type EventHandler = (ev: ProgressEvent) => void
+
+interface Subscription {
+  source: EventSource
+  handler: EventHandler
+}
+
+const _active = new Map<string, Subscription>()
+
+export function subscribeTask(taskId: string, onEvent: EventHandler): () => void {
+  // If already open for this task, replace the handler (last writer wins).
+  const existing = _active.get(taskId)
+  if (existing) {
+    existing.handler = onEvent
+    return () => closeTask(taskId)
   }
-  return _socket
-}
+  const url = `/api/progress/stream?task_id=${encodeURIComponent(taskId)}`
+  const source = new EventSource(url, { withCredentials: true })
+  const sub: Subscription = { source, handler: onEvent }
+  _active.set(taskId, sub)
 
-export function ensureConnected(): Socket {
-  const s = useProgressSocket()
-  if (!s.connected) s.connect()
-  return s
-}
-
-// 登录/登出后调用：丢掉旧 socket，下次 getSocket() 用新 token 重建。
-// 返回 Promise：等 underlying transport 真正发出 disconnect 包后再 resolve，
-// 否则调用方立刻跳转会让旧 transport 的 in-flight 帧带着旧 token 抵达 server。
-// 1s 超时兜底，避免 socket 永远不触发 disconnect 事件时卡住登出流程。
-export async function resetSocket(): Promise<void> {
-  const s = _socket
-  _socket = null
-  if (!s) return
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, 1000)
+  source.onmessage = (msg: MessageEvent) => {
     try {
-      s.once('disconnect', () => {
-        clearTimeout(timer)
-        resolve()
-      })
-      s.disconnect()
+      const data = JSON.parse(msg.data) as ProgressEvent
+      sub.handler(data)
     } catch {
-      clearTimeout(timer)
-      resolve()
+      // Heartbeat (`:heartbeat`) and `event: open` frames arrive as empty data;
+      // ignore JSON parse errors silently.
     }
-  })
+  }
+  source.onerror = () => {
+    // EventSource auto-reconnects; if it gives up the readyState will be CLOSED.
+    if (source.readyState === EventSource.CLOSED) {
+      _active.delete(taskId)
+    }
+  }
+  return () => closeTask(taskId)
+}
+
+export function closeTask(taskId: string): void {
+  const sub = _active.get(taskId)
+  if (!sub) return
+  try { sub.source.close() } catch { /* ignore */ }
+  _active.delete(taskId)
+}
+
+export function closeAll(): void {
+  for (const taskId of [..._active.keys()]) closeTask(taskId)
+}
+
+// Legacy export kept so callers that import `resetSocket` from older code paths
+// (e.g. logout flow in stores/auth.ts) continue to work after the swap.
+export async function resetSocket(): Promise<void> {
+  closeAll()
 }

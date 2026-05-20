@@ -20,6 +20,132 @@ from .bandit import batch_stats, expected_score_with_stats, score_card_with_stat
 
 _log = logging.getLogger(__name__)
 
+
+# ── LLM scoring ──────────────────────────────────────────────────────────────
+
+
+def _build_candidate_pool(tenant_id: int, sub_id: int | None = None, pool_top_n: int = 70) -> list[str]:
+    """Rank tags by usage across this tenant's scored pool items.
+
+    Django port of services/tag_pool.build_candidate_pool. Skips the
+    TagProposal-based 'recent promoted' slot (the Django model lacks that
+    table; it was an audit artifact, not load-bearing for scoring quality).
+    """
+    from collections import Counter
+    from .models import ExplorePool
+
+    qs = ExplorePool.objects.filter(
+        tenant_id=tenant_id, scored_at__isnull=False, tags_json__isnull=False
+    )
+    counter: Counter[str] = Counter()
+    for tags in qs.values_list("tags_json", flat=True):
+        if isinstance(tags, list):
+            counter.update(t for t in tags if isinstance(t, str) and t)
+    ranked = [t for t, _ in counter.most_common()]
+    return ranked[:pool_top_n]
+
+
+def score_batch(tenant_id: int, sub_id: int, description: str, item_ids: list[int]) -> dict:
+    """LLM-score a batch of unscored ExplorePool rows.
+
+    Returns {"scored": N, "failed": M}. Updates rows in place with title_zh /
+    tags_json / research_question / methodology / key_findings_json /
+    llm_reason / scored_at. On LLM failure, increments score_attempts and
+    marks scored_at after 3 attempts to stop retrying.
+    """
+    import json
+    import re as _re
+    from .models import ExplorePool
+    from ai_analysis.services.analyzer import (
+        _sanitize_findings as sanitize_findings,
+        _sanitize_tags as sanitize_tags,
+        _sanitize_text as sanitize_text,
+    )
+    from ai_analysis.services.llm import chat_completion
+
+    items = list(ExplorePool.objects.filter(id__in=item_ids, tenant_id=tenant_id))
+    if not items:
+        return {"scored": 0, "failed": 0}
+
+    payload = [
+        {
+            "idx": idx,
+            "title": ((item.raw_metadata_json or {}).get("title") or "")[:200],
+            "abstract": ((item.raw_metadata_json or {}).get("abstract") or "")[:600],
+        }
+        for idx, item in enumerate(items)
+    ]
+    pool = _build_candidate_pool(tenant_id, sub_id)
+    pool_str = "、".join(pool)
+    sys_prompt = (
+        "你是学术论文晨报助手。目标读者是忙碌的研究者，需要在10秒内判断一篇论文是否值得打开。\n\n"
+        f"【候选 tag 池（请优先从中选 3-5 个）】\n{pool_str}\n\n"
+        "对输入论文列表中的每篇，输出一个 JSON 数组项，包含：\n"
+        "- idx: 输入论文的索引（int）\n"
+        "- reason: <=80 字，说明为什么值得或不值得推送（不用学术语气）\n"
+        "- title_zh: 中文翻译标题\n"
+        "- tags: 中文标签数组，4-6 个，优先从【候选 tag 池】选 3-5 个；如池里无合适匹配，"
+        "可新增 1-2 个 tag（2-4 字、规范），但绝不超过 6 个 tag\n"
+        "- research_question: ≤40 字，说清【这篇文章在问什么】\n"
+        "- methodology: ≤50 字，说【它怎么做】\n"
+        "- key_findings: 中文数组，最多 3 条，每条≤35 字，偏应用价值\n\n"
+        "只输出 JSON 数组，无 markdown 围栏、无说明。"
+    )
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"用户研究兴趣：\n{description}\n\n"
+                f"论文列表：\n{json.dumps(payload, ensure_ascii=False)}"
+            ),
+        },
+    ]
+
+    try:
+        raw = chat_completion(messages, max_tokens=4096)
+        match = _re.search(r"\[[\s\S]*\]", raw)
+        if not match:
+            raise ValueError("no JSON array in LLM response")
+        arr = json.loads(match.group())
+    except Exception as exc:
+        _log.warning("[explore.score_batch] LLM call failed sub=%s: %s", sub_id, exc)
+        # Bump attempts; mark scored on final attempt so we stop retrying.
+        for item in items:
+            item.score_attempts = (item.score_attempts or 0) + 1
+            if item.score_attempts >= 3:
+                item.scored_at = _utcnow()
+                item.llm_reason = f"LLM 评分异常: {exc}"[:500]
+                item.save(update_fields=["score_attempts", "scored_at", "llm_reason"])
+            else:
+                item.save(update_fields=["score_attempts"])
+        return {"scored": 0, "failed": len(items)}
+
+    by_idx = {int(o["idx"]): o for o in arr if isinstance(o, dict) and "idx" in o}
+    now = _utcnow()
+    scored = 0
+    for idx, item in enumerate(items):
+        info = by_idx.get(idx, {})
+        reason = info.get("reason")
+        if isinstance(reason, str):
+            item.llm_reason = reason[:500]
+        item.title_zh = sanitize_text(info.get("title_zh")) or ""
+        tags = sanitize_tags(info.get("tags"))
+        item.tags_json = tags if tags else None
+        item.research_question = sanitize_text(info.get("research_question")) or ""
+        item.methodology = sanitize_text(info.get("methodology")) or ""
+        findings = sanitize_findings(info.get("key_findings"))
+        item.key_findings_json = findings if findings else None
+        item.scored_at = now
+        item.save(
+            update_fields=[
+                "llm_reason", "title_zh", "tags_json", "research_question",
+                "methodology", "key_findings_json", "scored_at",
+            ]
+        )
+        scored += 1
+    return {"scored": scored, "failed": len(items) - scored}
+
 _NORM_TITLE_RE = re.compile(r"[^\w一-鿿]+", flags=re.UNICODE)
 _fill_lock = threading.Lock()
 _filling_keys: set[tuple] = set()
