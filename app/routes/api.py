@@ -1245,12 +1245,12 @@ def get_explore_cards():
     """获取探索池待评卡片列表。"""
     from services.explore_service import get_explore_cards
     sub_id = request.args.get("sub_id", type=int)
-    limit = request.args.get("limit", 10, type=int)
+    limit = max(1, min(request.args.get("limit", 10, type=int), 30))
     exclude_raw = request.args.get("exclude", "")
     exclude_ids = [int(x) for x in exclude_raw.split(",") if x.strip().isdigit()]
     if not sub_id:
         return jsonify({"error": "sub_id required"}), 400
-    cards = get_explore_cards(g.db, sub_id, limit=min(limit, 30), exclude_ids=exclude_ids)
+    cards = get_explore_cards(g.db, sub_id, limit=limit, exclude_ids=exclude_ids)
     from services.explore_service import _filling_subs
     from sqlalchemy import func, select as _select
     pool_count = g.db.execute(
@@ -1277,11 +1277,15 @@ def record_explore_action(pool_id: int):
     action = body.get("action", "")
     try:
         card = g.db.get(models.ExplorePool, pool_id)
+        if card is None:
+            return jsonify({"error": "card not found"}), 404
         result = record_explore_action(g.db, pool_id, action)
-        if action == "saved":
-            promoted = promote_proposed_tags(g.db, pool_id)
-            _log.info("promoted tags: %s", promoted)
-        bandit_apply(g.db, card.tags_json or [], action)
+        if result.get("changed"):
+            if action == "saved":
+                promoted = promote_proposed_tags(g.db, pool_id)
+                _log.info("promoted tags: %s", promoted)
+            bandit_apply(g.db, card.tags_json or [], action)
+            g.db.commit()
         return jsonify(result)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1292,6 +1296,9 @@ def record_explore_action(pool_id: int):
 def explore_undo(pool_id: int):
     from services.explore_service import undo_explore_action
     try:
+        card = g.db.get(models.ExplorePool, pool_id)
+        if card is None:
+            return jsonify({"error": "card not found"}), 404
         return jsonify(undo_explore_action(g.db, pool_id))
     except ValueError as e:
         return jsonify({"error": str(e)}), 404

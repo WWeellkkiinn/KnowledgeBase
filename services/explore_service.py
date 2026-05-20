@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import models
-from services.bandit import score_card, expected_score
+from services.bandit import batch_stats, score_card_with_stats, expected_score_with_stats
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
 _log = logging.getLogger(__name__)
@@ -199,6 +199,10 @@ def enrich_pending(db, sub_id, max_items: int = 120) -> dict:
         llm_queued = len(needs_scoring)
         from database import SessionLocal as _SL
         def _bg_llm(sid, desc, ids):
+            from services.tag_pool import build_candidate_pool
+
+            pool = None
+
             def _run_batch(batch_ids):
                 s = _SL()
                 try:
@@ -211,7 +215,7 @@ def enrich_pending(db, sub_id, max_items: int = 120) -> dict:
                     if not batch:
                         return
                     try:
-                        _score_batch(s, desc, batch)
+                        _score_batch(s, desc, batch, pool=pool)
                         s.commit()
                     except Exception as exc:
                         _log.warning("_bg_llm _score_batch failed sub=%d: %s", sid, exc)
@@ -242,6 +246,11 @@ def enrich_pending(db, sub_id, max_items: int = 120) -> dict:
                     s.close()
 
             try:
+                s_pool = _SL()
+                try:
+                    pool = build_candidate_pool(s_pool, sub_id=sid)
+                finally:
+                    s_pool.close()
                 batches = [ids[i:i + 5] for i in range(0, len(ids), 5)]
                 with ThreadPoolExecutor(max_workers=5) as ex:
                     list(ex.map(_run_batch, batches))
@@ -268,8 +277,10 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
     items = list(db.execute(
         select(models.ExplorePool).where(*conditions)
     ).scalars().all())
+    all_tags = {t for item in items if item.tags_json for t in item.tags_json}
+    stats = batch_stats(db, all_tags)
     scored_items = [
-        (score_card(db, item.id, item.tags_json or []), item)
+        (score_card_with_stats(item.id, item.tags_json or [], stats), item)
         for item in items
         if item.tags_json
     ]
@@ -349,7 +360,7 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
             item, sub,
             journal_cache=journal_cache, venue_cache=venue_cache_extra,
         )
-        card["bandit_score"] = expected_score(db, item.tags_json or [])
+        card["bandit_score"] = expected_score_with_stats(item.tags_json or [], stats)
         result.append({"id": item.id, "card": card, "action": item.action})
     return result
 
@@ -406,6 +417,16 @@ def record_explore_action(db, pool_id, action) -> dict:
     item = db.get(models.ExplorePool, pool_id)
     if item is None:
         raise ValueError("not found")
+    if item.action is not None:
+        if item.action == action:
+            return {
+                "pool_id": item.id,
+                "action": action,
+                "paper_id": item.paper_id,
+                "query_refresh": None,
+                "changed": False,
+            }
+        _log.warning("Overwriting explore action pool_id=%s from %s to %s", item.id, item.action, action)
     paper_id = None
     if action == "saved":
         paper_id = _import_explore_to_paper(db, item)
@@ -428,7 +449,7 @@ def record_explore_action(db, pool_id, action) -> dict:
         sub = db.get(models.Subscription, sid)
         if sub is not None:
             refreshed = refresh_subscription_queries(db, sub)
-    return {"pool_id": item.id, "action": action, "paper_id": paper_id or item.paper_id, "query_refresh": refreshed}
+    return {"pool_id": item.id, "action": action, "paper_id": paper_id or item.paper_id, "query_refresh": refreshed, "changed": True}
 
 
 def undo_explore_action(db, pool_id) -> dict:
@@ -448,7 +469,7 @@ def undo_explore_action(db, pool_id) -> dict:
     return {"pool_id": item.id, "action": None}
 
 
-def _score_batch(db: Session, description: str, batch: list) -> None:
+def _score_batch(db: Session, description: str, batch: list, pool: list[str] | None = None) -> None:
     """5 篇/批 LLM 内容生成（title_zh / tags / reason 等）。失败整批抛异常，由调用方决定重试。"""
     import json
     import re as _re
@@ -465,7 +486,8 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
             "title": (meta.get("title") or "")[:200],
             "abstract": (meta.get("abstract") or "")[:600],
         })
-    pool = build_candidate_pool(db)
+    sub_id = batch[0].subscription_id if batch else None
+    pool = pool if pool is not None else build_candidate_pool(db, sub_id=sub_id)
     pool_str = "、".join(pool)
     sys_prompt = f"""你是学术论文晨报助手。目标读者是忙碌的研究者，需要在10秒内判断一篇论文是否值得打开。
 
@@ -497,6 +519,19 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
     arr = json.loads(match.group())
     now = _dt.now(_tz.utc).replace(tzinfo=None)
     by_idx = {int(item["idx"]): item for item in arr if isinstance(item, dict) and "idx" in item}
+    all_proposed = set()
+    for info in by_idx.values():
+        proposed_tags = _sanitize_tags(info.get("proposed_tags", []))
+        info["proposed_tags"] = proposed_tags
+        all_proposed.update(proposed_tags)
+    existing_set = set()
+    if all_proposed:
+        existing_set = {
+            row[0]
+            for row in db.query(models.TagDict.tag)
+            .filter(models.TagDict.tag.in_(all_proposed))
+            .all()
+        }
     for idx, r in enumerate(batch):
         info = by_idx.get(idx, {})
         reason = info.get("reason")
@@ -506,9 +541,7 @@ def _score_batch(db: Session, description: str, batch: list) -> None:
         tags = _sanitize_tags(info.get("tags"))
         r.tags_json = tags if tags else None
         proposed_tags = info.get("proposed_tags", [])
-        if not isinstance(proposed_tags, list):
-            proposed_tags = []
-        record_proposed_tags(db, r.id, proposed_tags)
+        record_proposed_tags(db, r.id, proposed_tags, existing_set=existing_set)
         r.research_question = _sanitize_text(info.get("research_question")) or None
         r.methodology = _sanitize_text(info.get("methodology")) or None
         findings = _sanitize_findings(info.get("key_findings"))

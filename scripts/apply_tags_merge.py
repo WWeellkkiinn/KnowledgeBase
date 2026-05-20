@@ -106,12 +106,19 @@ def backup_db():
 def apply_merge(conn, mapping):
     backup = backup_db()
     before = scan(conn, mapping)
-    with conn:
-        conn.executemany(
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    try:
+        cur.executemany(
             "UPDATE explore_pool SET tags_json = ? WHERE id = ?",
             [(json.dumps(after, ensure_ascii=False), row_id)
              for row_id, _before, after in before["affected"]],
         )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"FATAL: apply_merge failed, rolled back: {e}")
+        raise
 
     after = scan(conn, mapping)
     if after["remaining"]:

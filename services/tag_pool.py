@@ -14,7 +14,7 @@ SLOT_RECENT = 8
 SLOT_BEHAVIOR = 7
 
 
-def build_candidate_pool(db: Session) -> list[str]:
+def build_candidate_pool(db: Session, sub_id: int | None = None) -> list[str]:
     rows = db.execute(text("""
         SELECT je.value AS tag, COUNT(*) AS cnt
           FROM explore_pool ep, json_each(ep.tags_json) je
@@ -23,24 +23,33 @@ def build_candidate_pool(db: Session) -> list[str]:
          ORDER BY cnt DESC
     """)).fetchall()
     ranked = [r[0] for r in rows]
+    # Dedup is guaranteed by SQL ORDER BY after GROUP BY.
 
     top = ranked[:POOL_TOP_N]
     top_set = set(top)
 
     mid_candidates = ranked[POOL_TOP_N:200]
+    # If ranked < 70, top is also smaller and pool will be undersized; expected.
     mid = random.sample(mid_candidates, min(SLOT_MID, len(mid_candidates)))
 
     recent_rows = db.query(TagDict.tag).filter(TagDict.source == "promoted") \
         .order_by(TagDict.created_at.desc()).limit(SLOT_RECENT * 3).all()
     recent = [r[0] for r in recent_rows if r[0] not in top_set][:SLOT_RECENT]
 
-    saved_rows = db.execute(text("""
+    saved_sql = """
         SELECT DISTINCT je.value AS tag
           FROM explore_pool ep, json_each(ep.tags_json) je
          WHERE ep.action = 'saved' AND ep.tags_json IS NOT NULL
+    """
+    saved_params = {}
+    if sub_id is not None:
+        saved_sql += "           AND ep.subscription_id = :sub_id\n"
+        saved_params["sub_id"] = sub_id
+    saved_sql += """
          ORDER BY ep.acted_at DESC
          LIMIT 50
-    """)).fetchall()
+    """
+    saved_rows = db.execute(text(saved_sql), saved_params).fetchall()
     behavior = [r[0] for r in saved_rows if r[0] not in top_set][:SLOT_BEHAVIOR]
 
     seen, result = set(), []
@@ -51,10 +60,12 @@ def build_candidate_pool(db: Session) -> list[str]:
     return result
 
 
-def record_proposed_tags(db: Session, explore_pool_id: int, proposed: list[str]) -> None:
+def record_proposed_tags(db: Session, explore_pool_id: int, proposed: list[str], existing_set=None) -> None:
     if not proposed:
         return
-    existing = {r[0] for r in db.query(TagDict.tag).filter(TagDict.tag.in_(proposed)).all()}
+    existing = existing_set if existing_set is not None else {
+        r[0] for r in db.query(TagDict.tag).filter(TagDict.tag.in_(proposed)).all()
+    }
     for t in proposed:
         if t and t not in existing:
             db.add(TagProposal(tag=t, explore_pool_id=explore_pool_id))
@@ -66,7 +77,7 @@ def promote_proposed_tags(db: Session, explore_pool_id: int) -> list[str]:
     if not proposals:
         return []
     promoted = []
-    existing = {r[0] for r in db.query(TagDict.tag).all()}
+    existing = {r[0] for r in db.query(TagDict.tag).filter(TagDict.tag.in_([p.tag for p in proposals])).all()}
     for p in proposals:
         if p.tag not in existing:
             db.add(TagDict(tag=p.tag, source="promoted"))
