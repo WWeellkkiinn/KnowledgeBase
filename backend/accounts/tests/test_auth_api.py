@@ -44,7 +44,8 @@ def pending_user(db):
 
 @pytest.mark.django_db
 def test_register_sends_email(client):
-    with patch("core.email.send_mail") as mock_send:
+    with patch("core.email.send_mail") as mock_send, \
+         patch("core.email._superadmin_emails", return_value=["admin@test.com"]):
         resp = client.post(
             "/api/auth/register",
             data='{"email": "new@test.com", "application_note": "test"}',
