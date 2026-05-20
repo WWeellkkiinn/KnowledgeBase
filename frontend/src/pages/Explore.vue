@@ -12,6 +12,7 @@ import { useSubscriptionsStore } from '@/stores/subscriptions'
 const subsStore = useSubscriptionsStore()
 
 const ENTER_EASING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+const SLIDE_EASING = 'cubic-bezier(0.22, 0.61, 0.36, 1)'
 const SLIDE_DUR = 240
 const UNDO_THRESHOLD = 80
 
@@ -94,14 +95,14 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
     if (ghostOutEl.value) {
       const gAnim = ghostOutEl.value.animate(
         [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
-        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' },
+        { duration: SLIDE_DUR, easing: SLIDE_EASING, fill: 'forwards' },
       )
       anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
     }
     if (cards.value[0]) {
       const cAnim = el.animate(
         [{ transform: `translateX(${W}px)` }, { transform: 'translateX(0)' }],
-        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' },
+        { duration: SLIDE_DUR, easing: SLIDE_EASING, fill: 'forwards' },
       )
       anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
     }
@@ -133,7 +134,7 @@ async function doUndo() {
     if (hadTop) {
       const cAnim = el.animate(
         [{ transform: `translateX(${curCardTx}px)` }, { transform: `translateX(${W}px)` }],
-        { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' },
+        { duration: SLIDE_DUR, easing: SLIDE_EASING, fill: 'forwards' },
       )
       anims.push(cAnim.finished.catch(() => {}).finally(() => cAnim.cancel()))
     }
@@ -143,7 +144,7 @@ async function doUndo() {
           { transform: `translateX(${curGhostTx}px)` },
           { transform: 'translateX(0)' },
         ],
-        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' },
+        { duration: SLIDE_DUR, easing: SLIDE_EASING, fill: 'forwards' },
       )
       anims.push(gAnim.finished.catch(() => {}).finally(() => gAnim.cancel()))
     }
