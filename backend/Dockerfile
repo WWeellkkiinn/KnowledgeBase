@@ -1,4 +1,15 @@
-FROM python:3.12-slim
+# syntax=docker/dockerfile:1.6
+# ── Stage 1: build Vue frontend ───────────────────────────────────────
+FROM node:20-alpine AS frontend
+WORKDIR /build
+RUN npm config set registry https://registry.npmmirror.com
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Django runtime ───────────────────────────────────────────
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -17,6 +28,9 @@ COPY backend/requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 
 COPY backend /app
+# SPA static assets — served by the Django catch-all view in core.views.spa.
+# Placed outside /app so a bind mount of ./backend:/app in dev doesn't mask them.
+COPY --from=frontend /build/dist /srv/kb_frontend_dist
 
 EXPOSE 8000
 

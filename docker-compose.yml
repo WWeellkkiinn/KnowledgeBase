@@ -8,42 +8,7 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # .env 故意放在 ./data/ 之外：data/ 整个挂进容器 /app/data，
-    # 任何遍历 papers 父目录的代码都会读到明文 token。放仓库根目录由 compose 注入环境变量即可。
-    env_file:
-      - ./.env
-    environment:
-      KB_DB_PATH: /app/data/kb.db
-      PAPERS_DIR: /app/data/papers
-      KB_BIND_HOST: 0.0.0.0
-    # 把整个 data/ 目录挂进来：SQLite 的 wal/shm 由它自己在容器内创建/checkpoint，
-    # 不会因为单文件 bind-mount 的 inode 漂移导致写丢失。
-    volumes:
-      - ./data:/app/data
-      # 代码目录直接挂宿主机文件，git pull + restart 即可生效，无需重建镜像
-      # 注意：frontend/dist 仍在镜像内，前端 JS 变更还需 --build
-      - ./app:/app/app
-      - ./services:/app/services
-      - ./database:/app/database
-      - ./templates:/app/templates
-    expose:
-      - "5000"
-    mem_limit: 900m
-    mem_reservation: 400m
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3).status==200 else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 40s
-    logging: *default-logging
-
-  # ── SaaS rewrite stack (Phase 0+); coexists with Flask `app` until cutover ─
+  # ── SaaS stack (Django 5 + Postgres + Redis + Celery) ────────────────
   db:
     image: postgres:16-alpine
     environment:
@@ -129,7 +94,7 @@ services:
   nginx:
     image: nginx:alpine
     depends_on:
-      app:
+      django:
         condition: service_healthy
     # 宿主 80 已被其他服务占用，改用 8080；如宿主 80 空闲可改回 "80:80"
     ports:
