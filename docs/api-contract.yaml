@@ -1,0 +1,87 @@
+openapi: 3.0.3
+info:
+  title: KnowledgeBase API (frozen contract for SaaS rewrite)
+  version: 1.0.0
+  description: |
+    Phase 0 baseline. Sub-agents A (Papers), B (Discovery), C (Auth) MUST
+    implement endpoints matching the paths, request shapes, and response
+    shapes documented here. Adding new endpoints is allowed; changing
+    existing shapes requires a contract update PR reviewed by the main agent.
+
+    The contract intentionally mirrors the existing Flask `/api/*` routes
+    so the Vue frontend (except auth pages owned by Agent D) keeps working
+    1:1 after cutover.
+
+servers:
+  - url: /
+
+paths:
+  /api/health:
+    get:
+      summary: Liveness probe
+      tags: [meta]
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  service: { type: string, example: kb-django }
+
+  # ── Owner: Agent C (accounts) ────────────────────────────────────
+  /api/auth/register:
+    post: { description: "TODO Agent C — create pending user, email super-admin" }
+  /api/auth/login:
+    post: { description: "TODO Agent C — email + password or magic link" }
+  /api/auth/magic-link:
+    post: { description: "TODO Agent C — issue one-time login token" }
+  /api/auth/me:
+    get: { description: "TODO Agent C — current user + tenant + role" }
+  /api/auth/logout:
+    post: { description: "TODO Agent C" }
+
+  # ── Owner: Agent A (papers / journals / citations / ai_analysis) ──
+  /api/papers:
+    get: { description: "TODO Agent A — list (paginated, filterable)" }
+  /api/papers/{id}:
+    get: { description: "TODO Agent A — detail" }
+  /api/papers/upload:
+    post: { description: "TODO Agent A — multipart PDF upload, returns task_id" }
+  /api/papers/{id}/ai-analyze:
+    post: { description: "TODO Agent A — kick AI tag+summary Celery task" }
+  /api/papers/{id}/citations.bib:
+    get: { description: "TODO Agent A — BibTeX export" }
+  /api/citations.bib:
+    get: { description: "TODO Agent A — full-library BibTeX" }
+
+  # ── Owner: Agent B (subscriptions / explore / network / tracking) ─
+  /api/subscriptions:
+    get: { description: "TODO Agent B — list user's subscriptions" }
+    post: { description: "TODO Agent B — create" }
+  /api/subscriptions/{id}:
+    get: { description: "TODO Agent B" }
+    patch: { description: "TODO Agent B — pause/resume/update" }
+    delete: { description: "TODO Agent B" }
+  /api/explore:
+    get: { description: "TODO Agent B — bandit-scored exploration pool" }
+  /api/network/edges:
+    get: { description: "TODO Agent B — citation graph edges for cytoscape" }
+  /api/papers/{id}/forward-track:
+    post: { description: "TODO Agent B — async cited-by fetch; returns 202+task_id or 200+data" }
+  /api/papers/{id}/backward-track:
+    post: { description: "TODO Agent B — async references fetch; returns 202+task_id or 200+data" }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sessionid
+
+security:
+  - sessionCookie: []
