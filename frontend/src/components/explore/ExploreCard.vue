@@ -18,6 +18,14 @@ const banditScoreText = computed(() =>
   props.card.bandit_score != null ? `推荐 ${props.card.bandit_score.toFixed(2)}` : null,
 )
 
+const banditScoreClass = computed(() => {
+  const s = props.card.bandit_score
+  if (s == null) return ''
+  if (s >= 0.65) return 'bandit-score--high'
+  if (s < 0.45) return 'bandit-score--low'
+  return 'bandit-score--mid'
+})
+
 const renderedBadges = computed(() =>
   props.card.rank_badges
     .map(b => {
@@ -48,7 +56,7 @@ const renderedBadges = computed(() =>
     </p>
 
     <p v-if="card.tags.length || banditScoreText" class="tags-line">
-      <span v-if="banditScoreText" class="bandit-score">{{ banditScoreText }}</span>
+      <span v-if="banditScoreText" class="bandit-score" :class="banditScoreClass">{{ banditScoreText }}</span>
       <span v-for="tag in card.tags" :key="tag" class="tag">{{ tag }}</span>
     </p>
 
@@ -147,8 +155,6 @@ const renderedBadges = computed(() =>
 }
 
 .bandit-score {
-  background: #fef3c7;
-  color: #92400e;
   border-radius: 9999px;
   padding: 1px 9px;
   font-size: 12px;
@@ -156,6 +162,9 @@ const renderedBadges = computed(() =>
   margin: 2px 4px 0 0;
   font-weight: 600;
 }
+.bandit-score--high { background: #ccfbf1; color: #0f766e; }
+.bandit-score--mid  { background: #fef3c7; color: #92400e; }
+.bandit-score--low  { background: #f1f5f9; color: #64748b; }
 
 .section-label {
   margin: 12px 0 2px;

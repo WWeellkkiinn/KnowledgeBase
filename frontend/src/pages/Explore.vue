@@ -368,9 +368,41 @@ onBeforeUnmount(() => {
   border-radius: 0 0 20px 20px;
 }
 
-.card-action-bar .btn-skip { background: #dc2626; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
-.card-action-bar .btn-pass { background: #64748b; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
-.card-action-bar .btn-save { background: #16a34a; color: #fff; border: 0; border-radius: 999px; min-height: 44px; font-weight: 700; cursor: pointer; font-size: 14px; }
+.card-action-bar button {
+  border-radius: 999px;
+  min-height: 44px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.card-action-bar .btn-skip {
+  background: #fff;
+  color: #94a3b8;
+  border: 1px solid #e2e8f0;
+}
+.card-action-bar .btn-skip:hover:not(:disabled) {
+  background: #f8fafc;
+  color: #64748b;
+  border-color: #cbd5e1;
+}
+.card-action-bar .btn-pass {
+  background: #fff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+.card-action-bar .btn-pass:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+.card-action-bar .btn-save {
+  background: #0f766e;
+  color: #fff;
+  border: 0;
+}
+.card-action-bar .btn-save:hover:not(:disabled) {
+  background: #115e59;
+}
 .card-action-bar button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .sheet-overlay {
