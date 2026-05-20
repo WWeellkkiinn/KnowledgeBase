@@ -80,14 +80,27 @@ def _safe_filename(name: str) -> str:
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 
-@router.get("", response=list[PaperOut], url_name="list_papers")
+class PaperListOut(Schema):
+    items: list[PaperOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class StatsOut(Schema):
+    total: int
+    analyzed: int
+
+
+@router.get("", response=PaperListOut, url_name="list_papers")
 def list_papers(
     request: HttpRequest,
     status: Optional[str] = None,
     source: Optional[str] = None,
+    tier: Optional[str] = None,
     q: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20,
+    limit: int = 20,
+    offset: int = 0,
 ):
     tenant = _get_tenant(request)
     qs = Paper.objects.filter(tenant=tenant).order_by("-added_at")
@@ -95,13 +108,23 @@ def list_papers(
         qs = qs.filter(status=status)
     if source:
         qs = qs.filter(source=source)
+    if tier == "core":
+        qs = qs.filter(is_core=True)
+    elif tier == "stub":
+        qs = qs.filter(is_core=False)
     if q:
         qs = qs.filter(title__icontains=q)
-    # Manual pagination (ninja @paginate decorator conflicts with custom params)
     total = qs.count()
-    start = (page - 1) * page_size
-    items = list(qs[start : start + page_size])
-    return items
+    items = list(qs[offset : offset + limit])
+    return PaperListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+# IMPORTANT: must come BEFORE /{paper_id} so ninja doesn't route "stats" into the int param.
+@router.get("/stats", response=StatsOut, url_name="paper_stats")
+def paper_stats(request: HttpRequest):
+    tenant = _get_tenant(request)
+    qs = Paper.objects.filter(tenant=tenant)
+    return StatsOut(total=qs.count(), analyzed=qs.filter(status=Paper.Status.ANALYZED).count())
 
 
 @router.get("/{paper_id}", response=PaperOut, url_name="get_paper")
