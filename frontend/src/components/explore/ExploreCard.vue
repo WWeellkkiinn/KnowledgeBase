@@ -14,6 +14,10 @@ const BADGE_STYLES: Record<string, { bg: string; color: string; text?: (v: strin
   CSSCI:  { bg: '#ccfbf1', color: '#0f766e', text: () => 'CSSCI' },
 }
 
+const banditScoreText = computed(() =>
+  props.card.bandit_score != null ? `推荐 ${props.card.bandit_score.toFixed(2)}` : null,
+)
+
 const renderedBadges = computed(() =>
   props.card.rank_badges
     .map(b => {
@@ -43,7 +47,8 @@ const renderedBadges = computed(() =>
       {{ card.display_date }}<template v-if="card.authors"> · {{ card.authors }}</template><template v-if="card.venue_name"> (<em class="venue">{{ card.venue_name }}</em><template v-if="renderedBadges.length"> · <template v-for="(b, i) in renderedBadges" :key="i"><span class="rank-badge" :style="{ background: b.bg, color: b.color }">{{ b.text }}</span><template v-if="i < renderedBadges.length - 1"> </template></template></template>)</template><template v-if="card.cited_by_count"> · cited {{ card.cited_by_count }}</template>
     </p>
 
-    <p v-if="card.tags.length" class="tags-line">
+    <p v-if="card.tags.length || banditScoreText" class="tags-line">
+      <span v-if="banditScoreText" class="bandit-score">{{ banditScoreText }}</span>
       <span v-for="tag in card.tags" :key="tag" class="tag">{{ tag }}</span>
     </p>
 
@@ -139,6 +144,17 @@ const renderedBadges = computed(() =>
   font-size: 12px;
   display: inline-block;
   margin: 2px 4px 0 0;
+}
+
+.bandit-score {
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 9999px;
+  padding: 1px 9px;
+  font-size: 12px;
+  display: inline-block;
+  margin: 2px 4px 0 0;
+  font-weight: 600;
 }
 
 .section-label {

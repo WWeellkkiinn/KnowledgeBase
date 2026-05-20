@@ -195,6 +195,7 @@ export interface ExploreCardData {
   research_question: string | null
   methodology: string | null
   key_findings: string[]
+  bandit_score: number | null
 }
 
 export interface ExploreCard {

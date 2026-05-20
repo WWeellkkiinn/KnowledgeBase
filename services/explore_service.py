@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import models
-from services.bandit import score_card
+from services.bandit import score_card, expected_score
 from services.reference_fetcher import _openalex_mailto, _reconstruct_abstract
 
 _log = logging.getLogger(__name__)
@@ -343,17 +343,15 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
                 s.close()
         threading.Thread(target=_bg_prefetch, args=(list(uncached),), daemon=True).start()
 
-    return [
-        {
-            "id": item.id,
-            "card": build_explore_card_data(
-                item, sub,
-                journal_cache=journal_cache, venue_cache=venue_cache_extra,
-            ),
-            "action": item.action,
-        }
-        for item in items
-    ]
+    result = []
+    for item in items:
+        card = build_explore_card_data(
+            item, sub,
+            journal_cache=journal_cache, venue_cache=venue_cache_extra,
+        )
+        card["bandit_score"] = expected_score(db, item.tags_json or [])
+        result.append({"id": item.id, "card": card, "action": item.action})
+    return result
 
 
 def build_explore_card_data(item, sub, db_session=None, journal_cache: dict | None = None,
@@ -398,6 +396,7 @@ def build_explore_card_data(item, sub, db_session=None, journal_cache: dict | No
         "key_findings": list(item.key_findings_json or []),
         "llm_reason": item.llm_reason or "",
         "llm_pending": item.scored_at is None,
+        "bandit_score": None,
     }
 
 
