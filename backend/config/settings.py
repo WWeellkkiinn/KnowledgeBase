@@ -22,10 +22,24 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Local
+    # Third-party
+    "sesame",
+    "django_celery_beat",
+    # Local — Phase 0 foundation
     "core",
     "tenants",
     "accounts",
+    "admin_ext",
+    # Phase 1 · Agent A — Papers Domain
+    "papers",
+    "journals",
+    "citations",
+    "ai_analysis",
+    # Phase 1 · Agent B — Discovery Domain
+    "subscriptions",
+    "explore",
+    "network",
+    "tracking",
 ]
 
 MIDDLEWARE = [
@@ -87,6 +101,13 @@ SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = not DEBUG
+# Frontend reads csrftoken to inject X-CSRFToken; cannot be HttpOnly.
+CSRF_COOKIE_HTTPONLY = False
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",")
+    if o.strip()
+]
 
 # django-sesame (magic link tokens)
 SESAME_MAX_AGE = int(os.environ.get("SESAME_MAX_AGE", "900"))  # 15 min
@@ -111,6 +132,24 @@ CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TIMEZONE = "UTC"
 
+# Celery Beat — Agent B nightly pipeline.
+# When django-celery-beat is the scheduler, this seed is loaded into DB on first run.
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_BEAT_SCHEDULE = {
+    "nightly-fill-explore-pools": {
+        "task": "subscriptions.tasks.nightly_fill_explore_pools",
+        "schedule": crontab(hour=2, minute=0),
+        "options": {"expires": 3600},
+    },
+    "nightly-track-refresh": {
+        "task": "subscriptions.tasks.nightly_track_refresh",
+        "schedule": crontab(hour=2, minute=30),
+        "options": {"expires": 3600},
+    },
+}
+
 # ─── Tenant context ─────────────────────────────────────────────────
 # Paths exempt from tenant requirement (still go through auth where applicable)
 TENANT_EXEMPT_PATH_PREFIXES = (
@@ -132,3 +171,8 @@ EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "1") == "1"
 EMAIL_HOST_USER = os.environ.get("DIGEST_FROM", "")
 EMAIL_HOST_PASSWORD = os.environ.get("DIGEST_AUTH_CODE", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or "noreply@example.com"
+
+# Notifies the super-admin on pending-registration; falls back to all is_superuser users.
+DJANGO_SUPERADMIN_EMAIL = os.environ.get("DJANGO_SUPERADMIN_EMAIL", "")
+# Base URL used to build magic-link emails (e.g. https://kb.example.com).
+MAGIC_LINK_BASE_URL = os.environ.get("MAGIC_LINK_BASE_URL", "http://localhost:8000")

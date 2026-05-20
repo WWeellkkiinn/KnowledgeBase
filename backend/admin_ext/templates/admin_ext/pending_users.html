@@ -1,0 +1,55 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>Pending User Approvals</h1>
+{% if messages %}
+  {% for m in messages %}
+    <p class="{% if m.tags %}{{ m.tags }}{% endif %}">{{ m }}</p>
+  {% endfor %}
+{% endif %}
+
+{% if pending_users %}
+<table>
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Joined</th>
+      <th>Note</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for user in pending_users %}
+    <tr>
+      <td>{{ user.email }}</td>
+      <td>{{ user.date_joined|date:"Y-m-d H:i" }}</td>
+      <td>{{ user.application_note|default:"-" }}</td>
+      <td>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="user_id" value="{{ user.pk }}">
+          <select name="action">
+            <option value="approve">Approve</option>
+            <option value="reject">Reject</option>
+          </select>
+          <select name="tenant">
+            <option value="">-- select tenant --</option>
+            {% for t in tenants %}
+              <option value="{{ t.pk }}">{{ t.name }}</option>
+            {% endfor %}
+          </select>
+          <select name="role">
+            {% for value, label in role_choices %}
+              <option value="{{ value }}" {% if value == "member" %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Submit</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <p>No pending users.</p>
+{% endif %}
+{% endblock %}

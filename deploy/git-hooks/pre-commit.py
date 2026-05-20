@@ -89,6 +89,9 @@ def _email_is_safe(addr: str) -> bool:
         return True
     if "@example.com" in a or "@example.org" in a:
         return True
+    # 测试 fixture 常用域名（RFC 2606 + 习惯用法）
+    if "@test.com" in a or "@test.local" in a or "@test.test" in a or "@localhost" in a:
+        return True
     if "user@" in a or "your-email@" in a or "replace" in a:
         return True
     # 学术 API 标识邮箱（unpaywall / openalex mailto 占位）—— 用 .env 注入，正文出现说明是文档示例
@@ -100,11 +103,13 @@ def _email_is_safe(addr: str) -> bool:
 HIGH_ENTROPY_BASE64 = re.compile(r"\b[A-Za-z0-9_\-]{36,}\b")
 HIGH_ENTROPY_HEX = re.compile(r"\b[a-f0-9]{40,}\b")
 
-# 高熵字符串白名单（git 对象 hash、npm hash、知名常量）
+# 高熵字符串白名单（git 对象 hash、npm hash、知名常量、长测试/函数名）
 ENTROPY_SAFE_CONTEXT = re.compile(
     r"(sha256:|sha512:|sha384:|integrity\s*=|"
     r"# noqa:|# type:|googletagmanager|cloudflare|"
-    r"^[+-]\s*//|^[+-]\s*#)",  # 注释行
+    r"^[+-]\s*//|^[+-]\s*#|"  # 注释行
+    r"\bdef\s+test_|\bdef\s+\w+_test|\bclass\s+Test\w+|"  # pytest 命名
+    r"\basync\s+def\s+test_)",
     re.IGNORECASE,
 )
 
