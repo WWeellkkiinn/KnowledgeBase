@@ -269,7 +269,7 @@ def get_explore_cards(db, sub_id, limit=10, exclude_ids: list[int] | None = None
         select(models.ExplorePool).where(*conditions)
     ).scalars().all())
     scored_items = [
-        (score_card(db, item.tags_json or []), item)
+        (score_card(db, item.id, item.tags_json or []), item)
         for item in items
         if item.tags_json
     ]

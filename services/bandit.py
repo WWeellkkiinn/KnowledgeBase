@@ -5,15 +5,17 @@ from sqlalchemy import text, bindparam
 from database.models import TagDict
 
 
-def score_card(db: Session, tags: list[str]) -> float:
+def score_card(db: Session, pool_id: int, tags: list[str]) -> float:
     if not tags:
         return 0.0
     rows = db.query(TagDict.tag, TagDict.alpha, TagDict.beta).filter(TagDict.tag.in_(tags)).all()
     stats = {r[0]: (r[1], r[2]) for r in rows}
+    seed_key = (pool_id, tuple(sorted((t, stats.get(t, (0.5, 0.5))) for t in tags)))
+    rng = random.Random(hash(seed_key))
     samples = []
     for t in tags:
         a, b = stats.get(t, (0.5, 0.5))
-        samples.append(random.betavariate(max(a, 1e-6), max(b, 1e-6)))
+        samples.append(rng.betavariate(max(a, 1e-6), max(b, 1e-6)))
     return sum(samples) / len(samples)
 
 
