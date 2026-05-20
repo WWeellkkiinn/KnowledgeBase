@@ -16,6 +16,9 @@ router = Router()
 class RegisterIn(Schema):
     email: str
     password: Optional[str] = None
+    # Phase 0 contract used `reason`; older Agent C drafts used `application_note`.
+    # Accept either so the frontend doesn't need to track the rename.
+    reason: str = ""
     application_note: str = ""
 
 
@@ -29,10 +32,10 @@ class LoginIn(Schema):
     password: str
 
 
-class TenantInfo(Schema):
-    id: int
-    name: str
-    slug: str
+class MembershipInfo(Schema):
+    tenant_id: int
+    tenant_name: str
+    tenant_slug: str
     role: str
 
 
@@ -40,8 +43,14 @@ class MeOut(Schema):
     id: int
     email: str
     approval_status: str
-    tenants: list[TenantInfo]
+    memberships: list[MembershipInfo]
     active_tenant_id: Optional[int]
+
+
+class AuthSessionOut(Schema):
+    """Wrapper used by /login and /magic/consume to match the frozen
+    `{ user: MeResponse }` contract that the Vue frontend consumes."""
+    user: MeOut
 
 
 class MagicLinkIn(Schema):
@@ -61,12 +70,21 @@ def _me_payload(request) -> MeOut:
         id=user.pk,
         email=user.email,
         approval_status=user.approval_status,
-        tenants=[
-            TenantInfo(id=m.tenant.pk, name=m.tenant.name, slug=m.tenant.slug, role=m.role)
+        memberships=[
+            MembershipInfo(
+                tenant_id=m.tenant.pk,
+                tenant_name=m.tenant.name,
+                tenant_slug=m.tenant.slug,
+                role=m.role,
+            )
             for m in memberships
         ],
         active_tenant_id=request.session.get("active_tenant_id"),
     )
+
+
+def _session_payload(request) -> AuthSessionOut:
+    return AuthSessionOut(user=_me_payload(request))
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -82,7 +100,7 @@ def register(request, payload: RegisterIn):
     user = User.objects.create_user(
         email=payload.email,
         password=payload.password or None,
-        application_note=payload.application_note,
+        application_note=payload.application_note or payload.reason or "",
         approval_status=User.Approval.PENDING,
     )
     send_pending_approval_notice(user)
@@ -106,7 +124,7 @@ def login_view(request, payload: LoginIn):
         raise HttpError(403, "rejected")
 
     login(request, user)
-    return _me_payload(request)
+    return _session_payload(request)
 
 
 @router.post("/magic-link", auth=None)
@@ -140,7 +158,7 @@ def consume_magic_link(request, sesame: str):
     if user is None:
         raise HttpError(401, "Invalid or expired token")
 
-    return _me_payload(request)
+    return _session_payload(request)
 
 
 @router.get("/me")
