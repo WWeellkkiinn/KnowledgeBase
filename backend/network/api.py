@@ -24,7 +24,7 @@ def get_graph(request, limit: int = 1000):
         )
     )
 
-    paper_qs = Paper.objects.filter(tenant_id=tenant_id).select_related("journal")
+    paper_qs = Paper.objects.filter(tenant_id=tenant_id, is_core=True).select_related("journal")
     total = paper_qs.count()
     papers = list(paper_qs.order_by("id")[:limit])
     truncated = total > limit
