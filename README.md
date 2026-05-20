@@ -14,7 +14,7 @@
 | **论文库** | 核心 / 探索库双层级；**Google 风格分页**（固定 9 槽位，输入页码跳转）；**右上角"上传 PDF"按钮**（多论文同时上传，后台 worker 异步处理）；批量移库 / 删除 |
 | **论文详情** | 结构化元数据；内容精炼（AI 提取的研究问题 / 方法 / 关键发现）；引用/被引列表（cache 命中秒回，cache miss 时显示"后台处理中"提示框可关闭页面）；**加载更多分页**；BibTeX 下载 |
 | **引用图** | Cytoscape 网络图，仅显示核心库；节点按期刊 Tier 着色；点击跳详情 |
-| **综述** | 勾选若干篇 + 关注维度 → 流式综述（调 Ollama） |
+| **综述** | 勾选若干篇 + 关注维度 → 流式综述（调 LLM） |
 | **订阅** | 论文被引 / 作者新作 / 话题搜索三类订阅，定时跑 |
 | **失败诊断** | 下载失败的引用汇总 |
 
@@ -26,18 +26,17 @@
 3. 后台 worker 串行跑：**MinerU 云 API** PDF→Markdown → 抽 Title → DOI 反查 → Crossref 元数据 → Journal Tier → 引用抽取
 4. Dashboard 实时显示任务进度，详情页自动刷新
 
-无需 CLI 介入。原 `scripts/run_analysis_ui.py` 也保留可用。
+无需 CLI 介入。
 
-### CLI（分析新论文，写入数据库）
+### CLI（调试辅助）
 
 | 命令 | 功能 |
 |------|------|
 | `pdf2md.py` | PDF → Markdown（调 MinerU） |
-| `run_analysis_ui.py` | 单篇论文三阶段分析：内容分析 → 引用提取 → PDF 批量下载 |
 | `search_refs.py` | 查询单篇论文元数据 + PDF 链接（调试用） |
 | `download_pdf.py` | 下载单个 PDF（调试用） |
 
-> CLI 负责"分析入库"，Web 负责"查看 + 引用追踪 + 监控 + 综述"。两者共享同一个 SQLite 数据库。
+> 正式流程全部走 Web UI 上传 + 后台 worker；CLI 仅作调试辅助。
 
 ---
 
@@ -47,7 +46,7 @@
 
 - Python 3.12（conda 环境）
 - Node.js 18+
-- Ollama 推理服务（端点通过 `KB_OLLAMA_URL` 环境变量配置，默认 `http://localhost:11434`；用于 AI 精炼 / 综述）
+- LLM：OpenAI 兼容的中转 API（`.env` 填 `CHAT_API_BASE` / `CHAT_API_KEY` / `CHAT_MODEL`；用于 AI 精炼 / 综述 / 订阅评分）
 - **MinerU 云 API**：默认走 [mineru.net](https://mineru.net) 公网，需注册账号拿 Bearer token
   填到 `.env` 的 `KB_MINERU_API_KEY`；也可改 `KB_PDF2MD_PROVIDER=local` 走局域网 MinerU
 
@@ -107,41 +106,6 @@ cd C:\dev\KnowledgeBase
 | `flask: command not found` | 用了 base conda 而不是 kb 环境 | 用完整路径 `&lt;path-to-conda-env&gt;\python.exe` |
 | 500 / 端口已被占用 | 旧进程未退出 | 先 `Stop-Process` 再启动 |
 | 调度器未启动 | 用 `flask run` 而非 `serve.py` | 必须用 `python scripts/serve.py`，它会自动设 `KB_ENABLE_SCHEDULER=1` |
-
----
-
-## 分析新论文（CLI 工作流）
-
-### Step 1：把 PDF 放进项目
-
-```
-papers/
-  my_paper/
-    my_paper.pdf    ← 手动放这里
-```
-
-### Step 2：PDF 转 Markdown
-
-```bash
-python scripts/pdf2md.py papers/my_paper/my_paper.pdf
-# 输出：papers/my_paper/my_paper.md
-```
-
-### Step 3：运行三阶段分析
-
-```bash
-python scripts/run_analysis_ui.py papers/my_paper/my_paper.md --focus "研究方法"
-# 自动打开 http://localhost:8765 显示实时进度
-# 或加 --headless 跳过 UI（脚本调用时）
-```
-
-完成后生成：
-- `analysis_insight.md` — 论文内容分析
-- `analysis_refs.md` — 高相关引用清单
-- `refs/*.pdf` — 自动下载的引用 PDF
-- `refs_failed.md` — 下载失败清单（有则生成）
-
-论文自动写入数据库，刷新 Web UI 即可看到。
 
 ---
 
@@ -320,7 +284,7 @@ KnowledgeBase/
     backward_track_service.py   ← 后向追踪（这篇引用了哪些）
     analysis_service.py         ← 三阶段分析流水线
     subscription_service.py     ← 订阅调度（APScheduler）
-    review_service.py           ← 跨论文综述生成（map-reduce + Ollama）
+    review_service.py           ← 跨论文综述生成（map-reduce + LLM）
     journal_service.py          ← 期刊质量评分
     citation_service.py         ← BibTeX 生成与导出
   database/
@@ -331,14 +295,12 @@ KnowledgeBase/
     src/pages/                  ← 概览 / 论文库 / 引用图 / 综述 / 订阅 / 失败诊断
     src/stores/                 ← Pinia 状态管理
     src/api/                    ← axios + Socket.IO 封装
-  scripts/                      ← CLI 入口
-    run_analysis_ui.py          ← 单篇分析
+  scripts/                      ← CLI 入口（调试辅助）
     pdf2md.py                   ← PDF → Markdown（调 MinerU）
     search_refs.py              ← 元数据搜索（8 个来源）
     download_pdf.py             ← PDF 下载分发器
     downloaders/                ← 下载 handler 插件
     extract_refs.py             ← 从 Markdown 解析引用列表
-    cross_analysis.py           ← 跨论文数据汇总
     backfill_journals.py        ← 期刊质量数据补全
     config.py                   ← API Keys（不提交）
     migrate_to_db.py            ← 一次性迁移脚本
@@ -360,54 +322,16 @@ KnowledgeBase/
 | 数据库 | SQLite（`kb.db`），WAL 模式 |
 | 前端 | Vue 3.5 + Vite 5 + Tailwind CSS 3 + Pinia + Cytoscape.js |
 | 引用 API | Semantic Scholar + OpenAlex + Crossref（service 层 ThreadPoolExecutor 并行）|
-| LLM | Ollama（端点经 `KB_OLLAMA_URL` 配置；默认模型 `qwen3.6-27b`，可经 `KB_OLLAMA_MODEL` 覆盖）|
+| LLM | OpenAI 兼容中转 API（`CHAT_API_BASE` / `CHAT_API_KEY` / `CHAT_MODEL`）|
 | PDF 转换 | **MinerU 云 API**（`mineru.net`，默认）；可切 `local` 走自托管 |
 | HTTP 客户端 | httpx |
 
 ---
 
-## 推理服务器
+## 生产部署（Docker Compose）
 
-Ollama 推理跑在独立主机上，本仓库不预设主机地址 / SSH 凭证。通过 `KB_OLLAMA_URL`
-环境变量配置端点（参考 `.env.example`）；若推理主机在内网，可用 frp 反向隧道
-把端口映射回应用主机（参考 `deploy/README.md` + `deploy/frpc.toml.example`）。
-
-### Ollama 日常操作（示例 alias）
-
-```bash
-ollama-up              # 启动容器 + 预热模型
-ollama-down            # 停止容器，释放 GPU
-ollama-status          # 查看状态
-```
-
-### 已部署模型
-
-| 模型 | Ollama 名称 | GPU | thinking |
-|------|------------|-----|---------|
-| Qwen 3.6 27B | `qwen3.6-27b` | 单卡 GPU1 | ✅（`/no_think` 前缀开启，语义反转） |
-| Gemma 4 31B | `gemma4-31b` | 双卡 GPU0+1 | ✅ |
-| Qwen 3.5 27B | `qwen3.5-27b` | 双卡 | ✅ |
-
-> ⚠️ qwen3.6-27b 的 `/think` 和 `/no_think` 前缀语义与直觉**相反**：`/no_think` = 开启思维链，`/think` = 关闭思维链。
-
-### MinerU 启动
-
-```bash
-docker run -d --name mineru-api-kb \
-  --gpus '"device=3"' -p 8000:8000 \
-  -e MINERU_MODEL_SOURCE=local --ipc host \
-  mineru:latest mineru-api --host 0.0.0.0 --port 8000
-```
-
----
-
-## 生产部署（Docker + frp）
-
-把项目以 Docker Compose 方式部署到一台有公网 IP 的服务器，并通过 frp 反向隧道
-连接内网 Ollama 主机。详见 [`deploy/README.md`](deploy/README.md)。
-
-> 历史版本曾用 cpolar 内网穿透从 Windows 本地暴露公网；当前推荐 Docker + frp。
-> 国内网络下 Tailscale / Cloudflare Tunnel 经常无法连接其控制面与中继。
+把项目以 Docker Compose 方式部署到一台有公网 IP 的服务器。LLM 走 OpenAI 兼容的
+公网中转 API，无需自架推理主机。详见 [`deploy/README.md`](deploy/README.md)。
 
 ### 安全前提
 
@@ -419,8 +343,7 @@ docker run -d --name mineru-api-kb \
 | `KB_SECRET_KEY` | ✅ | Flask session / Socket.IO 签名密钥 |
 | `KB_TRUST_PROXY` | ✅ | 公网部署设 `1`，启用 ProxyFix；**仅当 Flask 绑 127.0.0.1 + 单跳可信代理（nginx）时安全** |
 | `KB_MINERU_API_KEY` | 上传时必填 | MinerU 云 Bearer token（注册 [mineru.net](https://mineru.net) 获取） |
-| `KB_OLLAMA_URL` | 否 | Ollama 端点；容器内默认 `http://host.docker.internal:11434` |
-| `KB_OLLAMA_MODEL` | 否 | 默认 `qwen3.6-27b` |
+| `CHAT_API_BASE` / `CHAT_API_KEY` / `CHAT_MODEL` | 上传 / AI 分析时必填 | OpenAI 兼容中转 API 配置 |
 | `KB_PDF2MD_PROVIDER` | 否 | `mineru-cloud`（默认）/ `local` |
 | `KB_MINERU_API_URL` | 否 | 默认 `https://mineru.net` |
 | `KB_MINERU_ALLOWED_HOSTS` | 否 | 预签名 URL host 白名单；默认含 mineru.net + cdn-mineru.openxlab.org.cn + MinerU 官方 OSS bucket |

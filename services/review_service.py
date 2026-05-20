@@ -1,6 +1,6 @@
 """ReviewService —— 跨论文综述生成（M3.5）。
 
-策略：薄壳包装 scripts/cross_analysis 的 map-reduce 思路 + Yinli 流式调用。
+策略：map-reduce + 流式 LLM 调用。
 - map：每篇 paper 的 analysis_insight.md 抽 "总览/小结" 段
 - reduce：拼接 + 第一轮表格 + 第二轮综合（共识/分歧/演化/交叉引用）
 
@@ -31,7 +31,6 @@ def _project_root() -> Path:
 
 
 SYSTEM = (
-    "/no_think\n"
     "你是学术文献方法论分析专家。用户会提供多篇论文的摘要分析，"
     "你需要跨论文进行比较和综合。请用中文回答，语言简洁学术，不要重复用户提供的原文，"
     "而是提炼出洞察。"

@@ -120,7 +120,7 @@ def analyze_paper(
     """F1+F2: 单次调用返回 tags + research_question + methodology + key_findings + title_zh。
 
     _vocab: 外部传入词表时跳过文件读写（批量场景），由调用方负责持久化。
-    返回 {} 表示分析失败（JSON 解析错误或 Ollama 异常）。
+    返回 {} 表示分析失败（JSON 解析错误或 LLM 调用异常）。
     """
     owns_vocab = _vocab is None
     vocab = _load_vocab() if owns_vocab else list(_vocab)

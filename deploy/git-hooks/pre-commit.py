@@ -25,15 +25,11 @@ from typing import Iterable
 # ─────────────────────────────────────────────────────────────────────
 PROJECT_DENY: list[tuple[str, str]] = [
     # (人类可读名, 字面值)
-    ("frps token", "uobf75gs3d0P3nLnswizcySb0U-XPZfemHygDRAEHTw"),
     ("163 邮箱授权码", "JMkxr4XYmxvWbpmQ"),
     ("Welkin 163 邮箱", "asd1334119588@"),
     ("Welkin Gmail", "harveyxiacn@"),
-    ("Ollama 主机 SSH key 名", "claude_key"),
     ("ECS root SSH key 名", "id_ed25519_nopass"),
     ("客户 ECS 公网 IP", "8.163.93.142"),
-    ("Ollama 主机内网 IP", "10.12.210.20"),
-    ("Ollama 出口 IP", "36.141.24.131"),
     ("本地代理出口 IP", "183.63.119.93"),
 ]
 
@@ -119,7 +115,6 @@ SENSITIVE_FILE_PATTERNS = [
         r"^\.env$",
         r"^\.env\.local$",
         r"^\.env\.production$",
-        r"^frps\.toml$",
         r".*\.pem$",
         r".*\.key$",
         r".*_rsa$",
