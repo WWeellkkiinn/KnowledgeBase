@@ -18,6 +18,7 @@ depends_on = None
 
 def upgrade() -> None:
     with op.batch_alter_table('explore_pool') as batch_op:
+        batch_op.drop_index('ix_explore_pool_pre_score')
         batch_op.drop_column('embedding')
         batch_op.drop_column('pre_score')
 
