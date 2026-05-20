@@ -359,8 +359,7 @@ onBeforeUnmount(() => {
 .card-action-bar {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr 1.4fr;
-  align-items: center;
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   padding: 12px 16px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -370,6 +369,9 @@ onBeforeUnmount(() => {
 }
 
 .card-action-bar button {
+  height: 44px;
+  font-size: 14px;
+  font-weight: 600;
   border-radius: 999px;
   cursor: pointer;
   display: inline-flex;
@@ -382,43 +384,31 @@ onBeforeUnmount(() => {
 .card-action-bar .btn-icon { font-size: 14px; line-height: 1; }
 
 .card-action-bar .btn-skip {
-  height: 40px;
-  font-size: 13px;
-  font-weight: 400;
-  background: #fff;
-  color: #94a3b8;
-  border: 1px solid #e2e8f0;
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
 }
 .card-action-bar .btn-skip:hover:not(:disabled) {
-  background: #f8fafc;
-  color: #64748b;
-  border-color: #cbd5e1;
+  background: #fed7aa;
+  border-color: #fdba74;
 }
 
 .card-action-bar .btn-pass {
-  height: 44px;
-  font-size: 14px;
-  font-weight: 500;
-  background: #fff;
-  color: #1e293b;
-  border: 1px solid #94a3b8;
+  background: #e0e7ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
 }
 .card-action-bar .btn-pass:hover:not(:disabled) {
-  background: #f1f5f9;
-  border-color: #475569;
+  background: #c7d2fe;
+  border-color: #a5b4fc;
 }
 
 .card-action-bar .btn-save {
-  height: 48px;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
   background: #0f766e;
   color: #fff;
   border: 0;
   box-shadow: 0 1px 2px rgba(15, 118, 110, 0.18);
 }
-.card-action-bar .btn-save .btn-icon { font-size: 16px; }
 .card-action-bar .btn-save:hover:not(:disabled) {
   background: #115e59;
 }
