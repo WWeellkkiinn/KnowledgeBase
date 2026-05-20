@@ -56,9 +56,18 @@ def _tenant_id(request) -> int:
     return request.tenant.id  # set by TenantContextMiddleware
 
 
-@router.get("", response=List[SubscriptionOut], auth=django_auth)
-def list_subs(request):
-    return [_out(s) for s in list_subscriptions(_tenant_id(request))]
+class SubscriptionList(Schema):
+    items: List[SubscriptionOut]
+    total: int
+
+
+@router.get("", response=SubscriptionList, auth=django_auth)
+def list_subs(request, active: Optional[int] = None):
+    items = [
+        _out(s)
+        for s in list_subscriptions(_tenant_id(request), active_only=bool(active))
+    ]
+    return SubscriptionList(items=items, total=len(items))
 
 
 @router.post("", response=SubscriptionOut, auth=django_auth)
