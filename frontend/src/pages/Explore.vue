@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, reactive } from 'vue'
+import { onMounted, onBeforeUnmount, ref, reactive, nextTick } from 'vue'
 import { exploreApi, subscriptionsApi } from '@/api/endpoints'
 import type { ExploreCard as ExploreCardItem, Subscription } from '@/types/api'
 import SubscriptionSheet from '@/components/SubscriptionSheet.vue'
@@ -56,14 +56,16 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
   if (animating.value || !cards.value[0] || !cardRef.value) return
   animating.value = true
   const card = cards.value[0]
+  const el = cardRef.value
   try {
-    const W = (cardRef.value.offsetWidth ?? 320) + 16
-    const anim = cardRef.value.animate(
+    const W = (el.offsetWidth ?? 320) + 16
+    const out = el.animate(
       [{ transform: 'translateX(0)' }, { transform: `translateX(${-W}px)` }],
       { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
     )
-    await anim.finished.catch(() => {})
-    anim.cancel()
+    await out.finished.catch(() => {})
+    el.style.transform = `translateX(${-W}px)`
+    out.cancel()
     prevCard.value = card
     prevAction.value = action
     sessionStats[action]++
@@ -71,6 +73,20 @@ async function doAction(action: 'saved' | 'skipped' | 'passed') {
     poolCount.value = Math.max(0, poolCount.value - 1)
     queueRecord(() => exploreApi.recordAction(card.id, action))
     if (cards.value.length <= 10) loadMoreCards()
+    await nextTick()
+    if (cards.value[0] && cardRef.value) {
+      cardRef.value.style.transform = `translateX(${W}px)`
+      void cardRef.value.offsetHeight
+      const inAnim = cardRef.value.animate(
+        [{ transform: `translateX(${W}px)` }, { transform: 'translateX(0)' }],
+        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
+      )
+      await inAnim.finished.catch(() => {})
+      inAnim.cancel()
+      cardRef.value.style.transform = ''
+    } else if (cardRef.value) {
+      cardRef.value.style.transform = ''
+    }
   } finally {
     animating.value = false
   }
@@ -80,16 +96,18 @@ async function doUndo() {
   if (animating.value || !prevCard.value || !cardRef.value) return
   animating.value = true
   const undoCard = prevCard.value
+  const el = cardRef.value
   try {
-    const W = (cardRef.value.offsetWidth ?? 320) + 16
-    const m = cardRef.value.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
+    const W = (el.offsetWidth ?? 320) + 16
+    const m = el.style.transform?.match(/translateX\((-?[\d.]+)px\)/)
     const curDx = m ? parseFloat(m[1]) : 0
-    const anim = cardRef.value.animate(
+    const out = el.animate(
       [{ transform: `translateX(${curDx}px)` }, { transform: `translateX(${W * 1.5}px)` }],
       { duration: SLIDE_DUR, easing: 'ease-in-out', fill: 'forwards' }
     )
-    await anim.finished.catch(() => {})
-    anim.cancel()
+    await out.finished.catch(() => {})
+    el.style.transform = `translateX(${W * 1.5}px)`
+    out.cancel()
     cards.value = [undoCard, ...cards.value]
     if (prevAction.value) {
       sessionStats[prevAction.value] = Math.max(0, sessionStats[prevAction.value] - 1)
@@ -98,6 +116,18 @@ async function doUndo() {
     prevCard.value = null
     prevAction.value = null
     queueRecord(() => exploreApi.undo(undoCard.id))
+    await nextTick()
+    if (cardRef.value) {
+      cardRef.value.style.transform = `translateX(${-W}px)`
+      void cardRef.value.offsetHeight
+      const inAnim = cardRef.value.animate(
+        [{ transform: `translateX(${-W}px)` }, { transform: 'translateX(0)' }],
+        { duration: SLIDE_DUR, easing: ENTER_EASING, fill: 'forwards' }
+      )
+      await inAnim.finished.catch(() => {})
+      inAnim.cancel()
+      cardRef.value.style.transform = ''
+    }
   } finally {
     animating.value = false
   }
@@ -235,7 +265,7 @@ onBeforeUnmount(() => {
         @touchend.passive="onTouchEnd"
         @touchcancel.passive="onTouchCancel"
       >
-        <div ref="cardRef" :key="cards[0]?.id ?? 'empty'" class="card-current" @touchmove="onTouchMove">
+        <div ref="cardRef" class="card-current" @touchmove="onTouchMove">
           <div class="card-content-area">
             <ExploreLoading v-if="loading" />
             <ExploreEmpty v-else-if="!cards[0]" />
@@ -355,6 +385,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 
 .card-current {
