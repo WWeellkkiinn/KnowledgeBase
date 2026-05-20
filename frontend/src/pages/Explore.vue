@@ -231,9 +231,9 @@ onBeforeUnmount(() => {
             <ExploreCard v-else :card="cards[0].card" />
           </div>
           <div class="card-action-bar" v-if="!loading && cards.length > 0">
-            <button class="btn-skip" :disabled="animating" @click="doAction('skipped')">不感兴趣</button>
-            <button class="btn-pass" :disabled="animating" @click="doAction('passed')">已读</button>
-            <button class="btn-save" :disabled="animating" @click="doAction('saved')">收藏</button>
+            <button class="btn-skip" :disabled="animating" @click="doAction('skipped')"><span class="btn-icon">✕</span><span class="btn-label">不感兴趣</span></button>
+            <button class="btn-pass" :disabled="animating" @click="doAction('passed')"><span class="btn-icon">✓</span><span class="btn-label">已读</span></button>
+            <button class="btn-save" :disabled="animating" @click="doAction('saved')"><span class="btn-icon">★</span><span class="btn-label">收藏</span></button>
           </div>
         </div>
       </div>
@@ -359,7 +359,8 @@ onBeforeUnmount(() => {
 .card-action-bar {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr 1fr 1.4fr;
+  align-items: center;
   gap: 10px;
   padding: 12px 16px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -370,13 +371,20 @@ onBeforeUnmount(() => {
 
 .card-action-bar button {
   border-radius: 999px;
-  min-height: 44px;
-  font-weight: 600;
   cursor: pointer;
-  font-size: 14px;
-  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
+.card-action-bar button:active:not(:disabled) { transform: scale(0.97); }
+.card-action-bar .btn-icon { font-size: 14px; line-height: 1; }
+
 .card-action-bar .btn-skip {
+  height: 40px;
+  font-size: 13px;
+  font-weight: 400;
   background: #fff;
   color: #94a3b8;
   border: 1px solid #e2e8f0;
@@ -386,20 +394,31 @@ onBeforeUnmount(() => {
   color: #64748b;
   border-color: #cbd5e1;
 }
+
 .card-action-bar .btn-pass {
+  height: 44px;
+  font-size: 14px;
+  font-weight: 500;
   background: #fff;
-  color: #475569;
-  border: 1px solid #cbd5e1;
+  color: #1e293b;
+  border: 1px solid #94a3b8;
 }
 .card-action-bar .btn-pass:hover:not(:disabled) {
   background: #f1f5f9;
-  border-color: #94a3b8;
+  border-color: #475569;
 }
+
 .card-action-bar .btn-save {
+  height: 48px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
   background: #0f766e;
   color: #fff;
   border: 0;
+  box-shadow: 0 1px 2px rgba(15, 118, 110, 0.18);
 }
+.card-action-bar .btn-save .btn-icon { font-size: 16px; }
 .card-action-bar .btn-save:hover:not(:disabled) {
   background: #115e59;
 }
