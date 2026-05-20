@@ -199,9 +199,11 @@ class Command(BaseCommand):
                 )
             self.stdout.write(f"  subscriptions: {len(subs)}")
 
-            # 4) explore_pool
+            # 4) explore_pool — fill empty external_id with deterministic placeholder
+            #    to satisfy the new unique(subscription, external_id) constraint.
             pool_rows = list(src.execute("SELECT * FROM explore_pool"))
             for r in pool_rows:
+                ext_id = (r["external_id"] or "").strip() or f"legacy:{r['id']}"
                 ExplorePool.objects.update_or_create(
                     id=r["id"],
                     defaults={
@@ -219,7 +221,7 @@ class Command(BaseCommand):
                         "score_attempts": r["score_attempts"] or 0,
                         "action": r["action"],
                         "acted_at": _to_dt(r["acted_at"]),
-                        "external_id": r["external_id"] or "",
+                        "external_id": ext_id,
                     },
                 )
             self.stdout.write(f"  explore_pool: {len(pool_rows)}")
