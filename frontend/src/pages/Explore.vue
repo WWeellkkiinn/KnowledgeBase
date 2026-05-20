@@ -443,7 +443,12 @@ onBeforeUnmount(() => {
 
 .card-deck {
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 640px;
+  margin: auto;
 }
 
 .card-current {
