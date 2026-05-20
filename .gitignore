@@ -39,3 +39,8 @@ REVIEW.md
 
 # Playwright MCP 截图/snapshot 工件目录（仅本地验证用）
 .playwright-mcp/
+# Playwright 截图（仓库根目录，临时调试用）
+/page-*.png
+/dashboard-*.png
+/papers-*.png
+/*.png
