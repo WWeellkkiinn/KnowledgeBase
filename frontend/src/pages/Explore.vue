@@ -443,13 +443,13 @@ onBeforeUnmount(() => {
 
 .card-deck {
   position: absolute;
-  inset: 28px 6px 32px 6px;
+  inset: 0;
 }
 
 .card-current {
   background: #fff;
+  border: 1px solid #e2e8f0;
   border-radius: 20px;
-  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
   position: absolute;
   inset: 0;
   display: flex;
