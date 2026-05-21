@@ -60,6 +60,10 @@ services:
       - ./data:/data
     expose:
       - "8000"
+    # 禁用容器 IPv6：中转 LLM 走 Cloudflare，IPv6 路由不通会导致 TLS 握手卡 30s
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
     mem_limit: 600m
     restart: unless-stopped
     healthcheck:
@@ -87,6 +91,9 @@ services:
     volumes:
       - ./backend:/app
       - ./data:/data
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
     mem_limit: 400m
     restart: unless-stopped
     logging: *default-logging

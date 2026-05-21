@@ -23,7 +23,7 @@ def generate_queries_task(self, subscription_id: int) -> dict:
         return {"status": "no_description"}
 
     try:
-        from services.llm_query_gen import generate_queries  # type: ignore[import]
+        from subscriptions.llm_query_gen import generate_queries
         queries = generate_queries(sub.description)
         sub.generated_queries = queries
         sub.save(update_fields=["generated_queries"])
