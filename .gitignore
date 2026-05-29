@@ -44,3 +44,8 @@ REVIEW.md
 /dashboard-*.png
 /papers-*.png
 /*.png
+
+# frp 配置含认证 token，仅本机使用，禁止入库
+frps.toml
+# tag 合并 dry-run 报告（一次性）
+.tag_merge_apply_dryrun.txt
